@@ -42,5 +42,17 @@ SKIP=$(grep -c '^ok .*# SKIP' "$RESULT_DIR/riscv.log" || true)
 echo "通过(ok): $OK  失败(not ok): $FAIL  跳过(skip): $SKIP"
 echo "完整日志: $RESULT_DIR/riscv.log"
 
+# ===== 5. 写入回归趋势表 =====
+PLATFORM="${PLATFORM:-$(uname -m)}"   # 可用 PLATFORM=qemu / PLATFORM=k3 覆盖
+CHIP="$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*:[[:space:]]*//' | tr -d ' ' || echo unknown)"
+TREND="$RESULT_DIR/trend.md"
+if [ ! -f "$TREND" ]; then
+  { echo "# 回归趋势表"; echo ""; \
+    echo "| 日期 | 内核 | 平台 | 芯片 | 通过 | 失败 | 跳过 |"; \
+    echo "|---|---|---|---|---|---|---|"; } > "$TREND"
+fi
+echo "| $(date +%F) | $KERNEL_VER | $PLATFORM | $CHIP | $OK | $FAIL | $SKIP |" >> "$TREND"
+echo "趋势已更新: $TREND"
+
 # 失败则非零退出，方便 CI 判断
 [ "$FAIL" = "0" ] || exit 1

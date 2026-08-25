@@ -56,8 +56,11 @@ ssh -p 2223 bianbu@localhost   # 连 K3
 
 | 文件 | 作用 |
 |---|---|
-| `run-tests.sh` | 核心：下载内核 → 编译 selftests → 跑 → 统计结果 |
+| `run-tests.sh` | 核心：下载内核 → 编译 selftests → 跑 → 统计结果 → 写回归趋势表 |
+| `config-drift-check.sh` | 配置漂移检测：检查内核 config 必需项 |
+| `run-kvm-tests.sh` | KVM selftests（真机 H 扩展 + /dev/kvm） |
 | `Dockerfile` | riscv64 测试容器镜像 |
+| `.github/workflows/ci.yml` | CI：自托管 runner 自动跑测试 |
 | `boot-riscv-vm.sh` | 在 WSL 上启动 riscv64 QEMU 虚拟机 |
 | `k3-tunnel.sh` | 建立到 K3 真机的 stunnel 隧道 |
 | `build-qemu.sh` | 源码编译 QEMU 8.2（支持 vector） |
@@ -68,6 +71,8 @@ ssh -p 2223 bianbu@localhost   # 连 K3
 - [x] Phase 1: 验证脚本跑通
 - [x] Phase 1: 容器化测试管线
 - [ ] Phase 1: tracking issue（kernelci-project）
-- [ ] Phase 2: 回归对比引擎
-- [ ] Phase 2: KVM 真机测试
+- [x] Phase 2: 回归趋势表脚本（待真机验证）
+- [x] Phase 2: 配置漂移检测脚本
+- [ ] Phase 2: KVM 真机测试（脚本已就绪，待跑）
 - [ ] Phase 2: 编译矩阵（GCC/Clang）
+- [ ] Phase 2: 自托管 runner CI（workflow 已就绪，待部署）

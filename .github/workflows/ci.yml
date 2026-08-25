@@ -1,0 +1,28 @@
+name: kernelci-riscv
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  # 自托管 runner（K3 真机）上跑完整测试
+  board-test:
+    runs-on: [ self-hosted, riscv64 ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 配置漂移检查
+        run: bash config-drift-check.sh
+
+      - name: 跑 riscv selftests
+        run: sudo bash run-tests.sh
+
+      - name: 跑 KVM selftests
+        run: sudo bash run-kvm-tests.sh
+
+      - name: 上传趋势表
+        uses: actions/upload-artifact@v4
+        with:
+          name: results
+          path: ~/kci/results/
