@@ -4,18 +4,23 @@
 set -uo pipefail
 
 WORKDIR="${WORKDIR:-$HOME/kci}"
-CONFIG_FILE="${1:-$WORKDIR/linux/.config}"
+# 优先检查「正在运行的内核」的配置（selftests 就是在它上面跑的）
+CONFIG_FILE="${1:-}"
+if [ -z "$CONFIG_FILE" ]; then
+  if [ -f "/boot/config-$(uname -r)" ]; then
+    CONFIG_FILE="/boot/config-$(uname -r)"
+  elif [ -f "$WORKDIR/linux/.config" ]; then
+    CONFIG_FILE="$WORKDIR/linux/.config"
+  fi
+fi
 
-# 必需项：这些选项必须开启(=y)，否则 selftests / 启动会出问题
+# 必需项：这些选项必须开启(=y)
 REQUIRED=(
   CONFIG_RISCV_ISA_V        # Vector 扩展
-  CONFIG_VIRTIO_BLK         # virtio 块设备
-  CONFIG_VIRTIO_NET         # virtio 网卡
   CONFIG_EXT4_FS            # ext4 根文件系统
-  CONFIG_PCI_HOST_GENERIC   # QEMU virt PCI 主机桥
   CONFIG_DEVTMPFS           # /dev 自动填充
   CONFIG_DEVTMPFS_MOUNT     # 自动挂载 devtmpfs
-  CONFIG_BLK_DEV_INITRD     # initrd 支持
+  CONFIG_KVM                # KVM（真机 Hypervisor；无 H 平台会缺，属预期差异）
 )
 
 if [ ! -f "$CONFIG_FILE" ]; then
