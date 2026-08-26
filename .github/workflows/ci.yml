@@ -6,22 +6,22 @@ on:
   workflow_dispatch:
 
 jobs:
-  # 自托管 runner（K3 真机）上跑完整测试
+  # full test suite on self-hosted runner (K3 real hardware)
   board-test:
     runs-on: [ self-hosted, riscv64 ]
     steps:
       - uses: actions/checkout@v4
 
-      - name: 配置漂移检查
+      - name: Config drift check
         run: bash config-drift-check.sh
 
-      - name: 跑 riscv selftests
+      - name: Run riscv selftests
         run: sudo bash run-tests.sh
 
-      - name: 跑 KVM selftests
+      - name: Run KVM selftests
         run: sudo bash run-kvm-tests.sh
 
-      - name: 上传趋势表
+      - name: Upload trend table
         uses: actions/upload-artifact@v4
         with:
           name: results
