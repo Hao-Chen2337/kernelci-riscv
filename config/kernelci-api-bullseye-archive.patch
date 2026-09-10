@@ -11,3 +11,11 @@ index 19aadef..0a5773b 100644
  
  # Create privilege separation directory
  RUN mkdir -p /run/sshd
+@@ -24,4 +24,5 @@ EXPOSE 22
+ COPY sshd_config /etc/ssh/
+ 
+ # Run SSH server in detached mode
+-CMD ["/usr/sbin/sshd","-D"]
++# umask 022 so files uploaded via sftp are world-readable by the nginx storage container
++CMD ["sh","-c","umask 022 && exec /usr/sbin/sshd -D"]
+

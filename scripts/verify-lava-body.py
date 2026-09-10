@@ -3,12 +3,12 @@
 (kernelci.runtime.lava.Callback) and every method lava_callback.py calls."""
 import argparse
 import importlib.util
-import os
 import json
+import os
 import sys
 
 sys.path.insert(0, "/home/hao/kernelci-riscv/kernelci-core")
-from kernelci.runtime.lava import Callback  # noqa: E402
+from kernelci.runtime.lava import Callback
 
 spec = importlib.util.spec_from_file_location(
     "riscv_pull_worker",
@@ -31,7 +31,8 @@ def run_case(tag, log_path, returncode, expect_status):
     with open(log_path, encoding="utf-8") as f:
         output = f.read()
     body = worker.lava_body("qemu-riscv64", returncode, output, fake_args())
-    json.dump(body, open(f"/tmp/lava-body-{tag}.json", "w"), indent=1)
+    with open(f"/tmp/lava-body-{tag}.json", "w") as f:
+        json.dump(body, f, indent=1)
 
     cb = Callback(body)
     status = cb.get_job_status()
@@ -71,12 +72,13 @@ def run_kselftest_tap_cases():
         "not ok 3 selftests: riscv: mm\n"
     )
     print("\n===== kselftest TAP: rc=0 + not ok -> job fail =====")
-    summary, tests_out, per_test = worker.tap_summary(output, "kselftest-riscv")
+    summary, _tests_out, per_test = worker.tap_summary(output, "kselftest-riscv")
     print("tap summary:", summary, "per_test:", per_test)
     assert summary["failed"] == 1, summary
     body = worker.lava_body("qemu-riscv64", 0, output, fake_args(),
                             tap=("kselftest-riscv", summary, per_test))
-    json.dump(body, open("/tmp/lava-body-kselftest-fail.json", "w"), indent=1)
+    with open("/tmp/lava-body-kselftest-fail.json", "w") as f:
+        json.dump(body, f, indent=1)
 
     cb = Callback(body)
     assert cb.get_job_status() == "pass", \
@@ -101,7 +103,7 @@ def run_kselftest_tap_cases():
         "ok 1 selftests: riscv: vector\n"
         "ok 2 selftests: riscv: hwprobe\n"
     )
-    summary, tests_out, per_test = worker.tap_summary(output_pass, "kselftest-riscv")
+    summary, _tests_out, per_test = worker.tap_summary(output_pass, "kselftest-riscv")
     assert summary["failed"] == 0, summary
     body = worker.lava_body("qemu-riscv64", 0, output_pass, fake_args(),
                             tap=("kselftest-riscv", summary, per_test))

@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import gzip
+import importlib.util
 import json
 import os
 import re
@@ -23,16 +24,22 @@ import shutil
 import socket
 import subprocess
 import sys
-import threading
 import time
 import urllib.request
 
 API = "https://api.kernelci.org"
 JOB = "kbuild-gcc-14-riscv"
 TESTS = {"boot": [], "kselftest-riscv": ["kselftest-riscv"], "kselftest-kvm": ["kselftest-kvm"]}
-KVM_SUBSET = ("kvm:set_memory_region_test kvm:kvm_create_max_vcpus "
-              "kvm:kvm_binary_stats_test kvm:kvm_page_table_test kvm:ebreak_test "
-              "kvm:guest_print_test kvm:steal_time kvm:sbi_pmu_test kvm:irqfd_test")
+
+# KVM whitelist, single source: imported from the worker so the two can
+# never drift apart.
+_worker_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "riscv_pull_worker.py")
+_worker_spec = importlib.util.spec_from_file_location("riscv_pull_worker", _worker_path)
+_worker = importlib.util.module_from_spec(_worker_spec)
+_worker_spec.loader.exec_module(_worker)
+KVM_SUBSET = " ".join(f"kvm:{name}" for name in _worker.KVM_TEST_SUBSET)
+
 TUXRUN = os.environ.get("TUXRUN_BIN", shutil.which("tuxrun")
                         or os.path.expanduser("~/.local/bin/tuxrun"))
 DEFAULT_ROOTFS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -63,9 +70,21 @@ def pick_newest(job, api):
 
 
 def download(url, dest):
+    """Download *url* to *dest*, verifying size against Content-Length
+    (a truncated 144MB rootfs must fail loudly, not boot half an image)."""
     print(f"  downloading {os.path.basename(dest)} ({url})")
     with urllib.request.urlopen(url, timeout=300) as resp, open(dest, "wb") as f:
         shutil.copyfileobj(resp, f)
+        size = f.tell()
+    length = resp.headers.get("Content-Length")
+    if length:
+        try:
+            length = int(length)
+        except ValueError:
+            length = None
+        if length is not None and size != length:
+            os.unlink(dest)
+            raise OSError(f"Truncated download {url}: {size}/{length} bytes")
 
 
 def strip_ansi(text):
@@ -160,7 +179,8 @@ def main():
     cmd += ["--parameters", *params]
     print("running:", " ".join(cmd))
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
+                              check=False)
         output = proc.stdout + proc.stderr
     finally:
         server.terminate()

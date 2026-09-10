@@ -3,63 +3,35 @@
 #
 """RISC-V QEMU pull-lab worker for KernelCI (tuxrun engine).
 
-Lab-side executor for ``pull_labs`` jobs on the ``qemu-riscv64`` platform.
-Polls the events API for ``available`` job nodes carrying a
-``job_definition`` artifact, then executes each job with ``tuxrun`` and
-posts the result back.
+Polls the events API for ``available`` pull_labs job nodes on qemu-riscv64,
+executes each with tuxrun inside the linaro/tuxrun-dispatcher container, and
+posts the result back as a **LAVA-compatible callback body** - the only format
+the pipeline's callback endpoint (lava_callback.py + kernelci.runtime.lava.Callback)
+ingests; there is no server-side parser for the PULL_LABS protocol body, so any
+other format would silently lose the result.
 
-Results are ALWAYS reported as a **LAVA-compatible callback body**: that is
-the only format the pipeline's callback endpoint (lava_callback.py +
-kernelci.runtime.lava.Callback) ingests, and the path real pull labs (demo,
-aws-ec2) use in production.  There is no server-side parser for the
-PULL_LABS protocol body, so that format is not offered at all - sending it
-would silently lose the result.
+Judging rule: tuxrun exits 0 even when selftests fail, so results come from
+parsing the TAP lines (tap_summary); infra failures (bad flags, unreachable
+artifacts, timeouts) are reported as incomplete + Infrastructure, never as a
+test result.  Protocol robustness: state cursor, seen-node dedup, flock,
+callback retries, and unposted results persisted across runs (re-posted,
+never re-run).
 
-tuxrun owns everything about "talking to the guest" (QEMU boot, serial
-console, login, test delivery and result collection) inside the
-``linaro/tuxrun-dispatcher`` container - this file only maps a job
-definition onto a tuxrun command line, judges the TAP output, and keeps the
-pull protocol robust (state cursor, seen-node dedup, flock, retries,
-callbacks).
+Job mapping (rendered by config/runtime/*-pull-labs.jinja2):
+  boot             -> ``tuxrun --device qemu-riscv64 --kernel <url>`` (a cpio
+                      ramdisk in the job def is not bootable by the qemu
+                      device; override with --rootfs).
+  kselftest-<coll> -> ``--tests kselftest-<coll>`` + a rootfs disk (nfsroot
+                      tar.xz baked to ext4) + ``--parameters KSELFTEST=<url>``.
 
-Downloads are size-capped and the embedded log is length-capped.
+Known gaps: kselftest-riscv needs the tuxlava class from
+config/tuxlava-kselftest-riscv.patch (without it tuxrun exits 2 -> infra);
+kselftest-kvm runs the curated KVM_TEST_SUBSET with kvm.ko loaded at boot
+(modules.tar.xz baked into the ext4 image + modules-load.d conf);
+--api-config-name / --storage-config-name must match the deployment or the
+callback cannot find the node.
 
-Auth contract: the job definition's callback.token_name is the "remote
-token" name the pipeline admins registered; the worker sends its value as
-the whole Authorization header ("Token <secret>") read from the
-PULL_LABS_CALLBACK_TOKEN environment variable - exactly what
-lava_callback.py compares against the [runtime] settings.
-
-Job mapping (test types rendered by config/runtime/*-pull-labs.jinja2):
-  boot              -> ``tuxrun --device qemu-riscv64 --kernel <url>`` with
-                       the default ext4 buildroot rootfs (the job def only
-                       carries a cpio ramdisk, which the qemu device cannot
-                       boot; override with --rootfs for a specific disk).
-  kselftest-<coll>  -> ``--tests kselftest-<coll>`` plus a ``rootfs`` disk
-                       (nfsroot tar.xz is baked to ext4 here) and the
-                       kselftest tarball delivered as a LAVA overlay via
-                       ``--parameters KSELFTEST=<url>``.
-
-Known gaps (verified against tuxrun 1.10.0 / tuxlava 0.24.0):
-  * ``kselftest-riscv`` needs the companion tuxlava class in config/
-    dir (tuxlava-kselftest-riscv.patch); without it tuxrun exits 2 and
-    the job is reported as an infra error instead of running.
-  * ``kselftest-kvm`` runs the curated KVM_TEST_SUBSET (9 tests) via the
-    LKFT ``TST_CASENAME`` allow-list, forwarded by the patched template;
-    perf/stress tests are excluded because they are meaningless under
-    TCG.  kvm.ko is loaded at boot via /etc/modules-load.d/kernelci.conf
-    baked into tar.xz rootfs (verified locally on both a kvm-enabled
-    buildroot image and the production trixie-kselftest riscv64 rootfs:
-    7 pass / 2 skip, exit 0; see work/env/).  With
-    tuxrun's default ext4 rootfs, supply a pre-built kvm-enabled image
-    instead.
-  * ``--api-config-name`` / ``--storage-config-name`` must match the
-    pipeline deployment's api/storage config names, otherwise the
-    callback endpoint cannot find the node or upload artifacts.
-
-Lab requirements: ``pip install tuxrun`` + podman/docker able to pull
-``linaro/tuxrun-dispatcher`` (QEMU runs inside it); cpu features like
-Vector/H go through ``--parameters cpu=...``.
+Full parameter and behavior reference: docs/tools-guide.md section 4.
 """
 
 import argparse
@@ -90,7 +62,7 @@ def strip_ansi(text):
     return ANSI_RE.sub("", text)
 
 
-BASE_URI = "https://staging.kernelci.org:9000/latest"
+BASE_URI = "https://api.kernelci.org"
 EVENTS_PATH = "/events"
 REQUEST_TIMEOUT = 60
 DISK_SIZE = "4G"  # ext4 image size; unrelated to QEMU memory
@@ -105,18 +77,17 @@ SEEN_LIMIT = 20000  # seen-node ids kept in the state file; sized far
 TAR_SUFFIXES = (".tar", ".tar.gz", ".tar.xz", ".tgz")
 TEST_TYPE_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 
-# Curated kvm selftest subset (riscv64).  perf/stress tests (memslot_perf,
-# mmu_stress, dirty_log_perf, ...) are minute-scale workloads that are
-# meaningless under TCG; get-reg-list is a version-drift tracker, not a
-# riscv regression; kvm_page_table_test has an internal 120s timeout that
-# occasionally trips under TCG load.  Passed to the LKFT script as a
-# TST_CASENAME allow-list ("kvm:name kvm:name ...").  Override with
-# --kvm-tests.
+# Curated kvm selftest subset (riscv64): functional coverage only. perf/stress
+# tests measure TCG speed, not kernel regressions (see README section 2).
+# kvm_page_table_test is excluded: under TCG-emulated H extension it runs
+# nested-VM page-table stress for tens of minutes and hangs the whole job
+# (verified in the real loop) - it stays available via --kvm-full/--kvm-tests.
+# Passed to the LKFT script as a TST_CASENAME allow-list ("kvm:name ...").
+# Override with --kvm-tests / --kvm-full.
 KVM_TEST_SUBSET = [
     "set_memory_region_test",
     "kvm_create_max_vcpus",
     "kvm_binary_stats_test",
-    "kvm_page_table_test",
     "ebreak_test",
     "guest_print_test",
     "steal_time",
@@ -133,39 +104,79 @@ def runtime_name(args):
 
 
 def download(url, dest, max_size=MAX_DOWNLOAD_SIZE):
-    """Stream *url* to *dest*, verifying size."""
+    """Stream *url* to *dest*, verifying size.  Retries a few times: production
+    storage intermittently stalls/truncates (documented); a partial file is
+    removed on failure so the next attempt starts clean."""
     print(f"Downloading {url}")
-    with requests.get(
-        url, stream=True, timeout=REQUEST_TIMEOUT, allow_redirects=False
-    ) as response:
-        if response.is_redirect or response.is_permanent_redirect:
-            raise requests.exceptions.RequestException(
-                f"refusing redirect for {url}"
-            )
-        response.raise_for_status()
-        length = response.headers.get("Content-Length")
+    last_error = None
+    parent = os.path.dirname(dest)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    for attempt in range(3):
         try:
-            length = int(length) if length else None
-        except ValueError:
-            length = None
-        if length is not None and length > max_size:
-            raise OSError(f"Download too large {url}: {length} > {max_size}")
-        size = 0
-        try:
-            with open(dest, "wb") as f:
-                for chunk in response.iter_content(chunk_size=1 << 20):
-                    f.write(chunk)
-                    size += len(chunk)
-                    if size > max_size:
-                        raise OSError(f"Download too large {url}: > {max_size}")
-        except Exception:
-            if os.path.exists(dest):
+            with requests.get(
+                url, stream=True, timeout=300, allow_redirects=False
+            ) as response:
+                if response.is_redirect or response.is_permanent_redirect:
+                    raise requests.exceptions.RequestException(
+                        f"refusing redirect for {url}"
+                    )
+                response.raise_for_status()
+                length = response.headers.get("Content-Length")
+                try:
+                    length = int(length) if length else None
+                except ValueError:
+                    length = None
+                if length is not None and length > max_size:
+                    raise OSError(f"Download too large {url}: {length} > {max_size}")
+                size = 0
+                try:
+                    with open(dest, "wb") as f:
+                        for chunk in response.iter_content(chunk_size=1 << 20):
+                            f.write(chunk)
+                            size += len(chunk)
+                            if size > max_size:
+                                raise OSError(f"Download too large {url}: > {max_size}")
+                except Exception:
+                    if os.path.exists(dest):
+                        os.unlink(dest)
+                    raise
+            if length is not None and size != length:
                 os.unlink(dest)
-            raise
-    if length is not None and size != length:
-        os.unlink(dest)
-        raise OSError(f"Truncated download {url}: {size}/{length} bytes")
-    print(f"           -> {dest} ({size} bytes)")
+                raise OSError(f"Truncated download {url}: {size}/{length} bytes")
+            print(f"           -> {dest} ({size} bytes)")
+            return
+        except (requests.exceptions.RequestException, OSError) as error:
+            last_error = error
+            if attempt < 2:
+                print(f"  download attempt {attempt + 1}/3 failed: {error}; retrying")
+                time.sleep(2 * (attempt + 1))
+    raise last_error
+
+
+def _safe_member(member):
+    """Reject archive members that could escape the extraction directory:
+    absolute member paths and ``..`` components.  Symlinks with absolute
+    targets are ALLOWED - rootfs tarballs legitimately ship them
+    (./init -> /usr/lib/systemd/systemd, ./dev/stdout -> /proc/self/fd/1);
+    extraction only stores the link text, the link is meaningful inside the
+    guest image, and nothing on the host follows it.  Hardlink targets stay
+    strict: tarfile resolves them with os.link() on the host at extraction
+    time, so an absolute target would genuinely escape."""
+    name = member.name.replace("\\", "/")
+    if name in ("", ".") or name.startswith("/"):
+        return False
+    if any(part == ".." for part in name.split("/")):
+        return False
+    target = getattr(member, "linkname", "") or ""
+    # Hardlinks only: extraction resolves them on the host with os.link(),
+    # so their targets stay strict.  Symlinks are just stored text.
+    if member.issym() or not target:
+        return True
+    return not (
+        target.startswith("/")
+        or any(part == ".." for part in target.replace("\\", "/").split("/"))
+    )
 
 
 def _extract(archive, dest_dir):
@@ -174,11 +185,12 @@ def _extract(archive, dest_dir):
     Device/FIFO members are skipped: rootfs tarballs ship /dev nodes and
     mknod fails for an unprivileged lab user (trixie-full.rootfs.tar.xz
     reproduces this), while mkfs.ext4 -d populates them from the tree
-    anyway."""
+    anyway.  Members that could escape *dest_dir* (path traversal) are
+    skipped too."""
     os.makedirs(dest_dir, exist_ok=True)
     with tarfile.open(archive) as tf:
         for member in tf.getmembers():
-            if member.isdev() or member.isfifo():
+            if not _safe_member(member) or member.isdev() or member.isfifo():
                 continue
             tf.extract(member, dest_dir)
     entries = os.listdir(dest_dir)
@@ -188,25 +200,43 @@ def _extract(archive, dest_dir):
 
 
 def bake_rootfs_image(
-    workspace, rootfs_url, boot_modules=None, max_size=MAX_DOWNLOAD_SIZE
+    workspace, rootfs_url, boot_modules=None, modules_url=None,
+    max_size=MAX_DOWNLOAD_SIZE
 ):
     """Turn the nfsroot tar.xz artifact into an ext4 image tuxrun can boot
-    (mkfs.ext4 -d: no loop mount, no root).  kselftest/modules are injected
-    by tuxrun as LAVA overlays instead of being baked in.
+    (mkfs.ext4 -d: no loop mount, no root).
 
-    When boot_modules is given, a /etc/modules-load.d/kernelci.conf is
-    dropped into the extracted tree before mkfs.ext4, so the guest loads
-    those modules at boot (systemd-modules-load or busybox S11modules)
-    before the tests run - kselftest-kvm needs kvm.ko loaded and /dev/kvm
-    present, which udev/devtmpfs rules then create.
+    boot_modules: a /etc/modules-load.d/kernelci.conf is dropped into the
+    tree before mkfs.ext4, so the guest modprobes those modules at boot.
+    modules_url (kselftest-kvm): the modules.tar.xz is ALSO unpacked under
+    /lib/modules before mkfs.ext4 - the --modules LAVA overlay is delivered
+    only after boot and never lands in /lib/modules, so without baking them
+    in, modprobe kvm at boot finds nothing and every kvm test skips with
+    "Cannot open '/dev/kvm'".  kselftest/modules are otherwise injected by
+    tuxrun as LAVA overlays instead of being baked in.
     """
     tar_path = os.path.join(workspace, "rootfs.tar")
     download(rootfs_url, tar_path, max_size=max_size)
     root_dir = _extract(tar_path, os.path.join(workspace, "rootfs"))
+    if modules_url:
+        mod_tar = os.path.join(workspace, "modules.tar")
+        download(modules_url, mod_tar, max_size=max_size)
+        # modules.tar.xz ships lib/modules/<version>/, so extracting at the
+        # tree root puts them exactly where modprobe/uname -r looks.
+        _extract(mod_tar, root_dir)
     if boot_modules:
         conf_dir = os.path.join(root_dir, "etc", "modules-load.d")
+        # Refuse to write through a symlink (tar-slip via symlink): the
+        # realpath must stay exactly where the lexical path is, inside the
+        # extracted tree - absolute-target symlinks in the tarball are fine
+        # as image content, but our own writes must never follow them.
         os.makedirs(conf_dir, exist_ok=True)
-        with open(os.path.join(conf_dir, "kernelci.conf"), "w") as conf:
+        if os.path.realpath(conf_dir) != os.path.abspath(conf_dir):
+            raise OSError(f"refusing to write through symlink: {conf_dir}")
+        conf_file = os.path.join(conf_dir, "kernelci.conf")
+        if os.path.islink(conf_file):
+            os.unlink(conf_file)
+        with open(conf_file, "w") as conf:
             conf.write("\n".join(boot_modules) + "\n")
     image = os.path.join(workspace, "rootfs.ext4")
     print(f"Building ext4 image (mkfs.ext4 -d) -> {image}")
@@ -257,7 +287,10 @@ def build_command(job, args, workspace):
     ]
     parameters = [f"cpu={cpu_for(args, test_type)}"]
 
-    rootfs_url = artifacts.get("rootfs") or args.rootfs
+    # An explicit --rootfs overrides whatever the job definition carries:
+    # the lab owns its guest images (e.g. point at a local mirror when
+    # storage.kernelci.org is throttled).
+    rootfs_url = args.rootfs or artifacts.get("rootfs")
     if not rootfs_url and artifacts.get("ramdisk"):
         print(
             "Warning: job definition carries a cpio ramdisk; the qemu "
@@ -265,14 +298,21 @@ def build_command(job, args, workspace):
             "(pass --rootfs to override)"
         )
     boot_modules = ["kvm"] if test_type == "kselftest-kvm" else None
+    modules_url = (
+        artifacts.get("modules") if test_type == "kselftest-kvm" else None
+    )
     if rootfs_url and rootfs_url.endswith(TAR_SUFFIXES):
         image = bake_rootfs_image(
             workspace,
             rootfs_url,
             boot_modules=boot_modules,
+            modules_url=modules_url,
             max_size=args.max_download_size,
         )
         cmd += ["--rootfs", f"file://{image}"]
+        # Modules are already inside the baked image; the --modules LAVA
+        # overlay lands after boot and cannot load kvm.ko at boot time.
+        modules_url = None
     elif rootfs_url:
         cmd += ["--rootfs", rootfs_url]
     elif test_type != "boot":
@@ -280,9 +320,10 @@ def build_command(job, args, workspace):
 
     # modules.tar.xz is only needed by kselftest-kvm (kvm.ko loaded at
     # boot).  For boot/kselftest-riscv it is a needless 100MB+ download
-    # that adds a flaky network dependency per job - skip it.
-    if test_type == "kselftest-kvm" and artifacts.get("modules"):
-        cmd += ["--modules", artifacts["modules"]]
+    # that adds a flaky network dependency per job - skip it.  With a
+    # pre-built (non-baked) ext4 rootfs the image must provide kvm itself.
+    if modules_url:
+        cmd += ["--modules", modules_url]
 
     label = test_type
     if test_type != "boot":
@@ -294,11 +335,12 @@ def build_command(job, args, workspace):
         if test_type == "kselftest-kvm":
             # Curated subset instead of the whole collection: the LKFT
             # script hands TST_CASENAME to `run_kselftest.sh -t`, which
-            # matches each kvm:name entry exactly (allow-list).  kvm.ko
-            # itself is loaded at boot via the modules-load.d conf baked
-            # into the rootfs (see bake_rootfs_image); the LKFT "modules"
-            # test is a load/unload round-trip and must NOT be used here
-            # (verified: it unloads kvm again before kselftest runs).
+            # matches each kvm:name entry exactly (allow-list).  kvm.ko is
+            # loaded at boot: modules.tar.xz is baked into /lib/modules and
+            # a modules-load.d conf modprobes it (see bake_rootfs_image).
+            # The LKFT "modules" test is a load/unload round-trip and must
+            # NOT be used here (verified: it unloads kvm again before
+            # kselftest runs).
             if args.kvm_full:
                 # whole collection: no allow-list; LKFT runs every kvm test.
                 pass
@@ -326,6 +368,7 @@ def run_command(cmd, timeout_s, workspace):
             text=True,
             timeout=timeout_s + 180,  # a little grace past the job timeout
             cwd=workspace,
+            check=False,
         )
     except subprocess.TimeoutExpired as error:
         output = f"{error.stdout or ''}\n{error.stderr or ''}"
@@ -346,15 +389,13 @@ def tap_summary(output, label):
     console line may carry an ANSI colour code and a log timestamp."""
     output = strip_ansi(output)
     collection = (
-        label[len("kselftest-") :] if label.startswith("kselftest-") else label
+        label.removeprefix("kselftest-")
     )
     marker = "selftests: " + collection + ":"
-    # Tolerate leading whitespace and any split between "not"/"ok" (spaces,
-    # tabs, CR, or stripped control chars gluing them into "notok"); match
-    # case-insensitively so "NOT OK" still counts as a failure.  The ok
-    # pattern's lookbehind keeps glued "notok" out of ok_m; spaced-out
-    # "not ok" lines may still match ok_m but the not_ok loop overwrites
-    # them afterwards, so the final per_test result is always fail.
+    # Tolerate whitespace splits and glued variants ("notok", "NOT OK",
+    # "not\x1b[31mok", "not  ok"): the ok pattern's lookbehind keeps glued
+    # "notok" out of ok_m; the not_ok loop overwrites any split "not ok"
+    # line afterwards, so the per-test result is always fail.
     line = r"(?m)^[ \t]*(?:\S+ )?"
     ok_m = re.findall(
         line + rf"(?<!not)ok \d+ {re.escape(marker)}\s+(\S+)(.*)",
@@ -402,41 +443,31 @@ LAVA_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 def lava_body(
     system, returncode, output, args, tap=None, infra=False, error_msg=""
 ):
-    """Build a LAVA-compatible callback body (what production's
-    lava_callback.py + kernelci.runtime.lava.Callback actually ingests).
+    """Build a LAVA-compatible callback body: the only format the pipeline's
+    callback endpoint (kernelci.runtime.lava.Callback) ingests.
 
-    The pipeline's callback endpoint parses every body with the LAVA
-    Callback class; the pull_labs protocol body is not wired there, so a
-    lab that wants its results to land in nodes must speak LAVA format.
     Required pieces, mirroring a real LAVA server callback:
       - status: LAVA numeric job status (2=Complete, 3=Incomplete)
-      - definition: YAML string whose metadata carries api_config_name
-        and storage_config_name (what get_meta() reads)
-      - results.lava: YAML list of case/stage dicts; login-action and
-        kernel-messages cases are replayed from tuxrun's own LAVA log
-        lines so boot results get the usual 'setup' hierarchy
-      - results.<suite>: for a kselftest job, one entry per TAP test
-        (from tap_summary), keyed 0_kselftest.<collection> with a
-        matching stage in results.lava; the parser then builds a suite
-        node whose children are the individual tests and flips the job
-        result to 'fail' when any of them failed - even though tuxrun
-        exits 0 when a selftest fails
-      - log: LAVA output.yaml format (list of {dt, lvl, msg}); without
-        it the endpoint forces the result to 'incomplete'
+      - definition: YAML whose metadata carries api_config_name /
+        storage_config_name (what get_meta() reads)
+      - results.lava: case/stage list; login-action and kernel-messages are
+        replayed from tuxrun's own LAVA lines so boot results get the usual
+        'setup' hierarchy
+      - results.<suite>: per-test entries keyed 0_kselftest.<collection>;
+        the parser builds a suite node whose children are the tests and
+        flips the job to 'fail' when any failed (tuxrun exits 0 even then)
+      - log: LAVA output.yaml format (list of {dt, lvl, msg}); without it
+        the endpoint forces 'incomplete'
 
-    tap is (label, summary, per_test) as returned by tap_summary().
-    infra marks an infrastructure error; it is reported through the
-    'job' stage metadata, which is what Callback.is_infra_error() and
-    the callback endpoint's error handling read.
+    tap is (label, summary, per_test) from tap_summary().  infra marks an
+    infrastructure error via the 'job' stage metadata (what
+    Callback.is_infra_error() reads).
     """
     status = 2 if returncode == 0 else 3
     if tap:
-        # A kselftest job whose TAP is available DID complete: tuxrun
-        # exits 0/1/2 depending on the LKFT result plumbing (1 = some
-        # tests failed, 2 = no LAVA cases emitted, e.g. missing
-        # python3-tap in the rootfs).  The per-test hierarchy below is
-        # what must drive the final pass/fail, so the job stays Complete
-        # (status 2) unless this is an infrastructure error.
+        # TAP available = the job DID complete (tuxrun exits 0/1/2 by LKFT
+        # result plumbing); the per-test hierarchy drives the final result,
+        # so the job stays Complete unless this is an infra error.
         status = 2 if not infra else 3
     cases = [{"name": "job", "metadata": {}}]
     boot_cases = []
@@ -526,9 +557,16 @@ def lava_body(
     }
 
 
+def _latest_base(api_url):
+    """KernelCI serves its API under the /latest prefix; the local dev API
+    accepts both forms, production only the /latest one, so always target
+    the canonical /latest base regardless of what the user passed."""
+    return api_url if api_url.endswith("/latest") else f"{api_url}/latest"
+
+
 def pollevents(api_url, timestamp):
     url = (
-        f"{api_url}{EVENTS_PATH}?state=available&kind=job&limit=1000"
+        f"{_latest_base(api_url)}{EVENTS_PATH}?state=available&kind=job&limit=1000"
         f"&recursive=true&from={timestamp}"
     )
     print(url)
@@ -690,7 +728,7 @@ def run_job(job, args):
             # keeps the per-test results it produced.
             summary, _tests_out, per_test = tap_summary(output, label)
             tap = (label, summary, per_test)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - any failure becomes an infra-error report
         print(f"Job failed in preparation/execution: {error}")
         infra = True
         error_msg = str(error)
@@ -729,7 +767,7 @@ def handle_event(event, args, reports):
     # yesterday's queue.
     try:
         current = requests.get(
-            f"{args.api_url}/latest/node/{node_id}", timeout=30
+            f"{_latest_base(args.api_url)}/node/{node_id}", timeout=30
         ).json()
     except requests.exceptions.RequestException as error:
         print(f"{node_id}: node state check failed: {error}")
@@ -786,7 +824,7 @@ def handle_event(event, args, reports):
             return True
         print(f"{node_id}: transient job definition fetch error: {error}")
         return False
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - run_job converts its own failures; give up on the rest
         import traceback
 
         print(f"Unexpected failure processing {node_id}: {error}")
@@ -825,13 +863,14 @@ def save_state(state_file, state):
 
 def load_state(state_file):
     if not state_file or not os.path.exists(state_file):
-        return {"timestamp": None, "seen": []}
+        return {"timestamp": None, "seen": [], "pending": {}}
     try:
         with open(state_file) as f:
             state = json.load(f)
         if (
             not isinstance(state, dict)
             or not isinstance(state.get("seen"), list)
+            or not isinstance(state.get("pending", {}), dict)
             or (
                 state.get("timestamp") is not None
                 and not isinstance(state.get("timestamp"), str)
@@ -841,7 +880,7 @@ def load_state(state_file):
         return state
     except (ValueError, OSError):
         print(f"Warning: state file {state_file} unreadable; starting fresh")
-        return {"timestamp": None, "seen": []}
+        return {"timestamp": None, "seen": [], "pending": {}}
 
 
 def iso_ago(timestamp, seconds):
@@ -858,7 +897,7 @@ def poll_loop(args):
     lock_file = f"{state_file}.lock"
     lock = None
     try:
-        lock = open(lock_file, "w")
+        lock = open(lock_file, "w")  # noqa: SIM115 - must stay open for the whole poll loop (flock lifetime)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         print("Another worker instance holds the lock; exiting.")
@@ -870,7 +909,17 @@ def poll_loop(args):
     timestamp = (
         args.since or state.get("timestamp") or "1970-01-01T00:00:00.000000"
     )
+    # Unposted results left over from a previous run (e.g. --once exiting on
+    # a transient callback failure): re-post them without re-running tuxrun.
+    # The token is re-read from the environment and never persisted.
     reports = {}
+    for node_id, pending in (state.get("pending") or {}).items():
+        if isinstance(pending, dict) and pending.get("callback") and pending.get("body"):
+            reports[node_id] = (
+                pending["callback"],
+                os.environ.get("PULL_LABS_CALLBACK_TOKEN"),
+                pending["body"],
+            )
     retry_count = 0
     while True:
         # The events API is not sorted and can deliver events out of order,
@@ -937,7 +986,13 @@ def poll_loop(args):
             # Never busy-loop on a failing batch: the API needs a breather
             # and the failure is usually environmental (404 jobdef, network).
             time.sleep(args.poll_period)
-        save_state(state_file, {"timestamp": timestamp, "seen": seen_order})
+        state["pending"] = {
+            node_id: {"callback": report[0], "body": report[2]}
+            for node_id, report in reports.items()
+        }
+        state["timestamp"] = timestamp
+        state["seen"] = seen_order
+        save_state(state_file, state)
         if args.once:
             print("--once: batch processed, exiting", flush=True)
             break
@@ -975,7 +1030,9 @@ def main():
     parser.add_argument(
         "--state-file",
         default="riscv-pull-worker-state.json",
-        help="Persist cursor + processed node ids here.",
+        help="Persist cursor + processed node ids + unposted result "
+        "bodies here (unposted results are re-posted on the next run "
+        "without re-running tuxrun).",
     )
     parser.add_argument(
         "--since", help="Poll events starting from this timestamp."
@@ -1012,9 +1069,9 @@ def main():
     parser.add_argument(
         "--rootfs",
         default="",
-        help="Rootfs disk URL for boot jobs whose job "
-        "definition only carries a ramdisk (default: "
-        "tuxrun's built-in buildroot disk).",
+        help="Rootfs disk URL overriding the job definition's rootfs "
+        "(default: use the job definition's rootfs; tuxrun's built-in "
+        "buildroot disk for boot jobs without one).",
     )
     parser.add_argument(
         "--max-timeout",
@@ -1040,7 +1097,7 @@ def main():
         action="store_true",
         help="Run the whole kvm collection (no TST_CASENAME allow-list). "
         "perf/stress time out under TCG; timeouts are reported as "
-        "incomplete, never fail. Default: curated 9-test subset.",
+        "incomplete, never fail. Default: curated 8-test subset.",
     )
     parser.add_argument(
         "--kvm-tests",

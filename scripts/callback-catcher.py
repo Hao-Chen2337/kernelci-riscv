@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Minimal callback catcher: logs every POST (headers + body) it receives."""
-import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 LOG = "/home/hao/kernelci-riscv/work/logs/callback-received.json"
