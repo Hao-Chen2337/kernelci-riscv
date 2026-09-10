@@ -32,10 +32,19 @@ patch -p1 -d "$(python3 -c 'import site;print(site.getusersitepackages())')" \
 | `./run.sh drift` / `./run.sh trend` | Config drift / regression pass-rates |
 | `./run.sh stop` | Stop the whole local stack (incl. the docker compose API stack; data stays in volumes) |
 
-## Fresh deployment (one command)
+## Fresh deployment (one go, no manual steps)
 
-`./run.sh setup` runs `scripts/local-instance-init.sh` at the end, so a fresh
-clone gets its runtime config generated automatically — no manual steps:
+```bash
+git clone https://github.com/Hao-Chen2337/kernelci-riscv.git && cd kernelci-riscv
+./run.sh setup          # upstream clones + patches + runtime config (see below)
+./run.sh provision      # fetch + bake the artifacts a run needs
+./run.sh stack --seed   # API/db/redis/storage/ssh + artifact server + callback + scheduler, then seed
+./run.sh worker --once  # execute the queued jobs and report back
+./run.sh report         # results
+```
+
+`setup` generates everything the runtime needs that must not live in git, so
+nothing has to be filled in by hand:
 
 - `kernelci-api/.env` — generated from `kernelci-api/env.sample`
   (`SECRET_KEY`, `MONGO_SERVICE`, `PUBLIC_BASE_URL`, initial admin
@@ -44,20 +53,48 @@ clone gets its runtime config generated automatically — no manual steps:
 - SSH keypair — `kernelci-pipeline/data/ssh/id_rsa_tarball` (private, `0600`)
   and `kernelci-api/docker/ssh/user-data/authorized_keys` (public, `0644`);
   lets the scheduler upload jobdefs to storage via scp.
-- `KCI_API_TOKEN` in `kernelci-pipeline/.env` — tries `POST /latest/user/login`
-  first; in this kernelci-api revision that route is **not registered**
-  (upstream versioned-app regression, returns 405), so the script falls back to
-  minting the token with the API's own JWT strategy inside the `api` container.
-  Either way it is verified against `/latest/whoami` before being written.
+- `KCI_API_TOKEN` in `kernelci-pipeline/.env` — verified against
+  `/latest/whoami` before it is written. Two things in this kernelci-api
+  revision make that non-obvious, and both are handled automatically:
+  `POST /latest/user/login` is **not registered** (the versioned-app refactor
+  drops the auth router), and the app never bootstraps the first admin either
+  (`versioned_app`'s startup list omits `ensure_initial_admin_user`). So the
+  token is minted with the API's own JWT strategy inside the `api` container,
+  creating the admin first when the database is empty.
+- It also works on an **empty database**: `stack --seed` creates the checkout
+  node a kbuild node hangs off when the database has none.
+
+`provision` downloads the kernel (`~/9MB`) and the rootfs (`~144MB`) and bakes
+a 4GB ext4 image from it — a few minutes on first use, instant afterwards.
+Interrupted transfers are resumed, not restarted: this CDN truncates large
+downloads routinely. Kernel and modules come from the same production build,
+recorded in `work/env/build.env`, which `stack --seed` then seeds from, so the
+kernel served to the guest and the modules baked into the rootfs cannot drift
+apart.
 
 Both `.env` files and the keypair live in gitignored directories, so no secret
-is ever committed. The old manual flow (hand-editing `.env`, generating keys by
-hand, pasting a token) is no longer needed. To force-refresh the keys or the
-`.env`:
+is ever committed. To force-refresh the keys or the `.env`:
 
 ```bash
 bash scripts/local-instance-init.sh --force   # then restart the stack
 ```
+
+### A second, isolated deployment on the same machine
+
+The compose project decides which data volumes (and therefore which database)
+a deployment owns, and the ports are all overridable:
+
+```bash
+export KCI_COMPOSE_PROJECT=kcirv-clean KCI_API_PORT=18001 KCI_STORAGE_PORT=18002 \
+       KCI_CB_PORT=18003 KCI_SSH_PORT=18022 KCI_MONGO_PORT=18017 KCI_SERVE_PORT=18999 \
+       KCI_API_URL=http://127.0.0.1:18001
+# then run the same sequence as above
+```
+
+Useful for testing a deployment the way a new user meets it — a fresh clone and
+a genuinely empty database — without touching the first one's history. The two
+cannot run *at the same time*: kernelci-api's compose file hardcodes
+`container_name`, so stop the first stack before starting the second.
 
 ## Notes
 

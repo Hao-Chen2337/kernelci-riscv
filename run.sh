@@ -179,12 +179,17 @@ cmd_worker() {
   # mkfs.ext4 lives in /usr/sbin on Debian/Ubuntu; run-local-stack.sh's worker
   # invocation already added it, this one did not - two entry points, two
   # behaviours for the same job.
+  #
+  # The state file and workspace carry the compose project in their names: two
+  # deployments on one machine do not share node ids, and a shared "already
+  # seen" set would silently make one of them skip its own queue.
+  local project="${KCI_COMPOSE_PROJECT:-kcirv}"
   PYTHONUNBUFFERED=1 PULL_LABS_CALLBACK_TOKEN="$CALLBACK_TOKEN" \
     PATH="/usr/local/sbin:/usr/sbin:$PATH" \
     kci_run python3 "$ROOT/scripts/riscv_pull_worker.py" \
     --api-url "$API_URL" --tuxrun-bin "$TUXRUN_BIN" \
-    --container-runtime docker --output-dir /tmp/official-loop-out \
-    --state-file /tmp/official-loop-state.json --poll-period 5 --max-timeout 1200 \
+    --container-runtime docker --output-dir "/tmp/kci-worker-$project-out" \
+    --state-file "/tmp/kci-worker-$project-state.json" --poll-period 5 --max-timeout 1200 \
     --since "$since" "${extra[@]}"
 }
 

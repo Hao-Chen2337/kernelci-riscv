@@ -316,8 +316,8 @@ if [ "${1:-}" = "--worker" ]; then
   PYTHONUNBUFFERED=1 PATH=/usr/local/sbin:/usr/sbin:$PATH PULL_LABS_CALLBACK_TOKEN=labtoken-callback \
     kci_run python3 "$ROOT/scripts/riscv_pull_worker.py" \
     --api-url "$API_URL" --tuxrun-bin "$TUXRUN_BIN" \
-    --container-runtime docker --output-dir /tmp/official-loop-out \
-    --state-file /tmp/official-loop-state.json --poll-period 5 --max-timeout 1200
+    --container-runtime docker --output-dir "/tmp/kci-worker-$PROJECT-out" \
+    --state-file "/tmp/kci-worker-$PROJECT-state.json" --poll-period 5 --max-timeout 1200
 else
   echo 'next step (manual):'
   echo "  ./run.sh worker --once            # same state file, one batch, then exit"
