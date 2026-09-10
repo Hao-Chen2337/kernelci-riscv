@@ -1,0 +1,48 @@
+# tuxlava changes for the RISC-V pull-lab, intended as an upstream PR to
+# https://github.com/kernelci/tuxrun (package tuxlava, tuxlava/).
+#
+# 1. tuxlava/tests/kselftest.py: register a kselftest-riscv test class so
+#    `tuxrun --tests kselftest-riscv` runs the riscv kselftest collection
+#    (Vector, pointer_masking, ...) the same way kselftest-arm64/kvm run.
+#
+# 2. tuxlava/templates/tests/kselftest.yaml.jinja2: forward TST_CASENAME to
+#    the LKFT kselftest script.  The LKFT script already accepts -T (an
+#    explicit COLLECTION:TEST allow-list, handed to run_kselftest.sh -t) but
+#    the template only forwarded SKIPFILE/SHARD/etc., so a lab could not
+#    curate a subset.  This lets the riscv lab run its 9 meaningful kvm tests
+#    under TCG instead of the whole collection (perf/stress are meaningless
+#    emulated).  Mirrors the existing SKIPLIST forward in
+#    tuxlava/templates/tests/modules.yaml.jinja2.
+#
+# To apply to an installed tuxlava 0.24.0 (as pulled by `pip install tuxrun`):
+#   cd <venv>/lib/python*/site-packages && patch -p1 < /path/to/tuxlava-kselftest-riscv.patch
+#
+# The class name matches the `kselftest-riscv` test type rendered by
+# config/jobs-pull-labs.yaml; the worker needs no other change (QEMU cpu is
+# still owned by the worker via --parameters cpu=rv64,v=true).
+--- a/tuxlava/tests/kselftest.py
++++ b/tuxlava/tests/kselftest.py
+@@ -406,6 +406,11 @@ class KSelftestKvm(KSelfTest):
+ class KSelftestKvm(KSelfTest):
+     name = "kselftest-kvm"
+     timeout = 15
+ 
++
++class KSelftestRiscv(KSelfTest):
++    name = "kselftest-riscv"
++    timeout = 45
++
+ 
+ class KSelftestLandlock(KSelfTest):
+--- a/tuxlava/templates/tests/kselftest.yaml.jinja2
++++ b/tuxlava/templates/tests/kselftest.yaml.jinja2
+@@ -14,6 +14,9 @@
+         TST_CMDFILES: "{{ cmdfile }}"
+         KSELFTEST_PATH: "{{ kselftest_path }}"
+         SKIPFILE: "{{ parameters.get("SKIPFILE", "skipfile-lkft.yaml") }}"
++{% if parameters.get("TST_CASENAME") %}
++        TST_CASENAME: "{{ parameters['TST_CASENAME'] }}"
++{% endif %}
+         ENVIRONMENT: "production"
+         SHARD_NUMBER: {{ parameters.get("SHARD_NUMBER", 1) }}
+         SHARD_INDEX: {{ parameters.get("SHARD_INDEX", 1) }}

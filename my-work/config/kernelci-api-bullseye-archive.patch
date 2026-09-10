@@ -1,0 +1,13 @@
+diff --git a/docker/ssh/Dockerfile b/docker/ssh/Dockerfile
+index 19aadef..0a5773b 100644
+--- a/docker/ssh/Dockerfile
++++ b/docker/ssh/Dockerfile
+@@ -7,7 +7,7 @@ FROM debian:bullseye-slim
+ MAINTAINER "KernelCI TSC" <kernelci-tsc@groups.io>
+ 
+ # Install openssh-server
+-RUN apt update && apt install  openssh-server -y
++RUN sed -i "s|deb.debian.org|archive.debian.org|g" /etc/apt/sources.list && sed -i "/debian-security/d" /etc/apt/sources.list && apt update && apt install openssh-server -y
+ 
+ # Create privilege separation directory
+ RUN mkdir -p /run/sshd

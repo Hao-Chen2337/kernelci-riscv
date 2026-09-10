@@ -2,10 +2,11 @@
 FROM riscv64/ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV WORKDIR=/root/kci
 
 # deps for building kernel selftests
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc make git wget xz-utils ca-certificates \
+    sudo clang gcc make git wget xz-utils ca-certificates \
     bison flex bc libelf-dev libssl-dev python3 rsync \
     && rm -rf /var/lib/apt/lists/*
 

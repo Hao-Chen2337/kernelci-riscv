@@ -1,0 +1,15 @@
+/tools/
+kci/
+kernelci-pipeline/
+kernelci-core/
+kernelci-api/
+kernelci-frontend/
+kernelci-project/
+.venv-kci/
+
+# my-work: keep docs/tools/config/evidence trackable, exclude generated/heavy parts
+my-work/evidence/worker-out/
+my-work/evidence/latest-runs/
+my-work/**/__pycache__/
+my-work/*.log
+riscv-test-profile.patch

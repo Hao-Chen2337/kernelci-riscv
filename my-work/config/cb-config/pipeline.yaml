@@ -1,0 +1,10 @@
+api:
+  docker-host:
+    url: http://127.0.0.1:8001
+
+storage:
+  docker-host:
+    storage_type: ssh
+    host: 127.0.0.1
+    port: 8022
+    base_url: http://127.0.0.1:8002/

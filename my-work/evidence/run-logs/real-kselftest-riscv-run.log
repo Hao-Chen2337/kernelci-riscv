@@ -1,0 +1,865 @@
+[0;90m2026-09-07T04:59:16[0m [1;37mlava-dispatcher, installed at version: 2026.05.dev0091[0m
+[0;90m2026-09-07T04:59:16[0m [1;37mstart: 0 validate[0m
+[0;90m2026-09-07T04:59:16[0m [1;37mStart time: 2026-09-07 04:59:16.881253+00:00 (UTC)[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mValidating that file:///home/hao/.cache/tuxrun/assets/https___github.com_Linaro_test-definitions_releases_download_2026.06.02_2026.06.tar.zst exists[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mValidating that file:///home/hao/kernelci-riscv/kernelci-api/docker/storage/data/kbuild-gcc-14-riscv-6a9d3091b4b5bb74af896d8b/Image.gz exists[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mValidating that file:///tmp/riscv-run/rootfs.ext4.zst exists[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mValidating that file:///home/hao/kernelci-riscv/kernelci-api/docker/storage/data/kbuild-gcc-14-riscv-6a9d3091b4b5bb74af896d8b/kselftest.tar.xz exists[0m
+[0;90m2026-09-07T04:59:16[0m [1;37mqemu, installed at version: 11.0.2, host architecture: x86_64[0m
+[0;90m2026-09-07T04:59:16[0m [1;33mMissing image arg for url_repo[0m
+[0;90m2026-09-07T04:59:16[0m [1;33mMissing image arg for rootfs.kselftest[0m
+[0;90m2026-09-07T04:59:16[0m [1;37mvalidate duration: 0.04[0m
+[0;90m2026-09-07T04:59:16[0m [1;34m{'definition': 'lava', 'case': 'validate', 'result': 'pass'}[0m
+[0;90m2026-09-07T04:59:16[0m [1;37mstart: 1 deployimages (timeout 00:15:00) [common][0m
+[0;90m2026-09-07T04:59:16[0m [0;37mstart: 1.1 lava-overlay (timeout 00:15:00) [common][0m
+[0;90m2026-09-07T04:59:16[0m [0;37m[common] Preparing overlay tarball in /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mmakedir: /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mmakedir: /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/tests[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mmakedir: /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/results[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-add-keys[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-add-sources[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-background-process-start[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-background-process-stop[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-common-functions[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-echo-ipv4[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-install-packages[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-installed-packages[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-os-build[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-probe-channel[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-probe-ip[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-target-ip[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-target-mac[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-target-storage[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-test-case[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-test-event[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-test-feedback[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-test-raise[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-test-reference[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-test-runner[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-test-set[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-test-shell[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mUpdating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-install-packages (oe)[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mUpdating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/bin/lava-installed-packages (oe)[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mCreating /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/environment[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mLAVA metadata[0m
+[0;90m2026-09-07T04:59:16[0m [0;37m- LAVA_JOB_ID=1[0m
+[0;90m2026-09-07T04:59:16[0m [0;37m- LAVA_DISPATCHER_IP=172.17.0.2[0m
+[0;90m2026-09-07T04:59:16[0m [0;37m- LAVA_DISPATCHER_PREFIX=tuxrun-7ynlhh82-[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mstart: 1.1.1 lava-multinode-overlay (timeout 00:15:00) [common][0m
+[0;90m2026-09-07T04:59:16[0m [0;37mskipped lava-multinode-overlay[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mend: 1.1.1 lava-multinode-overlay (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:16[0m [0;37mstart: 1.1.2 test-definition (timeout 00:15:00) [common][0m
+[0;90m2026-09-07T04:59:16[0m [1;37mLoading test definitions[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mstart: 1.1.2.1 url-repo-action (timeout 00:15:00) [common][0m
+[0;90m2026-09-07T04:59:16[0m [0;37mstart: 1.1.2.1.1 download-retry (timeout 00:15:00) [common][0m
+[0;90m2026-09-07T04:59:16[0m [0;37mstart: 1.1.2.1.1.1 file-download (timeout 00:15:00) [common][0m
+[0;90m2026-09-07T04:59:16[0m [1;37mdownloading file:///home/hao/.cache/tuxrun/assets/https___github.com_Linaro_test-definitions_releases_download_2026.06.02_2026.06.tar.zst[0m
+[0;90m2026-09-07T04:59:16[0m [0;37msaving as /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/url-repo-action-7oz_yq0q/url_repo/https___github.com_Linaro_test-definitions_releases_download_2026.06.02_2026.06.tar[0m
+[0;90m2026-09-07T04:59:16[0m [0;37mtotal size: 25126159 (23 MB)[0m
+[0;90m2026-09-07T04:59:16[0m [1;37mUsing unzstd to decompress zstd[0m
+[0;90m2026-09-07T04:59:17[0m [1;37m23 MB downloaded in 0.08 s (312.64 MB/s)[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mend: 1.1.2.1.1.1 file-download (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:17[0m [1;34m{'definition': 'lava', 'namespace': 'common', 'case': 'file-download', 'level': '1.1.2.1.1.1', 'duration': '0.08', 'result': 'pass', 'extra': {'label': 'url_repo', 'size': 25126159, 'sha256sum': 'c36c45f3ceb979552533a48eecb26bda10eac3ea74e0b4a9b9b9c25a5fb8a462'}}[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mend: 1.1.2.1.1 download-retry (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:17[0m [0;37mUsing /lava-1 at stage 0[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mRunner path : /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/0/tests/0_kselftest-riscv[0m
+[0;90m2026-09-07T04:59:17[0m [1;37mUntar tests from file /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/url-repo-action-7oz_yq0q/url_repo/https___github.com_Linaro_test-definitions_releases_download_2026.06.02_2026.06.tar to directory /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/0/tests/0_kselftest-riscv, stripping 0 components[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mTests stored (tmp) in /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/0/tests/0_kselftest-riscv/automated/linux/kselftest/kselftest.yaml[0m
+[0;90m2026-09-07T04:59:17[0m [0;37muuid=1_1.1.2.1 testdef=None[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mend: 1.1.2.1 url-repo-action (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:17[0m [0;37mstart: 1.1.2.2 test-overlay (timeout 00:15:00) [common][0m
+[0;90m2026-09-07T04:59:17[0m [0;37mend: 1.1.2.2 test-overlay (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:17[0m [1;34m{'definition': 'lava', 'namespace': 'common', 'case': 'test-overlay', 'level': '1.1.2.2', 'duration': '0.00', 'result': 'pass', 'extra': {'uuid': '1_1.1.2.1', 'name': 'kselftest-riscv', 'path': 'automated/linux/kselftest/kselftest.yaml', 'from': 'url', 'repository': 'file:///home/hao/.cache/tuxrun/assets/https___github.com_Linaro_test-definitions_releases_download_2026.06.02_2026.06.tar.zst'}}[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mstart: 1.1.2.3 test-install-overlay (timeout 00:15:00) [common][0m
+[0;90m2026-09-07T04:59:17[0m [0;37mend: 1.1.2.3 test-install-overlay (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:17[0m [1;34m{'definition': 'lava', 'namespace': 'common', 'case': 'test-install-overlay', 'level': '1.1.2.3', 'duration': '0.00', 'result': 'pass', 'extra': {'uuid': '1_1.1.2.1', 'name': 'kselftest-riscv', 'path': 'automated/linux/kselftest/kselftest.yaml', 'from': 'url', 'repository': 'file:///home/hao/.cache/tuxrun/assets/https___github.com_Linaro_test-definitions_releases_download_2026.06.02_2026.06.tar.zst', 'skipped test-install-overlay': '1_1.1.2.1'}}[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mstart: 1.1.2.4 test-runscript-overlay (timeout 00:15:00) [common][0m
+[0;90m2026-09-07T04:59:17[0m [0;37mrunner path: /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/0/tests/0_kselftest-riscv test_uuid 1_1.1.2.1[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mSKIP_INSTALL='true'[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mTST_CMDFILES='riscv'[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mKSELFTEST_PATH='/opt/kselftests/default-in-kernel'[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mSKIPFILE='skipfile-lkft.yaml'[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mENVIRONMENT='production'[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mSHARD_NUMBER='1'[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mSHARD_INDEX='1'[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mend: 1.1.2.4 test-runscript-overlay (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:17[0m [1;34m{'definition': 'lava', 'namespace': 'common', 'case': 'test-runscript-overlay', 'level': '1.1.2.4', 'duration': '0.00', 'result': 'pass', 'extra': {'uuid': '1_1.1.2.1', 'name': 'kselftest-riscv', 'path': 'automated/linux/kselftest/kselftest.yaml', 'from': 'url', 'repository': 'file:///home/hao/.cache/tuxrun/assets/https___github.com_Linaro_test-definitions_releases_download_2026.06.02_2026.06.tar.zst', 'filename': '/var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/0/tests/0_kselftest-riscv/run.sh'}}[0m
+[0;90m2026-09-07T04:59:17[0m [1;37mCreating lava-test-runner.conf files[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mUsing lava-test-runner path: /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/lava-overlay-7aap8ukf/lava-1/0 for stage 0[0m
+[0;90m2026-09-07T04:59:17[0m [0;37m- 0_kselftest-riscv[0m
+[0;90m2026-09-07T04:59:17[0m [0;37mend: 1.1.2 test-definition (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:17[0m [0;37mstart: 1.1.3 compress-overlay (timeout 00:15:00) [common][0m
+[0;90m2026-09-07T04:59:23[0m [0;37mend: 1.1.3 compress-overlay (duration 00:00:06) [common][0m
+[0;90m2026-09-07T04:59:23[0m [0;37mend: 1.1 lava-overlay (duration 00:00:06) [common][0m
+[0;90m2026-09-07T04:59:23[0m [0;37mstart: 1.2 deploy-device-env (timeout 00:14:54) [common][0m
+[0;90m2026-09-07T04:59:23[0m [0;37mend: 1.2 deploy-device-env (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:23[0m [0;37mstart: 1.3 download-retry (timeout 00:14:54) [common][0m
+[0;90m2026-09-07T04:59:23[0m [0;37mstart: 1.3.1 file-download (timeout 00:14:54) [common][0m
+[0;90m2026-09-07T04:59:23[0m [1;37mdownloading file:///home/hao/kernelci-riscv/kernelci-api/docker/storage/data/kbuild-gcc-14-riscv-6a9d3091b4b5bb74af896d8b/Image.gz[0m
+[0;90m2026-09-07T04:59:23[0m [0;37msaving as /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/deployimages-8xz3wq9p/kernel/Image[0m
+[0;90m2026-09-07T04:59:23[0m [0;37mtotal size: 9277882 (8 MB)[0m
+[0;90m2026-09-07T04:59:23[0m [1;37mUsing gunzip to decompress gz[0m
+[0;90m2026-09-07T04:59:23[0m [0;37mprogress  83 % (7 MB)[0m
+[0;90m2026-09-07T04:59:23[0m [1;37m8 MB downloaded in 0.17 s (51.97 MB/s)[0m
+[0;90m2026-09-07T04:59:23[0m [0;37mend: 1.3.1 file-download (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:23[0m [1;34m{'definition': 'lava', 'namespace': 'common', 'case': 'file-download', 'level': '1.3.1', 'duration': '0.17', 'result': 'pass', 'extra': {'label': 'kernel', 'size': 9277882, 'sha256sum': '1ec4eb9d3852a350f21ea72e76ab2dc5ff18d7de8765f9c45b5f3d75bb07c460'}}[0m
+[0;90m2026-09-07T04:59:23[0m [0;37mend: 1.3 download-retry (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:23[0m [0;37mstart: 1.4 download-retry (timeout 00:14:54) [common][0m
+[0;90m2026-09-07T04:59:23[0m [0;37mstart: 1.4.1 file-download (timeout 00:14:54) [common][0m
+[0;90m2026-09-07T04:59:23[0m [1;37mdownloading file:///tmp/riscv-run/rootfs.ext4.zst[0m
+[0;90m2026-09-07T04:59:23[0m [0;37msaving as /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/deployimages-8xz3wq9p/rootfs/rootfs.ext4[0m
+[0;90m2026-09-07T04:59:23[0m [0;37mtotal size: 91610407 (87 MB)[0m
+[0;90m2026-09-07T04:59:23[0m [1;37mUsing unzstd to decompress zstd[0m
+[0;90m2026-09-07T04:59:23[0m [0;37mprogress  14 % (12 MB)[0m
+[0;90m2026-09-07T04:59:23[0m [0;37mprogress  19 % (16 MB)[0m
+[0;90m2026-09-07T04:59:23[0m [0;37mprogress  27 % (24 MB)[0m
+[0;90m2026-09-07T04:59:23[0m [0;37mprogress  32 % (27 MB)[0m
+[0;90m2026-09-07T04:59:23[0m [0;37mprogress  39 % (34 MB)[0m
+[0;90m2026-09-07T04:59:24[0m [0;37mprogress  53 % (46 MB)[0m
+[0;90m2026-09-07T04:59:24[0m [0;37mprogress  58 % (50 MB)[0m
+[0;90m2026-09-07T04:59:24[0m [0;37mprogress  63 % (55 MB)[0m
+[0;90m2026-09-07T04:59:24[0m [0;37mprogress  68 % (59 MB)[0m
+[0;90m2026-09-07T04:59:24[0m [0;37mprogress  76 % (66 MB)[0m
+[0;90m2026-09-07T04:59:25[0m [1;37m87 MB downloaded in 2.10 s (41.55 MB/s)[0m
+[0;90m2026-09-07T04:59:25[0m [0;37mend: 1.4.1 file-download (duration 00:00:02) [common][0m
+[0;90m2026-09-07T04:59:25[0m [1;34m{'definition': 'lava', 'namespace': 'common', 'case': 'file-download', 'level': '1.4.1', 'duration': '2.11', 'result': 'pass', 'extra': {'label': 'rootfs', 'size': 91610407, 'sha256sum': 'e57dec4419b4f7fb8cf8e94714621bf3ac7869af175467c563c361a73a79c062'}}[0m
+[0;90m2026-09-07T04:59:25[0m [0;37mstart: 1.4.2 download-retry (timeout 00:14:51) [common][0m
+[0;90m2026-09-07T04:59:25[0m [0;37mstart: 1.4.2.1 file-download (timeout 00:14:51) [common][0m
+[0;90m2026-09-07T04:59:25[0m [1;37mdownloading file:///home/hao/kernelci-riscv/kernelci-api/docker/storage/data/kbuild-gcc-14-riscv-6a9d3091b4b5bb74af896d8b/kselftest.tar.xz[0m
+[0;90m2026-09-07T04:59:25[0m [0;37msaving as /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/deployimages-8xz3wq9p/rootfs.kselftest/kselftest.tar[0m
+[0;90m2026-09-07T04:59:25[0m [0;37mtotal size: 8326092 (7 MB)[0m
+[0;90m2026-09-07T04:59:25[0m [1;37mUsing unxz to decompress xz[0m
+[0;90m2026-09-07T04:59:25[0m [1;37m7 MB downloaded in 0.18 s (44.36 MB/s)[0m
+[0;90m2026-09-07T04:59:25[0m [0;37mend: 1.4.2.1 file-download (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:25[0m [1;34m{'definition': 'lava', 'namespace': 'common', 'case': 'file-download', 'level': '1.4.2.1', 'duration': '0.18', 'result': 'pass', 'extra': {'label': 'rootfs.kselftest', 'size': 8326092, 'sha256sum': '0cd0a22d423fa39b92ce42f08680737b28a7c6e3b725fc43e065311e611712b1'}}[0m
+[0;90m2026-09-07T04:59:25[0m [0;37mend: 1.4.2 download-retry (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:25[0m [0;37mstart: 1.4.3 append-overlays (timeout 00:14:51) [common][0m
+[0;90m2026-09-07T04:59:25[0m [1;37mUsing e2fsprogs backend for overlay injection[0m
+[0;90m2026-09-07T04:59:25[0m [1;37mModifying '/var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/deployimages-8xz3wq9p/rootfs/rootfs.ext4'[0m
+[0;90m2026-09-07T04:59:25[0m [0;37mOverlays:[0m
+[0;90m2026-09-07T04:59:25[0m [0;37m- rootfs.lava: '/var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/compress-overlay-uki4vl20/overlay-1.1.3.tar.gz' to '/'[0m
+[0;90m2026-09-07T04:59:26[0m [0;37mInjecting /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/compress-overlay-uki4vl20/overlay-1.1.3.tar into /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/deployimages-8xz3wq9p/rootfs/rootfs.ext4 at /[0m
+[0;90m2026-09-07T04:59:34[0m [0;37mRunning 5466 debugfs commands on /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/deployimages-8xz3wq9p/rootfs/rootfs.ext4 in batches of 256 (need 54 MiB, have 1315 MiB free)[0m
+[0;90m2026-09-07T04:59:35[0m [0;37m- rootfs.kselftest: '/var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/deployimages-8xz3wq9p/rootfs.kselftest/kselftest.tar' to '/opt/kselftests/default-in-kernel/'[0m
+[0;90m2026-09-07T04:59:35[0m [0;37mInjecting /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/deployimages-8xz3wq9p/rootfs.kselftest/kselftest.tar into /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/deployimages-8xz3wq9p/rootfs/rootfs.ext4 at /opt/kselftests/default-in-kernel/[0m
+[0;90m2026-09-07T04:59:46[0m [0;37mRunning 8004 debugfs commands on /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/deployimages-8xz3wq9p/rootfs/rootfs.ext4 in batches of 256 (need 91 MiB, have 1259 MiB free)[0m
+[0;90m2026-09-07T04:59:47[0m [0;37mend: 1.4.3 append-overlays (duration 00:00:22) [common][0m
+[0;90m2026-09-07T04:59:47[0m [0;37mend: 1.4 download-retry (duration 00:00:24) [common][0m
+[0;90m2026-09-07T04:59:47[0m [0;37mstart: 1.5 apply-overlay-guest (timeout 00:14:30) [common][0m
+[0;90m2026-09-07T04:59:47[0m [0;37mOverlay already applied[0m
+[0;90m2026-09-07T04:59:47[0m [0;37mend: 1.5 apply-overlay-guest (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:47[0m [1;37mend: 1 deployimages (duration 00:00:30) [common][0m
+[0;90m2026-09-07T04:59:47[0m [1;37mstart: 2 boot-image-retry (timeout 00:15:00) [common][0m
+[0;90m2026-09-07T04:59:47[0m [0;37mstart: 2.1 boot-qemu-image (timeout 00:15:00) [common][0m
+[0;90m2026-09-07T04:59:47[0m [0;37mstart: 2.1.1 execute-qemu (timeout 00:15:00) [common][0m
+[0;90m2026-09-07T04:59:47[0m [1;37mBoot command: /usr/bin/qemu-system-riscv64 -cpu rv64,v=true -machine virt -nographic -nic none -m 4G -monitor none -no-reboot -smp 2 -kernel /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/deployimages-8xz3wq9p/kernel/Image -append "console=ttyS0,115200 rootwait root=/dev/vda debug verbose console_msg_format=syslog systemd.log_level=warning earlycon" -drive file=/var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/deployimages-8xz3wq9p/rootfs/rootfs.ext4,format=raw,id=hd0,if=virtio[0m
+[0;90m2026-09-07T04:59:47[0m [0;37mstarted a shell command[0m
+[0;90m2026-09-07T04:59:47[0m [0;37mend: 2.1.1 execute-qemu (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:47[0m [1;34m{'definition': 'lava', 'namespace': 'common', 'case': 'execute-qemu', 'level': '2.1.1', 'duration': '0.02', 'result': 'pass', 'extra': {'qemu_version': '11.0.2', 'host_arch': 'x86_64', 'job_arch': 'riscv64'}}[0m
+[0;90m2026-09-07T04:59:47[0m [0;37mend: 2.1 boot-qemu-image (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:47[0m [0;37mstart: 2.2 auto-login-action (timeout 00:15:00) [common][0m
+[0;90m2026-09-07T04:59:47[0m [0;37mSetting prompt string to ['Linux version [0-9]'][0m
+[0;90m2026-09-07T04:59:47[0m [0;37mauto-login-action: Wait for prompt ['Linux version [0-9]'] (timeout 00:15:00)[0m
+[0;90m2026-09-07T04:59:47[0m [32m[0m
+[0;90m2026-09-07T04:59:47[0m [32mOpenSBI v1.8[0m
+[0;90m2026-09-07T04:59:47[0m [32m   ____                    _____ ____ _____[0m
+[0;90m2026-09-07T04:59:47[0m [32m  / __ \                  / ____|  _ \_   _|[0m
+[0;90m2026-09-07T04:59:47[0m [32m | |  | |_ __   ___ _ __ | (___ | |_) || |[0m
+[0;90m2026-09-07T04:59:47[0m [32m | |  | | '_ \ / _ \ '_ \ \___ \|  _ < | |[0m
+[0;90m2026-09-07T04:59:47[0m [32m | |__| | |_) |  __/ | | |____) | |_) || |_[0m
+[0;90m2026-09-07T04:59:47[0m [32m  \____/| .__/ \___|_| |_|_____/|____/_____|[0m
+[0;90m2026-09-07T04:59:47[0m [32m        | |[0m
+[0;90m2026-09-07T04:59:47[0m [32m        |_|[0m
+[0;90m2026-09-07T04:59:47[0m [32m[0m
+[0;90m2026-09-07T04:59:47[0m [32mPlatform Name               : riscv-virtio,qemu[0m
+[0;90m2026-09-07T04:59:47[0m [32mPlatform Features           : medeleg[0m
+[0;90m2026-09-07T04:59:47[0m [32mPlatform HART Count         : 2[0m
+[0;90m2026-09-07T04:59:47[0m [32mPlatform HART Protection    : pmp[0m
+[0;90m2026-09-07T04:59:47[0m [32mPlatform IPI Device         : aclint-mswi[0m
+[0;90m2026-09-07T04:59:47[0m [32mPlatform Timer Device       : aclint-mtimer @ 10000000Hz[0m
+[0;90m2026-09-07T04:59:47[0m [32mPlatform Console Device     : uart8250[0m
+[0;90m2026-09-07T04:59:47[0m [32mPlatform HSM Device         : ---[0m
+[0;90m2026-09-07T04:59:47[0m [32mPlatform PMU Device         : ---[0m
+[0;90m2026-09-07T04:59:47[0m [32mPlatform Reboot Device      : syscon-reboot[0m
+[0;90m2026-09-07T04:59:47[0m [32mPlatform Shutdown Device    : syscon-poweroff[0m
+[0;90m2026-09-07T04:59:47[0m [32mPlatform Suspend Device     : ---[0m
+[0;90m2026-09-07T04:59:47[0m [32mPlatform CPPC Device        : ---[0m
+[0;90m2026-09-07T04:59:47[0m [32mFirmware Base               : 0x80000000[0m
+[0;90m2026-09-07T04:59:47[0m [32mFirmware Size               : 333 KB[0m
+[0;90m2026-09-07T04:59:47[0m [32mFirmware RW Offset          : 0x40000[0m
+[0;90m2026-09-07T04:59:47[0m [32mFirmware RW Size            : 77 KB[0m
+[0;90m2026-09-07T04:59:47[0m [32mFirmware Heap Offset        : 0x49000[0m
+[0;90m2026-09-07T04:59:47[0m [32mFirmware Heap Size          : 41 KB (total), 0 KB (reserved), 12 KB (used), 27 KB (free)[0m
+[0;90m2026-09-07T04:59:47[0m [32mFirmware Scratch Size       : 4096 B (total), 1464 B (used), 2632 B (free)[0m
+[0;90m2026-09-07T04:59:47[0m [32mRuntime SBI Version         : 3.0[0m
+[0;90m2026-09-07T04:59:47[0m [32mStandard SBI Extensions     : ipi,pmu,srst,sse,hsm,rfnc,fwft,time,base,legacy,dbcn,dbtr[0m
+[0;90m2026-09-07T04:59:47[0m [32mExperimental SBI Extensions : none[0m
+[0;90m2026-09-07T04:59:47[0m [32m[0m
+[0;90m2026-09-07T04:59:47[0m [32mDomain0 Name                : root[0m
+[0;90m2026-09-07T04:59:47[0m [32mDomain0 Boot HART           : 1[0m
+[0;90m2026-09-07T04:59:47[0m [32mDomain0 HARTs               : 0*,1*[0m
+[0;90m2026-09-07T04:59:47[0m [32mDomain0 Region00            : 0x0000000080040000-0x000000008005ffff M: (F,R,W) S/U: ()[0m
+[0;90m2026-09-07T04:59:47[0m [32mDomain0 Region01            : 0x0000000080000000-0x000000008003ffff M: (F,R,X) S/U: ()[0m
+[0;90m2026-09-07T04:59:47[0m [32mDomain0 Region02            : 0x0000000000100000-0x0000000000100fff M: (I,R,W) S/U: (R,W)[0m
+[0;90m2026-09-07T04:59:47[0m [32mDomain0 Region03            : 0x0000000010000000-0x0000000010000fff M: (I,R,W) S/U: (R,W)[0m
+[0;90m2026-09-07T04:59:47[0m [32mDomain0 Region04            : 0x0000000002000000-0x000000000200ffff M: (I,R,W) S/U: ()[0m
+[0;90m2026-09-07T04:59:47[0m [32mDomain0 Region05            : 0x000000000c400000-0x000000000c5fffff M: (I,R,W) S/U: (R,W)[0m
+[0;90m2026-09-07T04:59:47[0m [32mDomain0 Region06            : 0x000000000c000000-0x000000000c3fffff M: (I,R,W) S/U: (R,W)[0m
+[0;90m2026-09-07T04:59:47[0m [32mDomain0 Region07            : 0x0000000000000000-0xffffffffffffffff M: () S/U: (R,W,X)[0m
+[0;90m2026-09-07T04:59:47[0m [32mDomain0 Next Address        : 0x0000000080200000[0m
+[0;90m2026-09-07T04:59:47[0m [32mDomain0 Next Arg1           : 0x000000017fe00000[0m
+[0;90m2026-09-07T04:59:47[0m [32mDomain0 Next Mode           : S-mode[0m
+[0;90m2026-09-07T04:59:47[0m [32mDomain0 SysReset            : yes[0m
+[0;90m2026-09-07T04:59:47[0m [32mDomain0 SysSuspend          : yes[0m
+[0;90m2026-09-07T04:59:47[0m [32m[0m
+[0;90m2026-09-07T04:59:47[0m [32mBoot HART ID                : 1[0m
+[0;90m2026-09-07T04:59:47[0m [32mBoot HART Domain            : root[0m
+[0;90m2026-09-07T04:59:47[0m [32mBoot HART Priv Version      : v1.12[0m
+[0;90m2026-09-07T04:59:47[0m [32mBoot HART Base ISA          : rv64imafdcvh[0m
+[0;90m2026-09-07T04:59:47[0m [32mBoot HART ISA Extensions    : sstc,zicntr,zihpm,zicboz,zicbom,sdtrig,svadu[0m
+[0;90m2026-09-07T04:59:47[0m [32mBoot HART PMP Count         : 16[0m
+[0;90m2026-09-07T04:59:47[0m [32mBoot HART PMP Granularity   : 2 bits[0m
+[0;90m2026-09-07T04:59:47[0m [32mBoot HART PMP Address Bits  : 54[0m
+[0;90m2026-09-07T04:59:47[0m [32mBoot HART MHPM Info         : 16 (0x0007fff8)[0m
+[0;90m2026-09-07T04:59:47[0m [32mBoot HART Debug Triggers    : 2 triggers[0m
+[0;90m2026-09-07T04:59:47[0m [32mBoot HART MIDELEG           : 0x0000000000001666[0m
+[0;90m2026-09-07T04:59:47[0m [32mBoot HART MEDELEG           : 0x0000000000f4b509[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] Booting Linux on hartid 1[0m
+[0;90m2026-09-07T04:59:47[0m [0;37mstart: 2.2.1 login-action (timeout 00:15:00) [common][0m
+[0;90m2026-09-07T04:59:47[0m [1;33mThe string '/ #' does not look like a typical prompt and could match status messages instead. Please check the job log files and use a prompt string which matches the actual prompt string more closely.[0m
+[0;90m2026-09-07T04:59:47[0m [0;37mSetting prompt string to [][0m
+[0;90m2026-09-07T04:59:47[0m [0;37mSetting prompt string to ['-\\[ cut here \\]', 'Unhandled fault', 'BUG: KCSAN:', 'BUG: KASAN:', 'BUG: KFENCE:', 'Oops(?: -|:)', 'WARNING:', '(kernel BUG at|BUG:)', 'invalid opcode:', 'Kernel panic - not syncing', 'U-Boot SPL 20[0-9][0-9]'][0m
+[0;90m2026-09-07T04:59:47[0m [0;37mUsing line separator: #'\n'#[0m
+[0;90m2026-09-07T04:59:47[0m [1;37mWaiting for the login prompt[0m
+[0;90m2026-09-07T04:59:47[0m [1;37mParsing kernel messages[0m
+[0;90m2026-09-07T04:59:47[0m [0;37m['-\\[ cut here \\]', 'Unhandled fault', 'BUG: KCSAN:', 'BUG: KASAN:', 'BUG: KFENCE:', 'Oops(?: -|:)', 'WARNING:', '(kernel BUG at|BUG:)', 'invalid opcode:', 'Kernel panic - not syncing', 'U-Boot SPL 20[0-9][0-9]', 'root@(.*):[/~]#', '/ #', 'login:', 'Login incorrect'][0m
+[0;90m2026-09-07T04:59:47[0m [0;37m[login-action] Waiting for messages, (timeout 00:15:00)[0m
+[0;90m2026-09-07T04:59:47[0m [0;37mWaiting using forced prompt support (timeout 00:07:30)[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] Linux version 6.18.0 (tuxmake@tuxmake) (riscv64-linux-gnu-gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP @1788686495[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] random: crng init done[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] Machine model: riscv-virtio,qemu[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] SBI specification v3.0 detected[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] SBI implementation ID=0x1 Version=0x10008[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] SBI TIME extension detected[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] SBI IPI extension detected[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] SBI RFENCE extension detected[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] SBI SRST extension detected[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] SBI DBCN extension detected[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] SBI FWFT extension detected[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] efi: UEFI not found.[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] earlycon: ns16550a0 at MMIO 0x0000000010000000 (options '')[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] printk: legacy bootconsole [ns16550a0] enabled[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] OF: reserved mem: 0x0000000080000000..0x000000008003ffff (256 KiB) nomap non-reusable mmode_resv1@80000000[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] OF: reserved mem: 0x0000000080040000..0x000000008005ffff (128 KiB) nomap non-reusable mmode_resv0@80040000[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] Zone ranges:[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000]   DMA32    [mem 0x0000000080000000-0x00000000ffffffff][0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000]   Normal   [mem 0x0000000100000000-0x000000017fffffff][0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] Movable zone start for each node[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] Early memory node ranges[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000]   node   0: [mem 0x0000000080000000-0x000000008005ffff][0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000]   node   0: [mem 0x0000000080060000-0x000000017fffffff][0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] Initmem setup node 0 [mem 0x0000000080000000-0x000000017fffffff][0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] SBI HSM extension detected[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] riscv: base ISA extensions acdfhimv[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] riscv: ELF capabilities acdfimv[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] Queued spinlock using Ziccrse: enabled[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] percpu: Embedded 31 pages/cpu s86296 r8192 d32488 u126976[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] pcpu-alloc: s86296 r8192 d32488 u126976 alloc=31*4096[0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] pcpu-alloc: [0] 0 [0] 1 [0m
+[0;90m2026-09-07T04:59:47[0m [32m[    0.000000] Kernel command line: console=ttyS0,115200 rootwait root=/dev/vda debug verbose console_msg_format=syslog systemd.log_level=warning earlycon[0m
+[0;90m2026-09-07T04:59:47[0m [32m<5>[    0.000000] Unknown kernel command line parameters "verbose", will be passed to user space.[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] Dentry cache hash table entries: 524288 (order: 10, 4194304 bytes, linear)[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] Inode-cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] software IO TLB: area num 2.[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] software IO TLB: mapped [mem 0x00000000fbfff000-0x00000000fffff000] (64MB)[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 1048576[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] mem auto-init: stack:all(zero), heap alloc:off, heap free:off[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=2, Nodes=1[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] rcu: Hierarchical RCU implementation.[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] rcu: 	RCU event tracing is enabled.[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=64 to nr_cpu_ids=2.[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] 	Tracing variant of Tasks RCU enabled.[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=2[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] RCU Tasks Trace: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] riscv-intc: 64 local interrupts mapped[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] riscv: providing IPIs using SBI IPI extension[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000000] clocksource: riscv_clocksource: mask: 0xffffffffffffffff max_cycles: 0x24e6a1710, max_idle_ns: 440795202120 ns[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.000046] sched_clock: 64 bits at 10MHz, resolution 100ns, wraps every 4398046511100ns[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.001158] riscv-timer: Timer interrupt in S-mode is available via sstc extension[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.008640] Console: colour dummy device 80x25[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.010741] Calibrating delay loop (skipped), value calculated using timer frequency.. 20.00 BogoMIPS (lpj=40000)[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.011665] pid_max: default: 32768 minimum: 301[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.014784] LSM: initializing lsm=capability[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.017500] Mount-cache hash table entries: 8192 (order: 4, 65536 bytes, linear)[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.018788] Mountpoint-cache hash table entries: 8192 (order: 4, 65536 bytes, linear)[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.051044] riscv: ELF compat mode supported[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.051589] ASID allocator using 16 bits (65536 entries)[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.054048] rcu: Hierarchical SRCU implementation.[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.054331] rcu: 	Max phase no-delay instances is 1000.[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.055761] Timer migration: 1 hierarchy levels; 8 children per group; 1 crossnode level[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.073896] EFI services will not be available.[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.075434] smp: Bringing up secondary CPUs ...[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.085607] smp: Brought up 1 node, 2 CPUs[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.089862] Memory: 4006144K/4194304K available (11685K kernel code, 5896K rwdata, 6144K rodata, 2421K init, 415K bss, 183764K reserved, 0K cma-reserved)[0m
+[0;90m2026-09-07T04:59:47[0m [32m<6>[    0.102013] devtmpfs: initialized[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.113013] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.116106] posixtimers hash table entries: 1024 (order: 2, 16384 bytes, linear)[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.117276] futex hash table entries: 512 (32768 bytes on 1 NUMA nodes, total 32 KiB, linear).[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.120626] pinctrl core: initialized pinctrl subsystem[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.128520] DMI not present or invalid.[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.130848] NET: Registered PF_NETLINK/PF_ROUTE protocol family[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.135929] DMA: preallocated 512 KiB GFP_KERNEL pool for atomic allocations[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.138019] DMA: preallocated 512 KiB GFP_KERNEL|GFP_DMA32 pool for atomic allocations[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.139345] audit: initializing netlink subsys (disabled)[0m
+[0;90m2026-09-07T04:59:48[0m [32m<5>[    0.142790] audit: type=2000 audit(0.116:1): state=initialized audit_enabled=0 res=1[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.144682] thermal_sys: Registered thermal governor 'step_wise'[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.145744] cpuidle: using governor menu[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.150776] SBI misaligned access exception delegation ok[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.174220] cpu1: Ratio of byte access time to unaligned word access is 7.54, unaligned accesses are fast[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.198718] cpu0: Ratio of byte access time to unaligned word access is 7.45, unaligned accesses are fast[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.254282] cpu0: Ratio of vector byte access time to vector unaligned word access is 3.80, unaligned accesses are fast[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.284780] cpu1: Ratio of vector byte access time to vector unaligned word access is 3.85, unaligned accesses are fast[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.302278] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.303803] HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.312730] ACPI: Interpreter disabled.[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.314645] iommu: Default domain type: Translated[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.315467] iommu: DMA domain TLB invalidation policy: strict mode[0m
+[0;90m2026-09-07T04:59:48[0m [32m<5>[    0.327942] SCSI subsystem initialized[0m
+[0;90m2026-09-07T04:59:48[0m [32m<7>[    0.329333] libata version 3.00 loaded.[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.332066] usbcore: registered new interface driver usbfs[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.333648] usbcore: registered new interface driver hub[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.334441] usbcore: registered new device driver usb[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.336974] Advanced Linux Sound Architecture Driver Initialized.[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.352462] vgaarb: loaded[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.357660] clocksource: Switched to clocksource riscv_clocksource[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.366028] pnp: PnP ACPI: disabled[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.385430] NET: Registered PF_INET protocol family[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.387818] IP idents hash table entries: 65536 (order: 7, 524288 bytes, linear)[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.397922] tcp_listen_portaddr_hash hash table entries: 2048 (order: 3, 32768 bytes, linear)[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.398788] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.399550] TCP established hash table entries: 32768 (order: 6, 262144 bytes, linear)[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.402757] TCP bind hash table entries: 32768 (order: 8, 1048576 bytes, linear)[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.406105] TCP: Hash tables configured (established 32768 bind 32768)[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.407830] UDP hash table entries: 2048 (order: 5, 131072 bytes, linear)[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.409062] UDP-Lite hash table entries: 2048 (order: 5, 131072 bytes, linear)[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.412040] NET: Registered PF_UNIX/PF_LOCAL protocol family[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.415705] RPC: Registered named UNIX socket transport module.[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.417736] RPC: Registered udp transport module.[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.418527] RPC: Registered tcp transport module.[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.419001] RPC: Registered tcp-with-tls transport module.[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.419562] RPC: Registered tcp NFSv4.1 backchannel transport module.[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.420258] PCI: CLS 0 bytes, default 64[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.430354] workingset: timestamp_bits=46 max_order=20 bucket_order=0[0m
+[0;90m2026-09-07T04:59:48[0m [32m<5>[    0.435932] NFS: Registering the id_resolver key type[0m
+[0;90m2026-09-07T04:59:48[0m [32m<5>[    0.436983] Key type id_resolver registered[0m
+[0;90m2026-09-07T04:59:48[0m [32m<5>[    0.437322] Key type id_legacy registered[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.438220] nfs4filelayout_init: NFSv4 File Layout Driver Registering...[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.438903] nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.440688] 9p: Installing v9fs 9p2000 file system support[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.442840] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 244)[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.444023] io scheduler mq-deadline registered[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.444375] io scheduler kyber registered[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.446377] io scheduler bfq registered[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.463522] riscv-plic: plic@c000000: mapped 95 interrupts with 2 handlers for 4 contexts.[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.470252] pci-host-generic 30000000.pci: host bridge /soc/pci@30000000 ranges:[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.472347] pci-host-generic 30000000.pci:       IO 0x0003000000..0x000300ffff -> 0x0000000000[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.473709] pci-host-generic 30000000.pci:      MEM 0x0040000000..0x007fffffff -> 0x0040000000[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.474666] pci-host-generic 30000000.pci:      MEM 0x0400000000..0x07ffffffff -> 0x0400000000[0m
+[0;90m2026-09-07T04:59:48[0m [32m<4>[    0.476604] pci-host-generic 30000000.pci: Memory resource size exceeds max for 32 bits[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.478090] pci-host-generic 30000000.pci: ECAM at [mem 0x30000000-0x3fffffff] for [bus 00-ff][0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.481325] pci-host-generic 30000000.pci: PCI host bridge to bus 0000:00[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.482342] pci_bus 0000:00: root bus resource [bus 00-ff][0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.483524] pci_bus 0000:00: root bus resource [io  0x0000-0xffff][0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.484991] pci_bus 0000:00: root bus resource [mem 0x40000000-0x7fffffff][0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.485811] pci_bus 0000:00: root bus resource [mem 0x400000000-0x7ffffffff][0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.487770] pci 0000:00:00.0: [1b36:0008] type 00 class 0x060000 conventional PCI endpoint[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.493451] pci 0000:00:01.0: [1af4:1001] type 00 class 0x010000 conventional PCI endpoint[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.494597] pci 0000:00:01.0: BAR 0 [io  0x0000-0x007f][0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.495280] pci 0000:00:01.0: BAR 1 [mem 0x00000000-0x00000fff][0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.496030] pci 0000:00:01.0: BAR 4 [mem 0x00000000-0x00003fff 64bit pref][0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.499773] pci 0000:00:01.0: BAR 4 [mem 0x400000000-0x400003fff 64bit pref]: assigned[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.501504] pci 0000:00:01.0: BAR 1 [mem 0x40000000-0x40000fff]: assigned[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.502588] pci 0000:00:01.0: BAR 0 [io  0x0080-0x00ff]: assigned[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.503274] pci_bus 0000:00: resource 4 [io  0x0000-0xffff][0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.503980] pci_bus 0000:00: resource 5 [mem 0x40000000-0x7fffffff][0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.505730] pci_bus 0000:00: resource 6 [mem 0x400000000-0x7ffffffff][0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.517939] virtio-pci 0000:00:01.0: enabling device (0000 -> 0003)[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.584014] Serial: 8250/16550 driver, 4 ports, IRQ sharing disabled[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.595744] printk: legacy console [ttyS0] disabled[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.600091] 10000000.serial: ttyS0 at MMIO 0x10000000 (irq = 13, base_baud = 230400) is a 16550A[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.604330] printk: legacy console [ttyS0] enabled[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.604330] printk: legacy console [ttyS0] enabled[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.605959] printk: legacy bootconsole [ns16550a0] disabled[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.605959] printk: legacy bootconsole [ns16550a0] disabled[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.627416] loop: module loaded[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.629065] virtio_blk virtio0: 2/0/0 default/read/poll queues[0m
+[0;90m2026-09-07T04:59:48[0m [32m<5>[    0.635270] virtio_blk virtio0: [vda] 4194304 512-byte logical blocks (2.15 GB/2.00 GiB)[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.652693] e1000e: Intel(R) PRO/1000 Network Driver[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.653111] e1000e: Copyright(c) 1999 - 2015 Intel Corporation.[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.655851] usbcore: registered new interface driver uas[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.657715] usbcore: registered new interface driver usb-storage[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.659425] mousedev: PS/2 mouse device common for all mice[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.663440] goldfish_rtc 101000.rtc: registered as rtc0[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.664391] goldfish_rtc 101000.rtc: setting system clock to 2026-09-07T04:59:48 UTC (1788757188)[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.668798] sdhci: Secure Digital Host Controller Interface driver[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.669247] sdhci: Copyright(c) Pierre Ossman[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.669708] Synopsys Designware Multimedia Card Interface Driver[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.670694] sdhci-pltfm: SDHCI platform and OF driver helper[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.672940] usbcore: registered new interface driver usbhid[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.673378] usbhid: USB HID core driver[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.674424] riscv-pmu-sbi: SBI PMU extension is available[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.675698] riscv-pmu-sbi: 16 firmware and 18 hardware counters[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.677795] riscv-pmu-sbi: Perf sampling/filtering is not supported as sscof extension is not available[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.694029] NET: Registered PF_INET6 protocol family[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.703840] Segment Routing with IPv6[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.704312] In-situ OAM (IOAM) with IPv6[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.706170] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.710177] NET: Registered PF_PACKET protocol family[0m
+[0;90m2026-09-07T04:59:48[0m [32m<6>[    0.712080] 9pnet: Installing 9P2000 support[0m
+[0;90m2026-09-07T04:59:48[0m [32m<5>[    0.713639] Key type dns_resolver registered[0m
+[0;90m2026-09-07T04:59:49[0m [32m<6>[    1.427979] clk: Disabling unused clocks[0m
+[0;90m2026-09-07T04:59:49[0m [32m<6>[    1.429710] PM: genpd: Disabling unused power domains[0m
+[0;90m2026-09-07T04:59:49[0m [32m<6>[    1.430411] ALSA device list:[0m
+[0;90m2026-09-07T04:59:49[0m [32m<6>[    1.430752]   No soundcards found.[0m
+[0;90m2026-09-07T04:59:49[0m [32m<4>[    1.436911] check access for rdinit=/init failed: -2, ignoring[0m
+[0;90m2026-09-07T04:59:49[0m [32m<6>[    1.512745] EXT4-fs (vda): orphan cleanup on readonly fs[0m
+[0;90m2026-09-07T04:59:49[0m [32m<6>[    1.513882] EXT4-fs (vda): mounted filesystem f660601b-30de-4a10-95e0-85c1aa871e41 ro with ordered data mode. Quota mode: disabled.[0m
+[0;90m2026-09-07T04:59:49[0m [32m<6>[    1.516006] VFS: Mounted root (ext4 filesystem) readonly on device 254:0.[0m
+[0;90m2026-09-07T04:59:49[0m [32m<6>[    1.519246] devtmpfs: mounted[0m
+[0;90m2026-09-07T04:59:50[0m [32m<6>[    1.566394] Freeing unused kernel image (initmem) memory: 2420K[0m
+[0;90m2026-09-07T04:59:50[0m [32m<6>[    1.567655] Run /sbin/init as init process[0m
+[0;90m2026-09-07T04:59:50[0m [32m<7>[    1.568045]   with arguments:[0m
+[0;90m2026-09-07T04:59:50[0m [32m<7>[    1.568237]     /sbin/init[0m
+[0;90m2026-09-07T04:59:50[0m [32m<7>[    1.568606]     verbose[0m
+[0;90m2026-09-07T04:59:50[0m [32m<7>[    1.568830]   with environment:[0m
+[0;90m2026-09-07T04:59:50[0m [32m<7>[    1.569282]     HOME=/[0m
+[0;90m2026-09-07T04:59:50[0m [32m<7>[    1.569426]     TERM=linux[0m
+[0;90m2026-09-07T04:59:50[0m [32m<6>[    1.714674] EXT4-fs (vda): re-mounted f660601b-30de-4a10-95e0-85c1aa871e41 r/w.[0m
+[0;90m2026-09-07T04:59:50[0m [32mSaving 256 bits of creditable seed for next boot[0m
+[0;90m2026-09-07T04:59:50[0m [32mStarting syslogd: OK[0m
+[0;90m2026-09-07T04:59:50[0m [32mStarting klogd: OK[0m
+[0;90m2026-09-07T04:59:50[0m [32mRunning sysctl: OK[0m
+[0;90m2026-09-07T04:59:50[0m [32mStarting network: OK[0m
+[0;90m2026-09-07T04:59:50[0m [32mStarting crond: OK[0m
+[0;90m2026-09-07T04:59:51[0m [32m[0m
+[0;90m2026-09-07T04:59:51[0m [32mWelcome to TuxTest[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mMatched prompt #13: login:[0m
+[0;90m2026-09-07T04:59:51[0m [1;34m{'definition': 'lava', 'namespace': 'common', 'case': 'kernel-messages', 'level': '2.2.1', 'duration': '3.01', 'result': 'pass', 'extra': {'extra': []}}[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mSending username root[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mSending line: 'root'[0m
+[0;90m2026-09-07T04:59:51[0m [0;35mroot[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mSetting prompt string to ['root@(.*):[/~]#', '/ #'][0m
+[0;90m2026-09-07T04:59:51[0m [0;37mlogin-action: Wait for prompt ['root@(.*):[/~]#', '/ #', 'Login incorrect', 'Login timed out'] (timeout 00:14:57)[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mWaiting using forced prompt support (timeout 00:07:28)[0m
+[0;90m2026-09-07T04:59:51[0m [32mtuxtest login: root[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mSetting prompt string to ['root@(.*):[/~]#', '/ #'][0m
+[0;90m2026-09-07T04:59:51[0m [0;37mend: 2.2.1 login-action (duration 00:00:03) [common][0m
+[0;90m2026-09-07T04:59:51[0m [1;34m{'definition': 'lava', 'namespace': 'common', 'case': 'login-action', 'level': '2.2.1', 'duration': '3.09', 'result': 'pass', 'extra': {'success': 'No kernel warnings or errors detected.'}}[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mend: 2.2 auto-login-action (duration 00:00:03) [common][0m
+[0;90m2026-09-07T04:59:51[0m [0;37mstart: 2.3 expect-shell-connection (timeout 00:14:57) [common][0m
+[0;90m2026-09-07T04:59:51[0m [0;37mSetting prompt string to ['root@(.*):[/~]#', '/ #'][0m
+[0;90m2026-09-07T04:59:51[0m [0;37mForcing a shell prompt, looking for ['root@(.*):[/~]#', '/ #'][0m
+[0;90m2026-09-07T04:59:51[0m [0;37mSending line: ''[0m
+[0;90m2026-09-07T04:59:51[0m [0;35m[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mexpect-shell-connection: Wait for prompt ['root@(.*):[/~]#', '/ #'] (timeout 00:15:00)[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mWaiting using forced prompt support (timeout 00:07:30)[0m
+[0;90m2026-09-07T04:59:51[0m [32mroot@tuxtest:~# [0m
+[0;90m2026-09-07T04:59:51[0m [0;37mend: 2.3 expect-shell-connection (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:51[0m [0;37mstart: 2.4 export-device-env (timeout 00:14:57) [common][0m
+[0;90m2026-09-07T04:59:51[0m [0;37mend: 2.4 export-device-env (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:51[0m [1;37mend: 2 boot-image-retry (duration 00:00:03) [common][0m
+[0;90m2026-09-07T04:59:51[0m [1;37mstart: 3 lava-test-retry (timeout 00:45:00) [common][0m
+[0;90m2026-09-07T04:59:51[0m [0;37mstart: 3.1 lava-test-shell (timeout 00:45:00) [common][0m
+[0;90m2026-09-07T04:59:51[0m [0;37mUsing namespace: common[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mSending line: '#'[0m
+[0;90m2026-09-07T04:59:51[0m [0;35m#[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mlava-test-shell: Wait for prompt ['root@(.*):[/~]#', '/ #'] (timeout 00:45:00)[0m
+[0;90m2026-09-07T04:59:51[0m [32mroot@tuxtest:~# #[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mUsing /lava-1[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mSending line: 'export SHELL=/bin/sh'[0m
+[0;90m2026-09-07T04:59:51[0m [0;35mexport SHELL=/bin/sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mroot@tuxtest:~# export SHELL=/bin/sh[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mSending line: '. /lava-1/environment ; printf "<LAVA_SIGNAL_RETRUNCODE $?>\\n"'[0m
+[0;90m2026-09-07T04:59:51[0m [0;35m. /lava-1/environment ; printf "<LAVA_SIGNAL_RETRUNCODE $?>\n"[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mChecking '. /lava-1/environment' return code... (timeout 00:00:15)[0m
+[0;90m2026-09-07T04:59:51[0m [32mroot@tuxtest:~# . /lava-1/environment ; printf "<LAVA_SIGNAL_RETRUNCODE $?>\n"[0m
+[0;90m2026-09-07T04:59:51[0m [32m<LAVA_SIGNAL_RETRUNCODE 0>[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mSending line: '/lava-1/bin/lava-test-runner /lava-1/0'[0m
+[0;90m2026-09-07T04:59:51[0m [0;35m/lava-1/bin/lava-test-runner /lava-1/0[0m
+[0;90m2026-09-07T04:59:51[0m [1;37mTest shell timeout: 10s (minimum of the action and connection timeout)[0m
+[0;90m2026-09-07T04:59:51[0m [32mroot@tuxtest:~# /lava-1/bin/lava-test-runner /lava-1/0[0m
+[0;90m2026-09-07T04:59:51[0m [32m+ export TESTRUN_ID=0_kselftest-riscv[0m
+[0;90m2026-09-07T04:59:51[0m [32m+ TESTRUN_ID=0_kselftest-riscv[0m
+[0;90m2026-09-07T04:59:51[0m [32m+ cd /lava-1/0/tests/0_kselftest-riscv[0m
+[0;90m2026-09-07T04:59:51[0m [32m++ cat uuid[0m
+[0;90m2026-09-07T04:59:51[0m [32m+ UUID=1_1.1.2.1[0m
+[0;90m2026-09-07T04:59:51[0m [32m+ set +x[0m
+[0;90m2026-09-07T04:59:51[0m [32m<8>[    2.842851] <LAVA_SIGNAL_STARTRUN 0_kselftest-riscv 1_1.1.2.1>[0m
+[0;90m2026-09-07T04:59:51[0m [0;37mReceived signal: <STARTRUN> 0_kselftest-riscv 1_1.1.2.1[0m
+[0;90m2026-09-07T04:59:51[0m [1;37mStarting test lava.0_kselftest-riscv (1_1.1.2.1)[0m
+[0;90m2026-09-07T04:59:51[0m [1;37mSkipping test definition patterns.[0m
+[0;90m2026-09-07T04:59:51[0m [32m+ cd ./automated/linux/kselftest/[0m
+[0;90m2026-09-07T04:59:51[0m [32m+ ./kselftest.sh -c riscv -T '' -t kselftest_armhf.tar.gz -s true -u '' -L '' -S skipfile-lkft.yaml -b '' -g '' -e production -p /opt/kselftests/default-in-kernel -n 1 -i 1 -E ''[0m
+[0;90m2026-09-07T04:59:51[0m [32mINFO: Generating a skipfile based on /lava-1/0/tests/0_kselftest-riscv/automated/linux/kselftest/skipfile-lkft.yaml[0m
+[0;90m2026-09-07T04:59:51[0m [32mINFO: Using the following generated skipfile contents (until EOF):[0m
+[0;90m2026-09-07T04:59:51[0m [32mbpf:test_btf[0m
+[0;90m2026-09-07T04:59:51[0m [32mbpf:test_progs[0m
+[0;90m2026-09-07T04:59:51[0m [32mbreakpoints:breakpoint_test_arm64[0m
+[0;90m2026-09-07T04:59:51[0m [32mkmod:test_kmod.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mkvm:get-reg-list[0m
+[0;90m2026-09-07T04:59:51[0m [32mkvm:kvm_create_max_vcpus[0m
+[0;90m2026-09-07T04:59:51[0m [32mmqueue:mq_open_tests[0m
+[0;90m2026-09-07T04:59:51[0m [32mmqueue:mq_perf_tests[0m
+[0;90m2026-09-07T04:59:51[0m [32mnet:fib_nexthops.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnet:msg_zerocopy.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnet:rtnetlink.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnet:run_afpackettests[0m
+[0;90m2026-09-07T04:59:51[0m [32mnet:tls[0m
+[0;90m2026-09-07T04:59:51[0m [32mnet:udpgro.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnet:xfrm_policy.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnetfilter:bridge_brouter.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnetfilter:conntrack_icmp_related.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnetfilter:nft_flowtable.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnetfilter:nft_nat.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnetfilter:nft_trans_stress.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mpidfd:pidfd_wait[0m
+[0;90m2026-09-07T04:59:51[0m [32mproc:proc-pid-vm[0m
+[0;90m2026-09-07T04:59:51[0m [32mptrace:vmaccess[0m
+[0;90m2026-09-07T04:59:51[0m [32msync:sync_test[0m
+[0;90m2026-09-07T04:59:51[0m [32mvm:run_vmtests[0m
+[0;90m2026-09-07T04:59:51[0m [32mzram:zram.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mINFO: EOF[0m
+[0;90m2026-09-07T04:59:51[0m [32mkselftests found on rootfs[0m
+[0;90m2026-09-07T04:59:51[0m [32mskiplist:[0m
+[0;90m2026-09-07T04:59:51[0m [32m========================================[0m
+[0;90m2026-09-07T04:59:51[0m [32mbpf:test_btf[0m
+[0;90m2026-09-07T04:59:51[0m [32mbpf:test_progs[0m
+[0;90m2026-09-07T04:59:51[0m [32mbreakpoints:breakpoint_test_arm64[0m
+[0;90m2026-09-07T04:59:51[0m [32mkmod:test_kmod.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mkvm:get-reg-list[0m
+[0;90m2026-09-07T04:59:51[0m [32mkvm:kvm_create_max_vcpus[0m
+[0;90m2026-09-07T04:59:51[0m [32mmqueue:mq_open_tests[0m
+[0;90m2026-09-07T04:59:51[0m [32mmqueue:mq_perf_tests[0m
+[0;90m2026-09-07T04:59:51[0m [32mnet:fib_nexthops.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnet:msg_zerocopy.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnet:rtnetlink.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnet:run_afpackettests[0m
+[0;90m2026-09-07T04:59:51[0m [32mnet:tls[0m
+[0;90m2026-09-07T04:59:51[0m [32mnet:udpgro.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnet:xfrm_policy.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnetfilter:bridge_brouter.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnetfilter:conntrack_icmp_related.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnetfilter:nft_flowtable.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnetfilter:nft_nat.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mnetfilter:nft_trans_stress.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mpidfd:pidfd_wait[0m
+[0;90m2026-09-07T04:59:51[0m [32mproc:proc-pid-vm[0m
+[0;90m2026-09-07T04:59:51[0m [32mptrace:vmaccess[0m
+[0;90m2026-09-07T04:59:51[0m [32msync:sync_test[0m
+[0;90m2026-09-07T04:59:51[0m [32mvm:run_vmtests[0m
+[0;90m2026-09-07T04:59:51[0m [32mzram:zram.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32m========================================[0m
+[0;90m2026-09-07T04:59:51[0m [32m============== Tests to run ===============[0m
+[0;90m2026-09-07T04:59:51[0m [32mriscv:pointer_masking[0m
+[0;90m2026-09-07T04:59:51[0m [32mriscv:hwprobe[0m
+[0;90m2026-09-07T04:59:51[0m [32mriscv:cbo[0m
+[0;90m2026-09-07T04:59:51[0m [32mriscv:which-cpus[0m
+[0;90m2026-09-07T04:59:51[0m [32mriscv:run_mmap.sh[0m
+[0;90m2026-09-07T04:59:51[0m [32mriscv:sigreturn[0m
+[0;90m2026-09-07T04:59:51[0m [32mriscv:v_initval[0m
+[0;90m2026-09-07T04:59:51[0m [32mriscv:vstate_prctl[0m
+[0;90m2026-09-07T04:59:51[0m [32m===========End Tests to run ===============[0m
+[0;90m2026-09-07T04:59:52[0m [32mshardfile-riscv pass[0m
+[0;90m2026-09-07T04:59:52[0m [32m<12>[    3.886437] kselftest: Running tests in riscv[0m
+[0;90m2026-09-07T04:59:52[0m [32mTAP version 13[0m
+[0;90m2026-09-07T04:59:52[0m [32m1..8[0m
+[0;90m2026-09-07T04:59:52[0m [32m# timeout set to 45[0m
+[0;90m2026-09-07T04:59:52[0m [32m# selftests: riscv: pointer_masking[0m
+[0;90m2026-09-07T04:59:53[0m [32m# TAP version 13[0m
+[0;90m2026-09-07T04:59:53[0m [32m# 1..61[0m
+[0;90m2026-09-07T04:59:53[0m [32m# # Testing available PMLEN values[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 1 # SKIP PMLEN=0 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 2 # SKIP PMLEN=0 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 3 # SKIP PMLEN=0 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 4 # SKIP PMLEN=1 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 5 # SKIP PMLEN=1 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 6 # SKIP PMLEN=1 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 7 # SKIP PMLEN=2 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 8 # SKIP PMLEN=2 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 9 # SKIP PMLEN=2 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 10 # SKIP PMLEN=3 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 11 # SKIP PMLEN=3 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 12 # SKIP PMLEN=3 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 13 # SKIP PMLEN=4 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 14 # SKIP PMLEN=4 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 15 # SKIP PMLEN=4 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 16 # SKIP PMLEN=5 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 17 # SKIP PMLEN=5 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 18 # SKIP PMLEN=5 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 19 # SKIP PMLEN=6 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 20 # SKIP PMLEN=6 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 21 # SKIP PMLEN=6 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 22 # SKIP PMLEN=7 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 23 # SKIP PMLEN=7 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 24 # SKIP PMLEN=7 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 25 # SKIP PMLEN=8 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 26 # SKIP PMLEN=8 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 27 # SKIP PMLEN=8 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 28 # SKIP PMLEN=9 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 29 # SKIP PMLEN=9 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 30 # SKIP PMLEN=9 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 31 # SKIP PMLEN=10 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 32 # SKIP PMLEN=10 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 33 # SKIP PMLEN=10 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 34 # SKIP PMLEN=11 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 35 # SKIP PMLEN=11 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 36 # SKIP PMLEN=11 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 37 # SKIP PMLEN=12 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 38 # SKIP PMLEN=12 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 39 # SKIP PMLEN=12 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 40 # SKIP PMLEN=13 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 41 # SKIP PMLEN=13 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 42 # SKIP PMLEN=13 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 43 # SKIP PMLEN=14 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 44 # SKIP PMLEN=14 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 45 # SKIP PMLEN=14 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 46 # SKIP PMLEN=15 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 47 # SKIP PMLEN=15 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 48 # SKIP PMLEN=15 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 49 # SKIP PMLEN=16 PR_GET_TAGGED_ADDR_CTRL[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 50 # SKIP PMLEN=16 constraint[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 51 # SKIP PMLEN=16 validity[0m
+[0;90m2026-09-07T04:59:53[0m [32m# Bail out! Failed to enable pointer masking[0m
+[0;90m2026-09-07T04:59:53[0m [32m# # 51 skipped test(s) detected. Consider enabling relevant config options to improve coverage.[0m
+[0;90m2026-09-07T04:59:53[0m [32m# # Planned tests != run tests (61 != 51)[0m
+[0;90m2026-09-07T04:59:53[0m [32m# # Totals: pass:0 fail:0 xfail:0 xpass:0 skip:51 error:0[0m
+[0;90m2026-09-07T04:59:53[0m [32mnot ok 1 selftests: riscv: pointer_masking # exit=1[0m
+[0;90m2026-09-07T04:59:53[0m [32m# timeout set to 45[0m
+[0;90m2026-09-07T04:59:53[0m [32m# selftests: riscv: hwprobe[0m
+[0;90m2026-09-07T04:59:53[0m [32m# TAP version 13[0m
+[0;90m2026-09-07T04:59:53[0m [32m# 1..5[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 1 NULL CPU set[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 2 Bad CPU set[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 3 NULL CPU set with non-zero size[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 4 Existing key is maintained[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 5 Unknown key overwritten with -1 and doesn't block other elements[0m
+[0;90m2026-09-07T04:59:53[0m [32m# # Totals: pass:5 fail:0 xfail:0 xpass:0 skip:0 error:0[0m
+[0;90m2026-09-07T04:59:53[0m [32mok 2 selftests: riscv: hwprobe[0m
+[0;90m2026-09-07T04:59:53[0m [32m# timeout set to 45[0m
+[0;90m2026-09-07T04:59:53[0m [32m# selftests: riscv: cbo[0m
+[0;90m2026-09-07T04:59:53[0m [32m# TAP version 13[0m
+[0;90m2026-09-07T04:59:53[0m [32m# 1..6[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 1 Zicboz block size[0m
+[0;90m2026-09-07T04:59:53[0m [32m# # Zicboz block size: 64[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 2 cbo.zero[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 3 cbo.zero check[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 4 Zicbom block size[0m
+[0;90m2026-09-07T04:59:53[0m [32m# # Zicbom block size: 64[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 5 cbo.clean[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 6 cbo.flush[0m
+[0;90m2026-09-07T04:59:53[0m [32m# # Totals: pass:6 fail:0 xfail:0 xpass:0 skip:0 error:0[0m
+[0;90m2026-09-07T04:59:53[0m [32mok 3 selftests: riscv: cbo[0m
+[0;90m2026-09-07T04:59:53[0m [32m# timeout set to 45[0m
+[0;90m2026-09-07T04:59:53[0m [32m# selftests: riscv: which-cpus[0m
+[0;90m2026-09-07T04:59:53[0m [32m# TAP version 13[0m
+[0;90m2026-09-07T04:59:53[0m [32m# 1..7[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 1 no cpusetsize[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 2 NULL cpus[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 3 unknown key[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 4 duplicate keys[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 5 set all cpus[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 6 set all affinity cpus[0m
+[0;90m2026-09-07T04:59:53[0m [32m# ok 7 clear all cpus[0m
+[0;90m2026-09-07T04:59:53[0m [32m# # Totals: pass:7 fail:0 xfail:0 xpass:0 skip:0 error:0[0m
+[0;90m2026-09-07T04:59:53[0m [32mok 4 selftests: riscv: which-cpus[0m
+[0;90m2026-09-07T04:59:54[0m [32m# timeout set to 45[0m
+[0;90m2026-09-07T04:59:54[0m [32m# selftests: riscv: run_mmap.sh[0m
+[0;90m2026-09-07T04:59:54[0m [32m# TAP version 13[0m
+[0;90m2026-09-07T04:59:54[0m [32m# 1..1[0m
+[0;90m2026-09-07T04:59:54[0m [32m# # Starting 1 tests from 1 test cases.[0m
+[0;90m2026-09-07T04:59:54[0m [32m# #  RUN           global.default_rlimit ...[0m
+[0;90m2026-09-07T04:59:54[0m [32m# #            OK  global.default_rlimit[0m
+[0;90m2026-09-07T04:59:54[0m [32m# ok 1 global.default_rlimit[0m
+[0;90m2026-09-07T04:59:54[0m [32m# # PASSED: 1 / 1 tests passed.[0m
+[0;90m2026-09-07T04:59:54[0m [32m# # Totals: pass:1 fail:0 xfail:0 xpass:0 skip:0 error:0[0m
+[0;90m2026-09-07T04:59:54[0m [32m# TAP version 13[0m
+[0;90m2026-09-07T04:59:54[0m [32m# 1..1[0m
+[0;90m2026-09-07T04:59:54[0m [32m# # Starting 1 tests from 1 test cases.[0m
+[0;90m2026-09-07T04:59:54[0m [32m# #  RUN           global.infinite_rlimit ...[0m
+[0;90m2026-09-07T04:59:54[0m [32m# #            OK  global.infinite_rlimit[0m
+[0;90m2026-09-07T04:59:54[0m [32m# ok 1 global.infinite_rlimit[0m
+[0;90m2026-09-07T04:59:54[0m [32m# # PASSED: 1 / 1 tests passed.[0m
+[0;90m2026-09-07T04:59:54[0m [32m# # Totals: pass:1 fail:0 xfail:0 xpass:0 skip:0 error:0[0m
+[0;90m2026-09-07T04:59:54[0m [32mok 5 selftests: riscv: run_mmap.sh[0m
+[0;90m2026-09-07T04:59:54[0m [32m# timeout set to 45[0m
+[0;90m2026-09-07T04:59:54[0m [32m# selftests: riscv: sigreturn[0m
+[0;90m2026-09-07T04:59:54[0m [32m# TAP version 13[0m
+[0;90m2026-09-07T04:59:54[0m [32m# 1..2[0m
+[0;90m2026-09-07T04:59:54[0m [32m# # Starting 2 tests from 1 test cases.[0m
+[0;90m2026-09-07T04:59:54[0m [32m# #  RUN           global.vector_restore ...[0m
+[0;90m2026-09-07T04:59:54[0m [32m# #            OK  global.vector_restore[0m
+[0;90m2026-09-07T04:59:54[0m [32m# ok 1 global.vector_restore[0m
+[0;90m2026-09-07T04:59:54[0m [32m# #  RUN           global.vector_restore_signal_handler_override ...[0m
+[0;90m2026-09-07T04:59:54[0m [32m# #            OK  global.vector_restore_signal_handler_override[0m
+[0;90m2026-09-07T04:59:54[0m [32m# ok 2 global.vector_restore_signal_handler_override[0m
+[0;90m2026-09-07T04:59:54[0m [32m# # PASSED: 2 / 2 tests passed.[0m
+[0;90m2026-09-07T04:59:54[0m [32m# # Totals: pass:2 fail:0 xfail:0 xpass:0 skip:0 error:0[0m
+[0;90m2026-09-07T04:59:54[0m [32mok 6 selftests: riscv: sigreturn[0m
+[0;90m2026-09-07T04:59:54[0m [32m# timeout set to 45[0m
+[0;90m2026-09-07T04:59:54[0m [32m# selftests: riscv: v_initval[0m
+[0;90m2026-09-07T04:59:54[0m [32m# TAP version 13[0m
+[0;90m2026-09-07T04:59:54[0m [32m# 1..1[0m
+[0;90m2026-09-07T04:59:54[0m [32m# # Starting 1 tests from 1 test cases.[0m
+[0;90m2026-09-07T04:59:54[0m [32m# #  RUN           global.v_initval ...[0m
+[0;90m2026-09-07T04:59:54[0m [32m# #            OK  global.v_initval[0m
+[0;90m2026-09-07T04:59:54[0m [32m# ok 1 global.v_initval[0m
+[0;90m2026-09-07T04:59:54[0m [32m# # PASSED: 1 / 1 tests passed.[0m
+[0;90m2026-09-07T04:59:54[0m [32m# # Totals: pass:1 fail:0 xfail:0 xpass:0 skip:0 error:0[0m
+[0;90m2026-09-07T04:59:54[0m [32mok 7 selftests: riscv: v_initval[0m
+[0;90m2026-09-07T04:59:54[0m [32m# timeout set to 45[0m
+[0;90m2026-09-07T04:59:54[0m [32m# selftests: riscv: vstate_prctl[0m
+[0;90m2026-09-07T04:59:54[0m [32m<6>[    6.414876] vstate_exec_nol[358]: unhandled signal 4 code 0x1 at 0x00000000000103d4 in vstate_exec_nolibc[3d4,10000+1000][0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.416970] CPU: 1 UID: 0 PID: 358 Comm: vstate_exec_nol Not tainted 6.18.0 #1 NONE [0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.417730] Hardware name: riscv-virtio,qemu (DT)[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.418159] epc : 00000000000103d4 ra : 00000000000102b0 sp : 00007fffcf5c41c0[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.418700]  gp : 0000000000012800 tp : 0000000000094760 t0 : 0a2e2e2e20676e69[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.419264]  t1 : 0000000000000008 t2 : 0000000000000020 s0 : 0000000000000000[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.420400]  s1 : 0000000000000001 a0 : 0000000000000001 a1 : 0000000000000000[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.421618]  a2 : 0000000000000000 a3 : 0000000000000000 a4 : 0000000000000000[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.422691]  a5 : 0000000000000000 a6 : 0000000000000000 a7 : 00000000000000a7[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.424200]  s2 : 0000000000000000 s3 : ffffffffffffffff s4 : 0000000000011fb8[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.426795]  s5 : 0000000000000000 s6 : 0000000000000005 s7 : 0000000000000004[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.427516]  s8 : 0000000000000001 s9 : 0000000000000005 s10: 00007fffb6439000[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.428379]  s11: 4046800000000002 t3 : 0000000000000040 t4 : 0000000000094128[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.430545]  t5 : 00000000000956a1 t6 : 0000000000000073[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.432606] status: 0000000200004020 badaddr: 000000000d307057 cause: 0000000000000002[0m
+[0;90m2026-09-07T04:59:54[0m [32m<6>[    6.434727] Code: 0000 0513 26a5 00ef 1620 851b 0004 b7ad f54e bde9 (7057) 0d30 [0m
+[0;90m2026-09-07T04:59:54[0m [32m<6>[    6.457605] vstate_exec_nol[367]: unhandled signal 4 code 0x1 at 0x00000000000103d4 in vstate_exec_nolibc[3d4,10000+1000][0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.463195] CPU: 0 UID: 0 PID: 367 Comm: vstate_exec_nol Not tainted 6.18.0 #1 NONE [0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.464263] Hardware name: riscv-virtio,qemu (DT)[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.465900] epc : 00000000000103d4 ra : 00000000000102b0 sp : 00007ffffe2204c0[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.466732]  gp : 0000000000012800 tp : 0000000000094760 t0 : 0a2e2e2e20676e69[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.467239]  t1 : 0000000000000008 t2 : 0000000000000020 s0 : 0000000000000000[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.467751]  s1 : 0000000000000015 a0 : 0000000000000015 a1 : 0000000000000000[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.468017]  a2 : 0000000000000000 a3 : 0000000000000000 a4 : 0000000000000000[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.469550]  a5 : 0000000000000001 a6 : 0000000000000000 a7 : 00000000000000a7[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.470720]  s2 : 0000000000000000 s3 : ffffffffffffffff s4 : 0000000000011fb8[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.471360]  s5 : 0000000000000000 s6 : 0000000000000008 s7 : 0000000000000004[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.472142]  s8 : 0000000000000001 s9 : 0000000000000008 s10: 00007fffb6439000[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.473508]  s11: 4046800000000002 t3 : 0000000000000040 t4 : 0000000000094128[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.475267]  t5 : 00000000000956a1 t6 : 0000000000000073[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.477445] status: 0000000200004020 badaddr: 000000000d307057 cause: 0000000000000002[0m
+[0;90m2026-09-07T04:59:54[0m [32m<6>[    6.480178] Code: 0000 0513 26a5 00ef 1620 851b 0004 b7ad f54e bde9 (7057) 0d30 [0m
+[0;90m2026-09-07T04:59:54[0m [32m<6>[    6.490604] vstate_exec_nol[370]: unhandled signal 4 code 0x1 at 0x00000000000103d4 in vstate_exec_nolibc[3d4,10000+1000][0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.491342] CPU: 1 UID: 0 PID: 370 Comm: vstate_exec_nol Not tainted 6.18.0 #1 NONE [0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.491868] Hardware name: riscv-virtio,qemu (DT)[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.492410] epc : 00000000000103d4 ra : 00000000000102b0 sp : 00007fffc7d2f7c0[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.494322]  gp : 0000000000012800 tp : 0000000000094760 t0 : 0a2e2e2e20746972[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.495834]  t1 : 0000000000000008 t2 : 0000000000000020 s0 : 0000000000000000[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.496729]  s1 : 0000000000000015 a0 : 0000000000000015 a1 : 0000000000000000[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.499277]  a2 : 0000000000000000 a3 : 0000000000000000 a4 : 0000000000000000[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.500397]  a5 : 0000000000000000 a6 : 0000000000000000 a7 : 00000000000000a7[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.502565]  s2 : 0000000000000000 s3 : ffffffffffffffff s4 : 0000000000011fb8[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.504139]  s5 : 0000000000000000 s6 : 0000000000000009 s7 : 0000000000000004[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.507141]  s8 : 0000000000000001 s9 : 0000000000000009 s10: 00007fffb6439000[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.507798]  s11: 4046800000000002 t3 : 0000000000000040 t4 : 0000000000094128[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.508885]  t5 : 00000000000956a1 t6 : 0000000000000073[0m
+[0;90m2026-09-07T04:59:54[0m [32m<4>[    6.510809] status: 0000000200004020 badaddr: 000000000d307057 cause: 0000000000000002[0m
+[0;90m2026-09-07T04:59:54[0m [32m<6>[    6.511886] Code: 0000 0513 26a5 00ef 1620 851b 0004 b7ad f54e bde9 (7057) 0d30 [0m
+[0;90m2026-09-07T04:59:55[0m [32m# TAP version 13[0m
+[0;90m2026-09-07T04:59:55[0m [32m# 1..13[0m
+[0;90m2026-09-07T04:59:55[0m [32m# # Starting 13 tests from 1 test cases.[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #  RUN           global.get_control_no_v ...[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #      SKIP      Test expects vector to be not supported[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #            OK  global.get_control_no_v[0m
+[0;90m2026-09-07T04:59:55[0m [32m# ok 1 global.get_control_no_v # SKIP Test expects vector to be not supported[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #  RUN           global.set_control_no_v ...[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #      SKIP      Test expects vector to be not supported[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #            OK  global.set_control_no_v[0m
+[0;90m2026-09-07T04:59:55[0m [32m# ok 2 global.set_control_no_v # SKIP Test expects vector to be not supported[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #  RUN           global.vstate_on_current ...[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #            OK  global.vstate_on_current[0m
+[0;90m2026-09-07T04:59:55[0m [32m# ok 3 global.vstate_on_current[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #  RUN           global.vstate_off_eperm ...[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #            OK  global.vstate_off_eperm[0m
+[0;90m2026-09-07T04:59:55[0m [32m# ok 4 global.vstate_off_eperm[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #  RUN           global.vstate_on_no_nesting ...[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #            OK  global.vstate_on_no_nesting[0m
+[0;90m2026-09-07T04:59:55[0m [32m# ok 5 global.vstate_on_no_nesting[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #  RUN           global.vstate_off_nesting ...[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #            OK  global.vstate_off_nesting[0m
+[0;90m2026-09-07T04:59:55[0m [32m# ok 6 global.vstate_off_nesting[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #  RUN           global.vstate_on_inherit_no_nesting ...[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #            OK  global.vstate_on_inherit_no_nesting[0m
+[0;90m2026-09-07T04:59:55[0m [32m# ok 7 global.vstate_on_inherit_no_nesting[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #  RUN           global.vstate_on_inherit ...[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #            OK  global.vstate_on_inherit[0m
+[0;90m2026-09-07T04:59:55[0m [32m# ok 8 global.vstate_on_inherit[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #  RUN           global.vstate_off_inherit_no_nesting ...[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #            OK  global.vstate_off_inherit_no_nesting[0m
+[0;90m2026-09-07T04:59:55[0m [32m# ok 9 global.vstate_off_inherit_no_nesting[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #  RUN           global.vstate_off_inherit ...[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #            OK  global.vstate_off_inherit[0m
+[0;90m2026-09-07T04:59:55[0m [32m# ok 10 global.vstate_off_inherit[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #  RUN           global.inval_set_control_1 ...[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #            OK  global.inval_set_control_1[0m
+[0;90m2026-09-07T04:59:55[0m [32m# ok 11 global.inval_set_control_1[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #  RUN           global.inval_set_control_2 ...[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #            OK  global.inval_set_control_2[0m
+[0;90m2026-09-07T04:59:55[0m [32m# ok 12 global.inval_set_control_2[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #  RUN           global.inval_set_control_3 ...[0m
+[0;90m2026-09-07T04:59:55[0m [32m# #            OK  global.inval_set_control_3[0m
+[0;90m2026-09-07T04:59:55[0m [32m# ok 13 global.inval_set_control_3[0m
+[0;90m2026-09-07T04:59:55[0m [32m# # PASSED: 13 / 13 tests passed.[0m
+[0;90m2026-09-07T04:59:55[0m [32m# # 2 skipped test(s) detected. Consider enabling relevant config options to improve coverage.[0m
+[0;90m2026-09-07T04:59:55[0m [32m# # Totals: pass:11 fail:0 xfail:0 xpass:0 skip:2 error:0[0m
+[0;90m2026-09-07T04:59:55[0m [32mok 8 selftests: riscv: vstate_prctl[0m
+[0;90m2026-09-07T04:59:56[0m [32mTraceback (most recent call last):[0m
+[0;90m2026-09-07T04:59:56[0m [32m  File [35m"/lava-1/0/tests/0_kselftest-riscv/automated/linux/kselftest/./parse-output.py"[0m, line [35m4[0m, in [35m<module>[0m[0m
+[0;90m2026-09-07T04:59:56[0m [32m    from tap import parser[0m
+[0;90m2026-09-07T04:59:56[0m [32m[1;35mModuleNotFoundError[0m: [35mNo module named 'tap'[0m[0m
+[0;90m2026-09-07T04:59:56[0m [32m+ ../../utils/send-to-lava.sh ./output/result.txt[0m
+[0;90m2026-09-07T04:59:56[0m [32m<8>[    8.370524] <LAVA_SIGNAL_TESTCASE TEST_CASE_ID=shardfile-riscv RESULT=pass>[0m
+[0;90m2026-09-07T04:59:56[0m [0;37mReceived signal: <TESTCASE> TEST_CASE_ID=shardfile-riscv RESULT=pass[0m
+[0;90m2026-09-07T04:59:56[0m [1;34m{'definition': '0_kselftest-riscv', 'case': 'shardfile-riscv', 'result': 'pass', 'starttc': 826, 'endtc': 826}[0m
+[0;90m2026-09-07T04:59:56[0m [32m+ set +x[0m
+[0;90m2026-09-07T04:59:56[0m [32m<8>[    8.378322] <LAVA_SIGNAL_ENDRUN 0_kselftest-riscv 1_1.1.2.1>[0m
+[0;90m2026-09-07T04:59:56[0m [0;37mReceived signal: <ENDRUN> 0_kselftest-riscv 1_1.1.2.1[0m
+[0;90m2026-09-07T04:59:56[0m [1;37mEnding use of test pattern.[0m
+[0;90m2026-09-07T04:59:56[0m [1;37mEnding test lava.0_kselftest-riscv (1_1.1.2.1), duration 5.54[0m
+[0;90m2026-09-07T04:59:56[0m [1;34m{'definition': 'lava', 'case': '0_kselftest-riscv', 'uuid': '1_1.1.2.1', 'repository': 'file:///home/hao/.cache/tuxrun/assets/https___github.com_Linaro_test-definitions_releases_download_2026.06.02_2026.06.tar.zst', 'path': 'automated/linux/kselftest/kselftest.yaml', 'duration': '5.54', 'result': 'pass', 'revision': 'unspecified', 'namespace': 'common'}[0m
+[0;90m2026-09-07T04:59:56[0m [0;37m--- 0_kselftest-riscv Test Report ---[0m
+[0;90m2026-09-07T04:59:56[0m [0;37mshardfile-riscv: pass
+[0m
+[0;90m2026-09-07T04:59:56[0m [0;37m---------------- End ----------------[0m
+[0;90m2026-09-07T04:59:56[0m [1;37mok: lava_test_shell seems to have completed[0m
+[0;90m2026-09-07T04:59:56[0m [0;37mend: 3.1 lava-test-shell (duration 00:00:06) [common][0m
+[0;90m2026-09-07T04:59:56[0m [1;37mend: 3 lava-test-retry (duration 00:00:06) [common][0m
+[0;90m2026-09-07T04:59:56[0m [1;37mstart: 4 finalize (timeout 00:05:00) [common][0m
+[0;90m2026-09-07T04:59:56[0m [0;37mstart: 4.1 power-off (timeout 00:00:30) [common][0m
+[0;90m2026-09-07T04:59:56[0m [0;37mend: 4.1 power-off (duration 00:00:00) [common][0m
+[0;90m2026-09-07T04:59:56[0m [0;37mstart: 4.2 read-feedback (timeout 00:05:00) [common][0m
+[0;90m2026-09-07T04:59:56[0m <[0;33mcommon[0m> [0;33m<8>[    8.384312] <LAVA_TEST_RUNNER EXIT>[0m
+[0;90m2026-09-07T04:59:56[0m [0;37mListened to connection for namespace 'common' for up to 1s[0m
+[0;90m2026-09-07T04:59:56[0m [0;37mListened to connection for namespace 'common' for up to 1s[0m
+[0;90m2026-09-07T04:59:56[0m [0;37mListened to connection for namespace 'common' for up to 1s[0m
+[0;90m2026-09-07T04:59:57[0m [1;37mFinalising connection for namespace 'common'[0m
+[0;90m2026-09-07T04:59:57[0m [0;37mSending line: 'poweroff'[0m
+[0;90m2026-09-07T04:59:57[0m [0;35mpoweroff[0m
+[0;90m2026-09-07T04:59:57[0m [0;37mAlready disconnected[0m
+[0;90m2026-09-07T04:59:57[0m [32mroot@tuxtest:~# poweroff[0m
+[0;90m2026-09-07T04:59:57[0m [0;37mend: 4.2 read-feedback (duration 00:00:01) [common][0m
+[0;90m2026-09-07T04:59:57[0m [0;37mAlready disconnected[0m
+[0;90m2026-09-07T04:59:57[0m [1;37mend: 4 finalize (duration 00:00:01) [common][0m
+[0;90m2026-09-07T04:59:57[0m [1;37mCleaning after the job[0m
+[0;90m2026-09-07T04:59:57[0m [0;37mCleaning up downloaded image: /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/url-repo-action-7oz_yq0q/url_repo/https___github.com_Linaro_test-definitions_releases_download_2026.06.02_2026.06.tar[0m
+[0;90m2026-09-07T04:59:57[0m [0;37mCleaning up downloaded image: /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/deployimages-8xz3wq9p/kernel/Image[0m
+[0;90m2026-09-07T04:59:57[0m [0;37mCleaning up downloaded image: /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/deployimages-8xz3wq9p/rootfs/rootfs.ext4[0m
+[0;90m2026-09-07T04:59:57[0m [0;37mCleaning up downloaded image: /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1/deployimages-8xz3wq9p/rootfs.kselftest/kselftest.tar[0m
+[0;90m2026-09-07T04:59:57[0m [1;37mRemoving root tmp directory at /var/lib/lava/dispatcher/tmp/tuxrun-7ynlhh82-1[0m
+[0;90m2026-09-07T04:59:58[0m [1;37mJob finished correctly[0m
+[0;90m2026-09-07T04:59:58[0m [1;34m{'definition': 'lava', 'case': 'job', 'result': 'pass'}[0m
