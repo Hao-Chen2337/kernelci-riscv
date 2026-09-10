@@ -10,14 +10,14 @@
 - One-time patch for an already-installed tuxlava (riscv kselftest support):
 
 ```bash
-cd ~/.local/lib/python3.10/site-packages && patch -p1 < /home/hao/kernelci-riscv/config/tuxlava-kselftest-riscv.patch
+patch -p1 -d ~/.local/lib/python3.10/site-packages < config/tuxlava-kselftest-riscv.patch
 ```
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `./run.sh setup` | Clone core/api/pipeline + apply PR1/bullseye/nginx patches (skipped if already applied) + validate_yaml |
+| `./run.sh setup` | Clone core/api/pipeline + apply PR1/bullseye/nginx patches (skipped if already applied) + generate runtime config (`.env`, SSH keys, API token) + validate_yaml |
 | `./run.sh fetch [--job name] [--kvm] [--kvm-full]` | Tier A: re-run the newest production riscv build locally with tuxrun; artifacts in `work/downloads/` |
 | `./run.sh stack [--seed]` | Tier B: start the local full stack (api/db/redis/storage/ssh + artifact server + real callback + official scheduler); `--seed` dispatches (overridable via `SEED_*` env vars) |
 | `./run.sh worker [--once]` | Take jobs, execute, report back; `--once` exits after the existing queue; unposted results persist and are re-posted (never re-run) on the next start |
@@ -25,6 +25,33 @@ cd ~/.local/lib/python3.10/site-packages && patch -p1 < /home/hao/kernelci-riscv
 | `./run.sh verify` | Full gate: validate_yaml + verify-lava-body + verify-worker-guards + ruff |
 | `./run.sh drift` / `./run.sh trend` | Config drift / regression pass-rates |
 | `./run.sh stop` | Stop the whole local stack (incl. the docker compose API stack; data stays in volumes) |
+
+## Fresh deployment (one command)
+
+`./run.sh setup` runs `scripts/local-instance-init.sh` at the end, so a fresh
+clone gets its runtime config generated automatically — no manual steps:
+
+- `kernelci-api/.env` — generated from `kernelci-api/env.sample`
+  (`SECRET_KEY`, `MONGO_SERVICE`, `PUBLIC_BASE_URL`, initial admin
+  user/password/email). Re-running keeps an existing file; `--force`
+  regenerates it (a new `SECRET_KEY` invalidates every JWT).
+- SSH keypair — `kernelci-pipeline/data/ssh/id_rsa_tarball` (private, `0600`)
+  and `kernelci-api/docker/ssh/user-data/authorized_keys` (public, `0644`);
+  lets the scheduler upload jobdefs to storage via scp.
+- `KCI_API_TOKEN` in `kernelci-pipeline/.env` — tries `POST /latest/user/login`
+  first; in this kernelci-api revision that route is **not registered**
+  (upstream versioned-app regression, returns 405), so the script falls back to
+  minting the token with the API's own JWT strategy inside the `api` container.
+  Either way it is verified against `/latest/whoami` before being written.
+
+Both `.env` files and the keypair live in gitignored directories, so no secret
+is ever committed. The old manual flow (hand-editing `.env`, generating keys by
+hand, pasting a token) is no longer needed. To force-refresh the keys or the
+`.env`:
+
+```bash
+bash scripts/local-instance-init.sh --force   # then restart the stack
+```
 
 ## Notes
 
