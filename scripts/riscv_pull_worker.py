@@ -31,7 +31,7 @@ kselftest-kvm runs the curated KVM_TEST_SUBSET with kvm.ko loaded at boot
 --api-config-name / --storage-config-name must match the deployment or the
 callback cannot find the node.
 
-Full parameter and behavior reference: docs/tools-guide.md section 4.
+Full parameter and behavior reference: docs/INTERNAL-NOTES.md (internal).
 """
 
 import argparse
@@ -1105,7 +1105,7 @@ def main():
         default=KVM_TEST_SUBSET,
         metavar="NAME",
         help="Curated kvm selftest names run via the LKFT "
-        "TST_CASENAME allow-list (default: the 9 tests "
+        "TST_CASENAME allow-list (default: the 8 tests "
         "in KVM_TEST_SUBSET).  kvm.ko is loaded at boot "
         "through the modules-load.d conf baked into "
         "tar.xz rootfs; with a pre-built ext4 rootfs "
