@@ -1,38 +1,33 @@
 # kernelci-riscv
 
-RISC-V KernelCI automation for the SOW in
-[riscv-admin/dev-partners#49](https://github.com/riscv-admin/dev-partners/issues/49):
-continuous regression testing of the Linux riscv Vector/Hypervisor
-extensions on QEMU, with the test profile upstreamed into kernelci-pipeline.
+承接 [riscv-admin/dev-partners#49](https://github.com/riscv-admin/dev-partners/issues/49)
+SOW 的 RISC-V KernelCI 自动化:在 QEMU 上对 Linux riscv 的
+Vector/Hypervisor 扩展做持续回归测试,并把测试配置合入上游
+kernelci-pipeline。
 
-**How to run it:** [docs/RUNBOOK.md](docs/RUNBOOK.md).
+**怎么跑:** 见 [docs/RUNBOOK.md](docs/RUNBOOK.md)。
 
-## Status (2026-09-10)
+## 状态(2026-09-10)
 
-An honest status, not a completion claim: the pipeline runs end-to-end
-locally; the riscv regression history itself is just starting to accumulate.
+如实状态,非完工声明:本地流水线已端到端跑通;riscv 回归历史刚开始积累。
 
-| Area | State |
+| 方面 | 状态 |
 |---|---|
-| PR1 test profile (4 YAMLs, 63 lines) | ready — validate_yaml green; the official scheduler renders 3 job definitions from it |
-| Local full-stack loop (seed → scheduler → worker → real callback) | baseline **pass** · kselftest-kvm **pass** (curated 8-test subset: 6 pass / 2 skip) · kselftest-riscv **fail** (9 pass / 1 fail, reported honestly) |
-| Config drift + regression trend tooling | drift: two builds of one commit, 5412 options, 0 drift; trend proven on production arm64 (2303 entries) |
-| Upstream steps | #49 reply, tracking issue, PR1 — drafts ready, not sent yet (SOW red line 2026-09-14) |
+| PR1 测试配置(4 个 YAML,63 行) | 就绪 — validate_yaml 全绿;官方调度器能据此渲染 3 份任务书 |
+| 本地全栈闭环(seed → 调度器 → worker → 真实回调) | baseline **pass** · kselftest-kvm **pass**(8 项白名单:6 pass / 2 skip)· kselftest-riscv **fail**(9 pass / 1 fail,如实上报) |
+| 配置漂移 + 回归趋势工具 | 漂移:同 commit 两次构建 5412 项 0 漂移;趋势已在生产 arm64 数据上验证(2303 条) |
+| 上游步骤 | #49 回帖、tracking issue、PR1 — 草稿就绪,尚未发出(SOW 红线 2026-09-14) |
 
-Known environment limits (reported honestly, not kernel regressions):
-`pointer_masking` bails at PMLEN=16 under QEMU TCG; `irqfd_test` and
-`sbi_pmu_test` skip under TCG; `kvm_page_table_test` is excluded from the
-default subset (hangs under TCG).
+已知环境限制(如实上报,非内核回归):pointer_masking 在 QEMU TCG 下
+PMLEN=16 处失败;irqfd_test、sbi_pmu_test 在 TCG 下跳过;
+kvm_page_table_test 在 TCG 下拖死整轮,已移出默认白名单。
 
-## Repository
+## 仓库布局
 
-| Path | Contents |
+| 路径 | 内容 |
 |---|---|
-| `docs/RUNBOOK.md` | Run commands and operating notes — the only public doc besides this file |
-| `scripts/` | All code: worker, drift, trend, fetch, verify, stack |
-| `config/` | PR1 config patch + tuxlava/bullseye/nginx patches |
-| `kernelci-*/` | Upstream clones (gitignored, created by `./run.sh setup`) |
-| `work/` | Runtime workspace (gitignored, regenerable) |
-
-Everything else under `docs/` (tool deep dives, SOW snapshot, evidence,
-issue/PR drafts, dev notes) is gitignored as internal working material.
+| `docs/RUNBOOK.md` | 运行命令与操作说明 |
+| `scripts/` | 全部代码:worker、drift、trend、fetch、verify、stack |
+| `config/` | PR1 配置补丁 + tuxlava/bullseye/nginx 补丁 |
+| `kernelci-*/` | 上游克隆(gitignore,由 `./run.sh setup` 创建) |
+| `work/` | 运行时工作区(gitignore,可再生) |
