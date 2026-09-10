@@ -89,20 +89,19 @@ cmd_worker() {
 }
 
 cmd_report() {
-  echo "--- baseline-riscv-pull-labs ---"
-  curl -s "http://127.0.0.1:8001/latest/nodes?kind=job&name=baseline-riscv-pull-labs&limit=3" \
-    | python3 -c 'import json,sys
-d=json.load(sys.stdin)
-for n in d.get("items",[]):
-    r=(n.get("data") or {}).get("kernel_revision") or {}
-    print(f"{n[\"id\"][:16]}  {n.get(\"state\"):12} {n.get(\"result\") or \"-\":14} {r.get(\"describe\",\"?\")[:30]}")'
-  echo "--- kselftest-riscv-pull-labs ---"
-  curl -s "http://127.0.0.1:8001/latest/nodes?kind=job&name=kselftest-riscv-pull-labs&limit=3" \
-    | python3 -c 'import json,sys
-d=json.load(sys.stdin)
-for n in d.get("items",[]):
-    r=(n.get("data") or {}).get("kernel_revision") or {}
-    print(f"{n[\"id\"][:16]}  {n.get(\"state\"):12} {n.get(\"result\") or \"-\":14} {r.get(\"describe\",\"?\")[:30]}")'
+  for name in baseline-riscv-pull-labs kselftest-riscv-pull-labs; do
+    echo "--- $name (newest 3) ---"
+    curl -s "http://127.0.0.1:8001/latest/nodes?kind=job&name=$name&limit=100" \
+      | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+items = sorted(d.get("items", []), key=lambda n: n.get("created") or "", reverse=True)
+for n in items[:3]:
+    r = (n.get("data") or {}).get("kernel_revision") or {}
+    print("  {:16s} {:12s} {:14s} {} ({})".format(
+        n["id"][:16], n.get("state") or "-", n.get("result") or "-",
+        (r.get("describe") or "?")[:30], (n.get("created") or "")[:10]))'
+  done
 }
 
 cmd_verify() {

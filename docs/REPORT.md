@@ -55,6 +55,11 @@ pointer_masking 的 PMLEN constraint 子项,TCG 模拟限制)+ 配置漂移检�
   (8003)→ baseline done/pass;kselftest 两单因 storage 下载截断如实报 Infrastructure。
 - **riscv collection**(v7.3-rc1,ssnpm=true,本地复跑):10 项 **9 ok / 1 not ok**
   (pointer_masking 的 PMLEN constraint,TCG 限制);v6.18 对照 7 ok/1 not ok(51/61 SKIP)。
+- **2026-09-10 一键化复验**:`./run.sh fetch` 抓生产最新构建(v6.6.156-rt79,节点
+  6aa1dfd2…)tuxrun 复跑 riscv collection = 4/4 ok(hwprobe/vstate_prctl/v_initval_nolibc/run_mmap);
+  `./run.sh setup → stack --seed → worker` 全链路:官方调度器渲染 3 份任务书 → worker 接单 →
+  真实回调 → **baseline done/pass、kselftest-kvm done/pass**;kselftest-riscv 单因本机代理失效
+  如实报 Infrastructure fail(worker 已改为直连,重跑即可)。
 - **配置漂移**:6.18 同 commit 两次 5412 项 0 漂移;生产两次 5583 项 0 漂移;6.18→7.3-rc1 = +274/−103/41。
 - **生产 trend**(arm64 pull-labs,2303 条)= 2016 pass / 81 fail / 71 regressions;
   pull-labs-demo 12472 节点(480 incomplete node_timeout / 20 pass / 0 fail)。
