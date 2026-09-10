@@ -41,7 +41,7 @@ Job mapping (test types rendered by config/runtime/*-pull-labs.jinja2):
                        ``--parameters KSELFTEST=<url>``.
 
 Known gaps (verified against tuxrun 1.10.0 / tuxlava 0.24.0):
-  * ``kselftest-riscv`` needs the companion tuxlava class in this tools/
+  * ``kselftest-riscv`` needs the companion tuxlava class in config/
     dir (tuxlava-kselftest-riscv.patch); without it tuxrun exits 2 and
     the job is reported as an infra error instead of running.
   * ``kselftest-kvm`` runs the curated KVM_TEST_SUBSET (9 tests) via the
@@ -50,7 +50,7 @@ Known gaps (verified against tuxrun 1.10.0 / tuxlava 0.24.0):
     TCG.  kvm.ko is loaded at boot via /etc/modules-load.d/kernelci.conf
     baked into tar.xz rootfs (verified locally on both a kvm-enabled
     buildroot image and the production trixie-kselftest riscv64 rootfs:
-    7 pass / 2 skip, exit 0; see runs/kvm-run/).  With
+    7 pass / 2 skip, exit 0; see work/env/).  With
     tuxrun's default ext4 rootfs, supply a pre-built kvm-enabled image
     instead.
   * ``--api-config-name`` / ``--storage-config-name`` must match the
@@ -296,10 +296,15 @@ def build_command(job, args, workspace):
             # into the rootfs (see bake_rootfs_image); the LKFT "modules"
             # test is a load/unload round-trip and must NOT be used here
             # (verified: it unloads kvm again before kselftest runs).
-            subset = args.kvm_tests or KVM_TEST_SUBSET
-            parameters.append(
-                "TST_CASENAME=" + " ".join(f"kvm:{name}" for name in subset)
-            )
+            if args.kvm_full:
+                # whole collection: no allow-list; LKFT runs every kvm test.
+                pass
+            else:
+                subset = args.kvm_tests or KVM_TEST_SUBSET
+                parameters.append(
+                    "TST_CASENAME=" + " ".join(
+                        f"kvm:{name}" for name in subset)
+                )
         cmd += ["--tests", *tests]
     cmd += ["--parameters", *parameters]
     return cmd, label
@@ -714,6 +719,20 @@ def handle_event(event, args, reports):
     node = event.get("node", {})
     node_id = node.get("id", "unknown")
     artifacts = node.get("artifacts", {})
+
+    # The events stream returns historical snapshots (state at event
+    # time); a node may have been taken/run since.  Only act on jobs
+    # that are still available NOW, so a fresh worker never replays
+    # yesterday's queue.
+    try:
+        current = requests.get(
+            f"{args.api_url}/latest/node/{node_id}", timeout=30
+        ).json()
+    except requests.exceptions.RequestException as error:
+        print(f"{node_id}: node state check failed: {error}")
+        return False
+    if current.get("state") != "available":
+        return True
     job_definition_url = artifacts.get("job_definition", "")
     if not job_definition_url or not job_definition_url.startswith("http"):
         return True  # not a pull_labs job; nothing to do
@@ -916,6 +935,9 @@ def poll_loop(args):
             # and the failure is usually environmental (404 jobdef, network).
             time.sleep(args.poll_period)
         save_state(state_file, {"timestamp": timestamp, "seen": seen_order})
+        if args.once:
+            print("--once: batch processed, exiting", flush=True)
+            break
 
 
 def main():
@@ -1003,6 +1025,19 @@ def main():
         default=4096,
         dest="max_download_size",
         help="Max download size in MiB (default: 4096).",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Process the currently available jobs once and exit "
+        "(one-shot local loop test), instead of polling forever.",
+    )
+    parser.add_argument(
+        "--kvm-full",
+        action="store_true",
+        help="Run the whole kvm collection (no TST_CASENAME allow-list). "
+        "perf/stress time out under TCG; timeouts are reported as "
+        "incomplete, never fail. Default: curated 9-test subset.",
     )
     parser.add_argument(
         "--kvm-tests",

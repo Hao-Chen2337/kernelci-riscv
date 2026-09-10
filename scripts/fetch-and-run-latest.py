@@ -36,7 +36,7 @@ KVM_SUBSET = ("kvm:set_memory_region_test kvm:kvm_create_max_vcpus "
 TUXRUN = os.environ.get("TUXRUN_BIN", shutil.which("tuxrun")
                         or os.path.expanduser("~/.local/bin/tuxrun"))
 DEFAULT_ROOTFS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "..", "runs", "kvm-run", "rootfs-kvm.ext4")
+                              "..", "work", "env", "rootfs-kvm.ext4")
 
 
 def api_get(path, api):
@@ -89,6 +89,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--job", default=JOB)
     ap.add_argument("--test", choices=sorted(TESTS), default="kselftest-riscv")
+    ap.add_argument("--kvm-full", action="store_true",
+                    help="kvm: run whole collection (no TST_CASENAME allow-list); timeouts are TCG limitation, not fails")
     ap.add_argument("--api-url", default=API)
     ap.add_argument("--rootfs", default=DEFAULT_ROOTFS)
     ap.add_argument("--out-dir", default=None)
@@ -106,7 +108,7 @@ def main():
           f"({kr.get('commit', '')[:12]}) {node.get('created')} id={node['id']}")
 
     out = args.out_dir or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "artifacts", node["id"])
+        os.path.dirname(os.path.abspath(__file__)), "..", "work", "downloads", node["id"])
     os.makedirs(out, exist_ok=True)
 
     kernel_gz = os.path.join(out, "Image.gz")
@@ -152,7 +154,8 @@ def main():
         params.append(f"KSELFTEST={base}/kselftest.tar.xz")
         if args.test == "kselftest-kvm" and modules:
             cmd += ["--modules", f"{base}/modules.tar.xz"]
-            params.append(f"TST_CASENAME={KVM_SUBSET}")
+            if not args.kvm_full:
+                params.append(f"TST_CASENAME={KVM_SUBSET}")
         cmd += ["--tests", TESTS[args.test][0]]
     cmd += ["--parameters", *params]
     print("running:", " ".join(cmd))

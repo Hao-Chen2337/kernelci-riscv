@@ -3,6 +3,7 @@
 (kernelci.runtime.lava.Callback) and every method lava_callback.py calls."""
 import argparse
 import importlib.util
+import os
 import json
 import sys
 
@@ -11,12 +12,13 @@ from kernelci.runtime.lava import Callback  # noqa: E402
 
 spec = importlib.util.spec_from_file_location(
     "riscv_pull_worker",
-    "/home/hao/kernelci-riscv/tools/riscv_pull_worker.py")
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "riscv_pull_worker.py"))
 worker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(worker)
 
-PASS_LOG = "/home/hao/kernelci-riscv/runs/job-1788797278/tuxrun.log"
-FAIL_LOG = "/home/hao/kernelci-riscv/runs/job-1788796872/tuxrun.log"
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+PASS_LOG = os.path.join(FIXTURES, "tuxrun-pass.log")
+FAIL_LOG = os.path.join(FIXTURES, "tuxrun-fail.log")
 
 
 def fake_args():

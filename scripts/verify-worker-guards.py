@@ -5,13 +5,14 @@ Covers the review findings that are testable offline: ANSI stripping,
 TAP edge cases, infra detection, log capping and test-type validation.
 Run from anywhere:
 
-    python3 tools/verify-worker-guards.py
+    python3 scripts/verify-worker-guards.py
 """
 import importlib.util
+import os
 
 spec = importlib.util.spec_from_file_location(
     "worker",
-    "/home/hao/kernelci-riscv/tools/riscv_pull_worker.py")
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "riscv_pull_worker.py"))
 w = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(w)
 

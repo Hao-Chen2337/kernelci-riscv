@@ -9,10 +9,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 API_DIR="$ROOT/kernelci-api"
 PIPE_DIR="$ROOT/kernelci-pipeline"
-# repo root layout: tools/ config/ runs/ artifacts/ docs/ archive/
+# repo root layout: scripts/ config/ work/ docs/
 ENV_FILE="$PIPE_DIR/.env"
 TOKEN="$(grep '^KCI_API_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
-SERVE_DIR="$ROOT/runs/kvm-loop/serve"
+SERVE_DIR="$ROOT/work/serve"
 SERVE_PORT=8999
 CB_PORT=8003
 
@@ -25,8 +25,16 @@ ok()  { echo "OK $*"; }
 if curl -s -m 3 -o /dev/null http://127.0.0.1:8001/latest/; then
   ok "API stack already up (127.0.0.1:8001)"
 else
-  echo "-> starting: docker compose -p kapi2 up -d api db redis storage ssh"
-  (cd "$API_DIR" && docker compose -p kapi2 up -d api db redis storage ssh >/dev/null) || die "compose failed"
+  echo "-> starting: docker compose -p kcirv up -d api db redis storage ssh"
+  if ! (cd "$API_DIR" && docker compose -p kcirv up -d api db redis storage ssh >/dev/null); then
+    # 机器/docker 重启后,残留的 Exited 同名容器会让 compose 报 name conflict;
+    # 数据都在 volume 里,删掉停止的容器重试是安全的
+    echo "  compose conflict; removing stale stopped containers and retrying"
+    for c in kernelci-api kernelci-api-db kernelci-api-redis kernelci-api-storage kernelci-api-ssh; do
+      docker rm -f "$c" >/dev/null 2>&1 || true
+    done
+    (cd "$API_DIR" && docker compose -p kcirv up -d api db redis storage ssh >/dev/null) || die "compose failed"
+  fi
   for i in $(seq 1 40); do
     curl -s -m 2 -o /dev/null http://127.0.0.1:8001/latest/ && break
     sleep 2
@@ -122,8 +130,8 @@ fi
 
 if [ "${1:-}" = "--worker" ]; then
   echo '-> worker taking jobs (Ctrl-C to stop):'
-  PATH=/usr/local/sbin:/usr/sbin:$PATH PULL_LABS_CALLBACK_TOKEN=labtoken-callback python3 "$ROOT/tools/riscv_pull_worker.py" --api-url http://127.0.0.1:8001 --tuxrun-bin /home/hao/.local/bin/tuxrun --container-runtime docker --output-dir /tmp/official-loop-out --state-file /tmp/official-loop-state.json --poll-period 5 --max-timeout 1200
+  PATH=/usr/local/sbin:/usr/sbin:$PATH PULL_LABS_CALLBACK_TOKEN=labtoken-callback python3 "$ROOT/scripts/riscv_pull_worker.py" --api-url http://127.0.0.1:8001 --tuxrun-bin /home/hao/.local/bin/tuxrun --container-runtime docker --output-dir /tmp/official-loop-out --state-file /tmp/official-loop-state.json --poll-period 5 --max-timeout 1200
 else
   echo 'next step (manual):'
-  echo "  PULL_LABS_CALLBACK_TOKEN=labtoken-callback python3 $ROOT/tools/riscv_pull_worker.py --api-url http://127.0.0.1:8001 --tuxrun-bin /home/hao/.local/bin/tuxrun --container-runtime docker --poll-period 5"
+  echo "  PULL_LABS_CALLBACK_TOKEN=labtoken-callback python3 $ROOT/scripts/riscv_pull_worker.py --api-url http://127.0.0.1:8001 --tuxrun-bin /home/hao/.local/bin/tuxrun --container-runtime docker --poll-period 5"
 fi

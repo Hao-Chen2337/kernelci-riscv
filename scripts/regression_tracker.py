@@ -28,9 +28,9 @@
 # for the same failing run.
 #
 # Examples:
-#   python3 tools/regression_tracker.py trend --jobs kselftest-riscv-pull-labs
-#   python3 tools/regression_tracker.py track --dry-run
-#   python3 tools/regression_tracker.py watch --interval 60
+#   python3 scripts/regression_tracker.py trend --jobs kselftest-riscv-pull-labs
+#   python3 scripts/regression_tracker.py track --dry-run
+#   python3 scripts/regression_tracker.py watch --interval 60
 
 import argparse
 import os

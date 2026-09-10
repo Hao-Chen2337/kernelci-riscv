@@ -1,0 +1,17 @@
+diff --git a/docker-compose.yaml b/docker-compose.yaml
+index d4cbf96..c48a837 100644
+--- a/docker-compose.yaml
++++ b/docker-compose.yaml
+@@ -38,6 +38,12 @@ services:
+   storage:
+     container_name: 'kernelci-api-storage'
+     image: 'nginx:1.21.3'
++    # local-dev: run as kernelci uid (1000) so it can read jobdefs uploaded
++    # by the scheduler via scp (mode 0600); upstream image runs uid 101
++    user: '1000:1000'
++    tmpfs:
++      - '/var/cache/nginx:rw,noexec,nosuid,size=16m,mode=0777'
++      - '/var/run:rw,noexec,nosuid,size=1m,mode=0777'
+     volumes:
+       - './docker/storage/data:/usr/share/nginx/html'
+       - './docker/storage/config/:/etc/nginx/conf.d'

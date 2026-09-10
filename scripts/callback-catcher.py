@@ -3,7 +3,7 @@
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-LOG = "/home/hao/kernelci-riscv/runs/callback-received.json"
+LOG = "/home/hao/kernelci-riscv/work/logs/callback-received.json"
 
 
 class H(BaseHTTPRequestHandler):

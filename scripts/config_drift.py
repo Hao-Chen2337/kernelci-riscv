@@ -22,13 +22,13 @@
 #
 # Examples:
 #   # newest two passing builds of the default job, drift summary only
-#   python3 tools/config_drift.py
+#   python3 scripts/config_drift.py
 #
 #   # two specific builds, full listing capped at 20 lines per category
-#   python3 tools/config_drift.py --older 6a96... --newer 6a9d... --max-lines 20
+#   python3 scripts/config_drift.py --older 6a96... --newer 6a9d... --max-lines 20
 #
 #   # machine-readable report (and CI gate: exit 1 when drift > 0)
-#   python3 tools/config_drift.py --json
+#   python3 scripts/config_drift.py --json
 #
 # Exit code: 0 = no drift, 1 = drift found (usable as a CI gate).
 

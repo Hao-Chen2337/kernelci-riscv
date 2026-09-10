@@ -7,8 +7,7 @@ kernelci-project/
 linux-local.git/
 .ruff_cache/
 
-# generated/heavy runtime output
-runs/
-artifacts/
+# runtime workspace: regenerable, never committed
+work/
 *.log
 __pycache__/

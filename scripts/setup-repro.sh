@@ -42,5 +42,5 @@ fi
 
 echo
 echo '完成。下一步:'
-echo '  bash tools/run-local-stack.sh --seed   # 起 API+回调+官方调度器并派单'
+echo '  bash scripts/run-local-stack.sh --seed   # 起 API+回调+官方调度器并派单'
 echo '  # 然后在另一个终端跑 worker 接单(见 run-local-stack.sh 输出的命令)'
