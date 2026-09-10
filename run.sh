@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 PIPE="$ROOT/kernelci-pipeline"
 TUXRUN_BIN="${TUXRUN_BIN:-$(command -v tuxrun || echo "$HOME/.local/bin/tuxrun")}"
 CALLBACK_TOKEN="${PULL_LABS_CALLBACK_TOKEN:-labtoken-callback}"
-API_URL="${KCI_API_URL:-http://127.0.0.1:8001}"
+API_URL="${KCI_API_URL:-http://127.0.0.1:${KCI_API_PORT:-8001}}"
 
 die() { echo "X $*" >&2; exit 1; }
 ok()  { echo "OK $*"; }
@@ -111,7 +111,12 @@ cmd_setup() {
   if [ -n "$TUXLAVA_DIR" ] && grep -q "KselftestRiscv\|kselftest-riscv" "$TUXLAVA_DIR/tests/kselftest.py" 2>/dev/null; then
     ok "tuxlava patch applied"
   else
-    echo "  !! tuxlava patch missing: cd ~/.local/lib/python3.10/site-packages && patch -p1 < $ROOT/config/tuxlava-kselftest-riscv.patch"
+    # Derived, not hardcoded: "python3.10" is whatever Python this machine has,
+    # and the path differs on 3.11/3.12 - which made the documented patch
+    # command fail on any other machine.
+    TUXLAVA_SITE="$(python3 -c 'import site;print(site.getusersitepackages())' 2>/dev/null \
+      || echo "$HOME/.local/lib/python$(python3 -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)/site-packages")"
+    echo "  !! tuxlava patch missing: patch -p1 -d $TUXLAVA_SITE < $ROOT/config/tuxlava-kselftest-riscv.patch"
   fi
   [ -f "$PIPE/.env" ] || cat > "$PIPE/.env" <<'EOF'
 KCI_API_TOKEN=fill in the local kernelci-api admin JWT (see kernelci-api local-instance docs)
@@ -237,13 +242,18 @@ cmd_trend() {
 }
 
 cmd_stop() {
+  # Same overridable identity as the stack: one machine can host more than one
+  # isolated deployment (its own compose project, volumes and ports), and
+  # stopping one must not stop the other.
+  local project="${KCI_COMPOSE_PROJECT:-kcirv}"
+  local serve_port="${KCI_SERVE_PORT:-8999}"
   pkill -f "scheduler.py.*pull-labs-riscv" 2>/dev/null && echo "scheduler stopped"
   pkill -f "uvicorn lava_callback" 2>/dev/null && echo "callback stopped"
-  pkill -f "http.server 8999" 2>/dev/null && echo "artifact server stopped"
+  pkill -f "http.server $serve_port" 2>/dev/null && echo "artifact server stopped"
   # API stack (api/db/redis/storage/ssh) runs under docker compose; data stays
   # in volumes, `stack` brings it back as-is.
-  if [ -d "$ROOT/kernelci-api" ] && docker compose -p kcirv -f "$ROOT/kernelci-api/docker-compose.yaml" down >/dev/null 2>&1; then
-    echo "API stack stopped"
+  if [ -d "$ROOT/kernelci-api" ] && docker compose -p "$project" -f "$ROOT/kernelci-api/docker-compose.yaml" down >/dev/null 2>&1; then
+    echo "API stack stopped (project $project)"
   fi
 }
 

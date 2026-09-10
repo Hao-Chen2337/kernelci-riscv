@@ -1,0 +1,15 @@
+# Python packages the scripts in this repository import directly.
+#
+# There is no virtualenv requirement: the scripts are run by the system python3
+# (`./run.sh` calls `python3`), and on the reference machine `requests` and
+# PyYAML came from the distribution's packages.  Pinning them here at least
+# makes the dependency explicit - it was previously undocumented, so a machine
+# missing either one failed in the middle of a job instead of at setup time.
+#
+#   python3 -m pip install -r requirements.txt
+#
+# tuxrun and tuxlava are NOT listed: tuxrun is installed separately
+# (`pip install tuxrun`) and carries its own dependencies, and tuxlava needs
+# the one-time riscv kselftest patch described in docs/RUNBOOK.md.
+requests>=2.25
+PyYAML>=5.4

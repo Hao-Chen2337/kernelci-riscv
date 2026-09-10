@@ -24,7 +24,13 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 API_DIR="$ROOT/kernelci-api"
 PIPE_DIR="$ROOT/kernelci-pipeline"
-API_URL="${KCI_API_URL:-http://127.0.0.1:8001}"
+# Overridable deployment identity, matching scripts/run-local-stack.sh: the
+# compose project decides which containers and data volumes this deployment
+# owns, so a second isolated stack on the same machine keeps its own database.
+PROJECT="${KCI_COMPOSE_PROJECT:-kcirv}"
+API_PORT="${KCI_API_PORT:-8001}"
+API_URL="${KCI_API_URL:-http://127.0.0.1:$API_PORT}"
+export API_HOST_PORT="$API_PORT"
 
 API_ENV="$API_DIR/.env"
 PIPE_ENV="$PIPE_DIR/.env"
@@ -81,7 +87,7 @@ whoami_code() { curl -s -m 15 -o /dev/null -w '%{http_code}' -H "Authorization: 
 # stdout; exits non-zero (message on stderr) when there is no user yet or the
 # container is unreachable.
 mint_token_in_container() {
-  (cd "$API_DIR" && docker compose -p kcirv exec -T api python3 - <<'PY'
+  (cd "$API_DIR" && docker compose -p "$PROJECT" exec -T api python3 - <<'PY'
 import asyncio, sys
 from api.main import initialize_beanie, User, auth_backend
 
@@ -115,7 +121,7 @@ else
   cp "$API_DIR/env.sample" "$API_ENV"
   set_env "$API_ENV" SECRET_KEY "$(openssl rand -hex 32)"
   set_env "$API_ENV" MONGO_SERVICE "mongodb://db:27017"
-  set_env "$API_ENV" PUBLIC_BASE_URL "http://127.0.0.1:8001"
+  set_env "$API_ENV" PUBLIC_BASE_URL "$API_URL"
   set_env "$API_ENV" KCI_INITIAL_ADMIN_USERNAME "admin"
   set_env "$API_ENV" KCI_INITIAL_PASSWORD "$(openssl rand -hex 16)"
   set_env "$API_ENV" KCI_INITIAL_ADMIN_EMAIL "admin@kernelci.local"
@@ -156,8 +162,8 @@ else
   if api_up; then
     ok "API already up ($API_URL)"
   else
-    info "starting: docker compose -p kcirv up -d api db redis storage ssh"
-    (cd "$API_DIR" && docker compose -p kcirv up -d api db redis storage ssh >/dev/null) \
+    info "starting: docker compose -p "$PROJECT" up -d api db redis storage ssh"
+    (cd "$API_DIR" && docker compose -p "$PROJECT" up -d api db redis storage ssh >/dev/null) \
       || die "docker compose failed (run it manually from $API_DIR to see the error)"
     ready=0
     for _ in $(seq 1 40); do
@@ -197,7 +203,7 @@ else
         info "login did not return a token (HTTP $LOGIN_CODE); falling back to in-container minting"
       fi
       if ! MINT_OUT="$(mint_token_in_container)"; then
-        die "token minting failed: check the api container is running (docker compose -p kcirv ps) and that a user already exists in the DB"
+        die "token minting failed: check the api container is running (docker compose -p $PROJECT ps) and that a user already exists in the DB"
       fi
       # Keep only the JWT-shaped line: docker compose is free to print warnings
       # on stdout, and a polluted token would only surface as a confusing

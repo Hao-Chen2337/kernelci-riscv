@@ -12,14 +12,35 @@ API_DIR="$ROOT/kernelci-api"
 PIPE_DIR="$ROOT/kernelci-pipeline"
 ENV_FILE="$PIPE_DIR/.env"
 SERVE_DIR="$ROOT/work/serve"
-SERVE_PORT=8999
-CB_PORT=8003
-# Runtime settings are rendered from the tracked template
-# (config/local-callback.toml, which uses @KCI_ROOT@) into this gitignored
-# file: kernelci's toml.load() does not expand environment variables, so the
-# template cannot refer to the checkout next to it, and hardcoding one machine's
-# home made every clone read another deployment's config and SSH key.
+# Everything that identifies THIS deployment - the compose project (which fixes
+# the data volumes) and the host ports - is overridable, so a second deployment
+# can be exercised on the same machine against its own empty database instead of
+# the accumulated one:
+#   KCI_COMPOSE_PROJECT=kcirv-clean KCI_API_PORT=18001 KCI_CB_PORT=18003 \
+#   KCI_SERVE_PORT=18999 KCI_STORAGE_PORT=18002 KCI_SSH_PORT=18022 ./run.sh stack
+# They cannot run *simultaneously*: kernelci-api's compose file hardcodes
+# container_name (kernelci-api, kernelci-api-db, ...), so the first stack has to
+# be stopped - but it is the volume, and therefore the database, that decides
+# whether this is a fresh deployment or the old one.
+PROJECT="${KCI_COMPOSE_PROJECT:-kcirv}"
+API_PORT="${KCI_API_PORT:-8001}"
+STORAGE_PORT="${KCI_STORAGE_PORT:-8002}"
+SSH_PORT="${KCI_SSH_PORT:-8022}"
+MONGO_PORT="${KCI_MONGO_PORT:-8017}"
+CB_PORT="${KCI_CB_PORT:-8003}"
+SERVE_PORT="${KCI_SERVE_PORT:-8999}"
+API_URL="http://127.0.0.1:$API_PORT"
+# The compose file already reads these (${API_HOST_PORT:-8001} ...), so no
+# patching is needed to move a stack off the default ports.
+export API_HOST_PORT="$API_PORT" STORAGE_HOST_PORT="$STORAGE_PORT"
+export SSH_HOST_PORT="$SSH_PORT" MONGO_HOST_PORT="$MONGO_PORT"
+# Runtime settings are rendered from the tracked templates (which use @NAME@
+# tokens) into gitignored files under work/: kernelci's toml.load() does not
+# expand environment variables, so a tracked file cannot refer to the checkout
+# next to it or to this deployment's ports, and hardcoding one machine's values
+# made every clone read another deployment's paths and endpoints.
 SETTINGS="$ROOT/work/local-callback.toml"
+CB_CONFIG="$ROOT/work/cb-config/pipeline.yaml"
 TUXRUN_BIN="${TUXRUN_BIN:-$(command -v tuxrun || echo "$HOME/.local/bin/tuxrun")}"
 
 die() { echo "X $*" >&2; exit 1; }
@@ -42,30 +63,36 @@ case "$TOKEN" in
     echo "  !! KCI_API_TOKEN does not look like a local API JWT (no 'eyJ' prefix); continuing" ;;
 esac
 
-# Render the settings template for THIS checkout before anything reads it.
-python3 "$ROOT/scripts/render-local-config.py" --output "$SETTINGS" >/dev/null \
+# Render the settings templates for THIS deployment before anything reads them.
+python3 "$ROOT/scripts/render-local-config.py" \
+  --template "$ROOT/config/local-callback.toml" --output "$SETTINGS" >/dev/null \
   || die "could not render $SETTINGS from config/local-callback.toml"
-ok "settings rendered ($SETTINGS)"
+python3 "$ROOT/scripts/render-local-config.py" \
+  --template "$ROOT/config/cb-config/pipeline.yaml" --output "$CB_CONFIG" \
+  --var API_PORT="$API_PORT" --var STORAGE_PORT="$STORAGE_PORT" \
+  --var SSH_PORT="$SSH_PORT" >/dev/null \
+  || die "could not render $CB_CONFIG from config/cb-config/pipeline.yaml"
+ok "settings rendered ($SETTINGS, $CB_CONFIG; project=$PROJECT api=$API_PORT)"
 
 # 1) KernelCI API stack
-if curl -s -m 3 -o /dev/null http://127.0.0.1:8001/latest/; then
-  ok "API stack already up (127.0.0.1:8001)"
+if curl -s -m 3 -o /dev/null "$API_URL/latest/"; then
+  ok "API stack already up ($API_URL)"
 else
-  echo "-> starting: docker compose -p kcirv up -d api db redis storage ssh"
-  if ! (cd "$API_DIR" && docker compose -p kcirv up -d api db redis storage ssh >/dev/null); then
+  echo "-> starting: docker compose -p $PROJECT up -d api db redis storage ssh"
+  if ! (cd "$API_DIR" && docker compose -p "$PROJECT" up -d api db redis storage ssh >/dev/null); then
     # After a machine/docker restart, stale Exited containers cause compose
     # name conflicts; data lives in volumes, so removing them is safe.
     echo "  compose conflict; removing stale stopped containers and retrying"
     for c in kernelci-api kernelci-api-db kernelci-api-redis kernelci-api-storage kernelci-api-ssh; do
       docker rm -f "$c" >/dev/null 2>&1 || true
     done
-    (cd "$API_DIR" && docker compose -p kcirv up -d api db redis storage ssh >/dev/null) || die "compose failed"
+    (cd "$API_DIR" && docker compose -p "$PROJECT" up -d api db redis storage ssh >/dev/null) || die "compose failed"
   fi
   for i in $(seq 1 40); do
-    curl -s -m 2 -o /dev/null http://127.0.0.1:8001/latest/ && break
+    curl -s -m 2 -o /dev/null "$API_URL/latest/" && break
     sleep 2
   done
-  curl -s -m 3 -o /dev/null http://127.0.0.1:8001/latest/ || die "API not ready"
+  curl -s -m 3 -o /dev/null "$API_URL/latest/" || die "API not ready at $API_URL"
   ok "API stack started"
 fi
 
@@ -78,7 +105,7 @@ else
   curl -s -m 3 -o /dev/null "http://127.0.0.1:$SERVE_PORT/Image" && ok "artifact server started (:$SERVE_PORT)" || die "artifact server failed"
 fi
 
-# 3) real lava_callback (8003, validates token)
+# 3) real lava_callback (validates the token)
 if curl -s -m 3 -o /dev/null "http://127.0.0.1:$CB_PORT/"; then
   ok "lava_callback already up (:$CB_PORT)"
 else
@@ -100,7 +127,7 @@ else
     [ "$(basename "$f")" = "pipeline.yaml" ] && continue
     ln -sfn "$f" "$KCFG/config/" 2>/dev/null
   done
-  PIPE_CONF="$PIPE_DIR/config/pipeline.yaml" CB_CONF="$ROOT/config/cb-config/pipeline.yaml" \
+  PIPE_CONF="$PIPE_DIR/config/pipeline.yaml" CB_CONF="$CB_CONFIG" \
     python3 - "$KCFG/config/pipeline.yaml" <<'PYEOF'
 import os, sys, yaml
 def merge(a, b):
@@ -121,7 +148,8 @@ fi
 
 echo
 echo '--- local full stack ---'
-echo '  API:        http://127.0.0.1:8001'
+echo "  project:    $PROJECT (containers + data volumes)"
+echo "  API:        $API_URL"
 echo "  artifacts:  http://127.0.0.1:$SERVE_PORT"
 echo "  callback:   http://127.0.0.1:$CB_PORT (real lava_callback)"
 echo '  scheduler:  pull-labs-riscv (official code, our YAMLs)'
@@ -173,11 +201,47 @@ if [ "${1:-}" = "--seed" ] || [ "${1:-}" = "--worker" ]; then
     kci_curl -s -m 15 -o /dev/null -I "$u" \
       || echo "  !! seed artifact unreachable: $u (override via SEED_*_URL; KCI_BYPASS_PROXY=1 ignores a dead proxy)"
   done
-  PARENT="$(curl -s -m 15 -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8001/latest/nodes?kind=checkout&data.kernel_revision.tree=riscv&limit=1" | python3 -c 'import json,sys;print(json.load(sys.stdin)["items"][0]["id"])')"
+  # A kbuild node hangs off a checkout node, so the seed needs one to exist.
+  # On a fresh database there is none - and the old lookup crashed (IndexError
+  # from items[0] on an empty list) and carried on with an empty parent, so the
+  # very first `./run.sh stack --seed` of a new deployment died.  Create the
+  # checkout node when the database has none.
+  api_get() { kci_curl -s -m 15 -H "Authorization: Bearer $TOKEN" "$API_URL/latest$1"; }
+  PARENT="$(api_get "/nodes?kind=checkout&data.kernel_revision.tree=$SEED_TREE&limit=1" \
+    | python3 -c 'import json,sys
+try:
+    items = json.load(sys.stdin).get("items", [])
+except Exception:
+    items = []
+print(items[0]["id"] if items else "")')"
+  if [ -z "$PARENT" ]; then
+    echo "    no checkout node yet (fresh database); creating one"
+    PARENT="$(kci_curl -s -m 30 -X POST -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" --data @- "$API_URL/latest/node" <<EOF
+{
+  "name": "checkout", "kind": "checkout", "state": "done", "result": "pass",
+  "group": "checkout", "path": ["checkout"],
+  "data": {"kernel_revision": {"tree": "$SEED_TREE",
+            "url": "https://git.kernel.org/pub/scm/linux/kernel/git/riscv/linux.git",
+            "branch": "$SEED_BRANCH",
+            "commit": "$SEED_COMMIT",
+            "describe": "$SEED_DESCRIBE",
+            "version": {"version": 7, "patchlevel": 3},
+            "commit_tags": ["v7.3-rc1"], "tip_of_branch": true}}
+}
+EOF
+      | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("id", ""))
+except Exception:
+    print("")')"
+    [ -n "$PARENT" ] || die "could not create a checkout node on $API_URL (is the API up and the token valid?)"
+    echo "    checkout node created: $PARENT"
+  fi
   # -m 30: the first POST after an API restart can stall mid-response; curl
   # must not wait forever. (The node may already exist server-side; re-running
   # only adds one more seed node, harmless in the dev DB.)
-  if curl -s -m 30 -o /dev/null -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" --data @- http://127.0.0.1:8001/latest/node <<EOF
+  if curl -s -m 30 -o /dev/null -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" --data @- "$API_URL/latest/node" <<EOF
 {
   "name": "kbuild-gcc-14-riscv", "kind": "kbuild", "state": "available",
   "parent": "$PARENT",
@@ -210,7 +274,7 @@ EOF
   echo "-> waiting for the scheduler to create the job nodes..."
   deadline=$((SECONDS + ${SEED_WAIT_S:-90}))
   while [ "$SECONDS" -lt "$deadline" ]; do
-    pending="$(kci_curl -s -m 5 "http://127.0.0.1:8001/latest/nodes?kind=job&state=available&limit=50" \
+    pending="$(kci_curl -s -m 5 "$API_URL/latest/nodes?kind=job&state=available&limit=50" \
       | python3 -c 'import json, sys
 try:
     items = json.load(sys.stdin).get("items", [])
@@ -231,7 +295,7 @@ if [ "${1:-}" = "--worker" ]; then
   echo '-> worker taking jobs (Ctrl-C to stop):'
   PYTHONUNBUFFERED=1 PATH=/usr/local/sbin:/usr/sbin:$PATH PULL_LABS_CALLBACK_TOKEN=labtoken-callback \
     kci_run python3 "$ROOT/scripts/riscv_pull_worker.py" \
-    --api-url http://127.0.0.1:8001 --tuxrun-bin "$TUXRUN_BIN" \
+    --api-url "$API_URL" --tuxrun-bin "$TUXRUN_BIN" \
     --container-runtime docker --output-dir /tmp/official-loop-out \
     --state-file /tmp/official-loop-state.json --poll-period 5 --max-timeout 1200
 else

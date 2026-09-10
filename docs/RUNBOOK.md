@@ -4,13 +4,19 @@
 
 ## Environment
 
-- docker + `pip install tuxrun`
+- docker + `pip install tuxrun` (see `requirements.txt` for the Python packages
+  the scripts themselves import; there is no virtualenv requirement, but the
+  versions are what `requirements.txt` pins)
 - Tier B (local full stack) additionally needs `KCI_API_TOKEN` (local API
-  admin JWT, **never committed**) in `kernelci-pipeline/.env`
-- One-time patch for an already-installed tuxlava (riscv kselftest support):
+  admin JWT, **never committed**) in `kernelci-pipeline/.env`; `./run.sh setup`
+  generates it (see below)
+- One-time patch for an already-installed tuxlava (riscv kselftest support).
+  The directory is derived, not hardcoded - `python3.10` in the path only ever
+  matched one machine's Python:
 
 ```bash
-patch -p1 -d ~/.local/lib/python3.10/site-packages < config/tuxlava-kselftest-riscv.patch
+patch -p1 -d "$(python3 -c 'import site;print(site.getusersitepackages())')" \
+  < config/tuxlava-kselftest-riscv.patch
 ```
 
 ## Commands

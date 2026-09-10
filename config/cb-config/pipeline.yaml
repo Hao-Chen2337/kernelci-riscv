@@ -1,10 +1,21 @@
+# TEMPLATE, not the file the scheduler reads at runtime.
+#
+# These endpoints belong to one deployment: the API port, the storage port and
+# the ssh port are chosen by whoever runs ./run.sh stack (KCI_API_PORT and
+# friends), and a second, isolated stack on the same machine needs its own
+# values.  Hardcoding them here meant every checkout pointed at whichever
+# stack happened to occupy those ports.
+#
+# scripts/render-local-config.py substitutes the @-delimited tokens and
+# work/cb-config/pipeline.yaml (gitignored); run-local-stack.sh renders it
+# before merging it into the scheduler's config directory.
 api:
   docker-host:
-    url: http://127.0.0.1:8001
+    url: http://127.0.0.1:@API_PORT@
 
 storage:
   docker-host:
     storage_type: ssh
     host: 127.0.0.1
-    port: 8022
-    base_url: http://127.0.0.1:8002/
+    port: @SSH_PORT@
+    base_url: http://127.0.0.1:@STORAGE_PORT@/
