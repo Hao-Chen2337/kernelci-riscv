@@ -79,7 +79,9 @@ cmd_stack() {
 cmd_worker() {
   # --since: 默认只处理今天的新单,避免重放 09-08 手工伪造任务书时代的历史 available 事件
   local since="${SINCE:-2026-09-10T00:00:00}"
-  PULL_LABS_CALLBACK_TOKEN="$CALLBACK_TOKEN" python3 "$ROOT/tools/riscv_pull_worker.py" \
+  # 生产构件直连;本机 127.0.0.1:7890 代理失效时会挂死下载,先摘掉
+  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY 2>/dev/null || true
+  PYTHONUNBUFFERED=1 PULL_LABS_CALLBACK_TOKEN="$CALLBACK_TOKEN" python3 "$ROOT/tools/riscv_pull_worker.py" \
     --api-url http://127.0.0.1:8001 --tuxrun-bin "$TUXRUN_BIN" \
     --container-runtime docker --output-dir /tmp/official-loop-out \
     --state-file /tmp/official-loop-state.json --poll-period 5 --max-timeout 1200 \
