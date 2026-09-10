@@ -4,10 +4,15 @@ kernelci-frontend/
 kernelci-pipeline/
 kernelci-project/
 .venv-kci/
-linux-local.git/
 .ruff_cache/
 
 # runtime workspace: regenerable, never committed
 work/
 *.log
 __pycache__/
+
+# docs: only the runbook is public; everything else (tool deep dives, SOW
+# snapshot, upstream evidence, issue/PR drafts, internal dev notes) stays
+# local - internal working material, not ready/meant to be published
+docs/*
+!docs/RUNBOOK.md
