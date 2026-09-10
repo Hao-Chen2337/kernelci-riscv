@@ -1,9 +1,20 @@
+# TEMPLATE, not the settings file used at runtime.
+#
+# kernelci loads settings with a plain toml.load() that does not expand
+# environment variables, so a tracked file cannot refer to "the checkout next
+# to me" - it would have to hardcode one machine's home directory, which made
+# every clone silently read another deployment's YAML config and SSH key.
+#
+# scripts/render-local-config.py substitutes @KCI_ROOT@ with the repository
+# root and writes the real settings file to work/local-callback.toml
+# (gitignored); run-local-stack.sh does that automatically before starting.
+#
 # The default configuration is used for all the jobs that don't have a specific configuration
 [DEFAULT]
 api_config = "docker-host"
 storage_config = "docker-host"
 verbose = true
-yaml_config = ["/home/hao/kernelci-riscv/kernelci-pipeline/config", "/home/hao/kernelci-riscv/config/cb-config"]
+yaml_config = ["@KCI_ROOT@/kernelci-pipeline/config", "@KCI_ROOT@/config/cb-config"]
 
 [trigger]
 # how often to poll git trees for new commits
@@ -50,16 +61,19 @@ file_path = "/home/kernelci/logs/"
 smtp_host = "smtp.gmail.com"
 smtp_port = 587
 email_sender = "bot@kernelci.org"
-email_recipient = ["jeny.sadadia@collabora.com","denys.f@collabora.com","gustavo.padovan@collabora.com"]
+# Empty on purpose: this is a local dev instance and the addresses inherited
+# from the upstream template belong to real people - a local stack must not be
+# able to mail them by accident.
+email_recipient = []
 # email_password = <email-password>
 
 [timeout]
 
 [storage.docker-host]
-storage_cred = "/home/hao/kernelci-riscv/kernelci-pipeline/data/ssh/id_rsa_tarball"
+storage_cred = "@KCI_ROOT@/kernelci-pipeline/data/ssh/id_rsa_tarball"
 
 [storage.k8s-host]
-storage_cred = "/home/hao/kernelci-riscv/kernelci-pipeline/data/ssh/id_rsa_tarball"
+storage_cred = "@KCI_ROOT@/kernelci-pipeline/data/ssh/id_rsa_tarball"
 
 # JWT secret to generate Pipeline API tokens
 #[jwt]

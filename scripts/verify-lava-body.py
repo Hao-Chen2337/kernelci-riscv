@@ -7,16 +7,21 @@ import json
 import os
 import sys
 
-sys.path.insert(0, "/home/hao/kernelci-riscv/kernelci-core")
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+# Import kernelci-core from THIS checkout, never from some other deployment
+# that happened to be hardcoded here: a hardcoded path made a fresh clone's
+# verify results silently depend on the machine it was run from.
+sys.path.insert(0, os.path.join(ROOT, "kernelci-core"))
 from kernelci.runtime.lava import Callback
 
 spec = importlib.util.spec_from_file_location(
     "riscv_pull_worker",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "riscv_pull_worker.py"))
+    os.path.join(HERE, "riscv_pull_worker.py"))
 worker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(worker)
 
-FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+FIXTURES = os.path.join(HERE, "fixtures")
 PASS_LOG = os.path.join(FIXTURES, "tuxrun-pass.log")
 FAIL_LOG = os.path.join(FIXTURES, "tuxrun-fail.log")
 
