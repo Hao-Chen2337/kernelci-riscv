@@ -38,16 +38,3 @@ cd ~/.local/lib/python3.10/site-packages && patch -p1 < /home/hao/kernelci-riscv
   incomplete, never fail.
 - **fetch** defaults to gcc-14 builds; clang riscv has no kselftest
   (upstream gap).
-
-## Known pitfalls
-
-- api.kernelci.org is intermittently reachable (direct access works).
-- storage.kernelci.org sometimes throttles the 144MB rootfs to KB/s;
-  workaround: run the worker with
-  `--rootfs http://127.0.0.1:8999/trixie-full.rootfs.tar.xz` (local mirror).
-- Truncated downloads → Infrastructure reported honestly, re-run.
-- Re-apply the tuxlava patch after reinstalling tuxrun.
-- The worker's default `--since` takes only today's new jobs — no history
-  replay.
-- Local `drift` needs ≥2 done/pass kbuild nodes in the local DB; compare
-  offline files via `--older-config/--newer-config` instead.
