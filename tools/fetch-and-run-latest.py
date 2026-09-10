@@ -36,7 +36,7 @@ KVM_SUBSET = ("kvm:set_memory_region_test kvm:kvm_create_max_vcpus "
 TUXRUN = os.environ.get("TUXRUN_BIN", shutil.which("tuxrun")
                         or os.path.expanduser("~/.local/bin/tuxrun"))
 DEFAULT_ROOTFS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "..", "worker-out", "kvm-run", "rootfs-kvm.ext4")
+                              "..", "runs", "kvm-run", "rootfs-kvm.ext4")
 
 
 def api_get(path, api):
