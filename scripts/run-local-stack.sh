@@ -129,12 +129,29 @@ echo
 
 if [ "${1:-}" = "--seed" ] || [ "${1:-}" = "--worker" ]; then
   echo "-> seeding kbuild node to trigger scheduling..."
+  # CONSISTENCY RULE: work/serve/Image, the modules baked into
+  # work/env/rootfs-kvm.ext4 and the URLs in this seed must all be the SAME
+  # kbuild - the worker bakes modules.tar.xz into /lib/modules and modprobe
+  # matches them by kernel release, so a mismatch makes every kvm test skip
+  # ("Cannot open /dev/kvm").
+  #
+  # ./run.sh provision records the build it provisioned in work/env/build.env;
+  # seeding from it is what keeps the three places from drifting apart.  The
+  # SEED_* defaults below are only a fallback for a deployment that never ran
+  # provision (their pinned hash is old: storage prunes builds, which is why
+  # provision discovers the newest one instead of pinning anything).
+  if [ -f "$ROOT/work/env/build.env" ]; then
+    # shellcheck disable=SC1091
+    . "$ROOT/work/env/build.env"
+    if [ -n "${KCI_BUILD_DIR:-}" ]; then
+      echo "    seeding from the provisioned build: $KCI_BUILD_DIR"
+      SEED_MODULES_URL="${SEED_MODULES_URL:-$KCI_BUILD_DIR/modules.tar.xz}"
+      SEED_KSELFTEST_URL="${SEED_KSELFTEST_URL:-$KCI_BUILD_DIR/kselftest.tar.xz}"
+      SEED_CONFIG_URL="${SEED_CONFIG_URL:-$KCI_BUILD_DIR/.config}"
+    fi
+  fi
   # The whole seed is env-overridable: when production storage prunes the
   # original build, point SEED_*_URL at a newer build and replay.
-  # CONSISTENCY RULE: work/serve/Image must be the SAME build as
-  # SEED_MODULES_URL - the worker bakes those modules into the rootfs and
-  # modprobe matches them by kernel release; a mismatch makes every kvm
-  # test skip ("Cannot open /dev/kvm").
   SEED_TREE="${SEED_TREE:-riscv}"
   SEED_BRANCH="${SEED_BRANCH:-master}"
   SEED_COMMIT="${SEED_COMMIT:-f217004a40c49e787372e798785aecb983828d35}"

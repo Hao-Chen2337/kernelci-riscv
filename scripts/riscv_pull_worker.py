@@ -73,6 +73,11 @@ CURSOR_OVERLAP_S = 900  # re-scan window: the events API is not sorted
 SEEN_LIMIT = 20000  # seen-node ids kept in the state file; sized far
 # beyond what one CURSOR_OVERLAP_S window can produce, so eviction can
 # never re-expose a recently processed node to a re-run.
+# Per-read gap, not a total budget: artifact hosts (storage.kernelci.org,
+# files.kernelci.org) go quiet mid-transfer often enough that the old 300s
+# meant "hang for five minutes, then retry".  60s of silence is a stalled
+# connection; a slow-but-moving download is unaffected.
+DOWNLOAD_TIMEOUT = 60
 
 TAR_SUFFIXES = (".tar", ".tar.gz", ".tar.xz", ".tgz")
 TEST_TYPE_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
@@ -115,7 +120,8 @@ def download(url, dest, max_size=MAX_DOWNLOAD_SIZE):
     for attempt in range(3):
         try:
             with requests.get(
-                url, stream=True, timeout=300, allow_redirects=False
+                url, stream=True, timeout=DOWNLOAD_TIMEOUT,
+                allow_redirects=False
             ) as response:
                 if response.is_redirect or response.is_permanent_redirect:
                     raise requests.exceptions.RequestException(
