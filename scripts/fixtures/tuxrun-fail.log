@@ -1,0 +1,137 @@
+[0;90m2026-09-10T02:32:30[0m [1;37mlava-dispatcher, installed at version: 2026.05.dev0091[0m
+[0;90m2026-09-10T02:32:30[0m [1;37mstart: 0 validate[0m
+[0;90m2026-09-10T02:32:30[0m [1;37mStart time: 2026-09-10 02:32:30.843208+00:00 (UTC)[0m
+[0;90m2026-09-10T02:32:30[0m [0;37mValidating that file:///tmp/garbage.bin exists[0m
+[0;90m2026-09-10T02:32:30[0m [0;37mValidating that file:///home/hao/.cache/tuxrun/assets/https___storage.tuxboot.com_buildroot_riscv64_rootfs.ext4.zst exists[0m
+[0;90m2026-09-10T02:32:32[0m [1;37mqemu, installed at version: 11.0.2, host architecture: x86_64[0m
+[0;90m2026-09-10T02:32:32[0m [1;37mvalidate duration: 1.84[0m
+[0;90m2026-09-10T02:32:32[0m [1;34m{'definition': 'lava', 'case': 'validate', 'result': 'pass'}[0m
+[0;90m2026-09-10T02:32:32[0m [1;37mstart: 1 deployimages (timeout 00:15:00) [common][0m
+[0;90m2026-09-10T02:32:32[0m [0;37mstart: 1.1 download-retry (timeout 00:15:00) [common][0m
+[0;90m2026-09-10T02:32:32[0m [0;37mstart: 1.1.1 file-download (timeout 00:15:00) [common][0m
+[0;90m2026-09-10T02:32:32[0m [1;37mdownloading file:///tmp/garbage.bin[0m
+[0;90m2026-09-10T02:32:32[0m [0;37msaving as /var/lib/lava/dispatcher/tmp/tuxrun-ds_oycto-1/deployimages-q0vq6kmq/kernel/garbage.bin[0m
+[0;90m2026-09-10T02:32:32[0m [0;37mtotal size: 1048576 (1 MB)[0m
+[0;90m2026-09-10T02:32:32[0m [0;37mNo compression specified[0m
+[0;90m2026-09-10T02:32:32[0m [1;37m1 MB downloaded in 0.02 s (62.08 MB/s)[0m
+[0;90m2026-09-10T02:32:32[0m [0;37mend: 1.1.1 file-download (duration 00:00:00) [common][0m
+[0;90m2026-09-10T02:32:32[0m [1;34m{'definition': 'lava', 'namespace': 'common', 'case': 'file-download', 'level': '1.1.1', 'duration': '0.04', 'result': 'pass', 'extra': {'label': 'kernel', 'size': 1048576, 'sha256sum': 'e6b8a01c3745b39b6403788a484d718319f53c78a1cb70a4f0e700704ae339e0'}}[0m
+[0;90m2026-09-10T02:32:32[0m [0;37mend: 1.1 download-retry (duration 00:00:00) [common][0m
+[0;90m2026-09-10T02:32:32[0m [0;37mstart: 1.2 download-retry (timeout 00:15:00) [common][0m
+[0;90m2026-09-10T02:32:32[0m [0;37mstart: 1.2.1 file-download (timeout 00:15:00) [common][0m
+[0;90m2026-09-10T02:32:32[0m [1;37mdownloading file:///home/hao/.cache/tuxrun/assets/https___storage.tuxboot.com_buildroot_riscv64_rootfs.ext4.zst[0m
+[0;90m2026-09-10T02:32:32[0m [0;37msaving as /var/lib/lava/dispatcher/tmp/tuxrun-ds_oycto-1/deployimages-q0vq6kmq/rootfs/https___storage.tuxboot.com_buildroot_riscv64_rootfs.ext4[0m
+[0;90m2026-09-10T02:32:32[0m [0;37mtotal size: 91610407 (87 MB)[0m
+[0;90m2026-09-10T02:32:32[0m [1;37mUsing unzstd to decompress zstd[0m
+[0;90m2026-09-10T02:32:32[0m [0;37mprogress   1 % (1 MB)[0m
+[0;90m2026-09-10T02:32:32[0m [0;37mprogress  12 % (11 MB)[0m
+[0;90m2026-09-10T02:32:33[0m [0;37mprogress  21 % (18 MB)[0m
+[0;90m2026-09-10T02:32:33[0m [0;37mprogress  29 % (26 MB)[0m
+[0;90m2026-09-10T02:32:33[0m [0;37mprogress  36 % (32 MB)[0m
+[0;90m2026-09-10T02:32:33[0m [0;37mprogress  45 % (40 MB)[0m
+[0;90m2026-09-10T02:32:33[0m [0;37mprogress  51 % (44 MB)[0m
+[0;90m2026-09-10T02:32:33[0m [0;37mprogress  58 % (51 MB)[0m
+[0;90m2026-09-10T02:32:33[0m [0;37mprogress  67 % (58 MB)[0m
+[0;90m2026-09-10T02:32:33[0m [0;37mprogress  76 % (66 MB)[0m
+[0;90m2026-09-10T02:32:33[0m [0;37mprogress  94 % (82 MB)[0m
+[0;90m2026-09-10T02:32:35[0m [1;37m87 MB downloaded in 2.61 s (33.45 MB/s)[0m
+[0;90m2026-09-10T02:32:35[0m [0;37mend: 1.2.1 file-download (duration 00:00:03) [common][0m
+[0;90m2026-09-10T02:32:35[0m [1;34m{'definition': 'lava', 'namespace': 'common', 'case': 'file-download', 'level': '1.2.1', 'duration': '2.69', 'result': 'pass', 'extra': {'label': 'rootfs', 'size': 91610407, 'sha256sum': 'e57dec4419b4f7fb8cf8e94714621bf3ac7869af175467c563c361a73a79c062'}}[0m
+[0;90m2026-09-10T02:32:35[0m [0;37mend: 1.2 download-retry (duration 00:00:03) [common][0m
+[0;90m2026-09-10T02:32:35[0m [1;37mend: 1 deployimages (duration 00:00:03) [common][0m
+[0;90m2026-09-10T02:32:35[0m [1;37mstart: 2 boot-image-retry (timeout 00:15:00) [common][0m
+[0;90m2026-09-10T02:32:35[0m [0;37mstart: 2.1 boot-qemu-image (timeout 00:15:00) [common][0m
+[0;90m2026-09-10T02:32:35[0m [0;37mstart: 2.1.1 execute-qemu (timeout 00:15:00) [common][0m
+[0;90m2026-09-10T02:32:35[0m [1;37mBoot command: /usr/bin/qemu-system-riscv64 -cpu rv64 -machine virt -nographic -nic none -m 4G -monitor none -no-reboot -smp 2 -kernel /var/lib/lava/dispatcher/tmp/tuxrun-ds_oycto-1/deployimages-q0vq6kmq/kernel/garbage.bin -append "console=ttyS0,115200 rootwait root=/dev/vda debug verbose console_msg_format=syslog systemd.log_level=warning rw earlycon" -drive file=/var/lib/lava/dispatcher/tmp/tuxrun-ds_oycto-1/deployimages-q0vq6kmq/rootfs/https___storage.tuxboot.com_buildroot_riscv64_rootfs.ext4,format=raw,id=hd0,if=virtio[0m
+[0;90m2026-09-10T02:32:35[0m [0;37mstarted a shell command[0m
+[0;90m2026-09-10T02:32:35[0m [0;37mend: 2.1.1 execute-qemu (duration 00:00:00) [common][0m
+[0;90m2026-09-10T02:32:35[0m [1;34m{'definition': 'lava', 'namespace': 'common', 'case': 'execute-qemu', 'level': '2.1.1', 'duration': '0.32', 'result': 'pass', 'extra': {'qemu_version': '11.0.2', 'host_arch': 'x86_64', 'job_arch': 'riscv64'}}[0m
+[0;90m2026-09-10T02:32:35[0m [0;37mend: 2.1 boot-qemu-image (duration 00:00:00) [common][0m
+[0;90m2026-09-10T02:32:35[0m [0;37mstart: 2.2 auto-login-action (timeout 00:15:00) [common][0m
+[0;90m2026-09-10T02:32:35[0m [0;37mSetting prompt string to ['Linux version [0-9]'][0m
+[0;90m2026-09-10T02:32:35[0m [0;37mauto-login-action: Wait for prompt ['Linux version [0-9]'] (timeout 00:15:00)[0m
+[0;90m2026-09-10T02:32:37[0m [32m[0m
+[0;90m2026-09-10T02:32:37[0m [32mOpenSBI v1.8[0m
+[0;90m2026-09-10T02:32:37[0m [32m   ____                    _____ ____ _____[0m
+[0;90m2026-09-10T02:32:37[0m [32m  / __ \                  / ____|  _ \_   _|[0m
+[0;90m2026-09-10T02:32:37[0m [32m | |  | |_ __   ___ _ __ | (___ | |_) || |[0m
+[0;90m2026-09-10T02:32:37[0m [32m | |  | | '_ \ / _ \ '_ \ \___ \|  _ < | |[0m
+[0;90m2026-09-10T02:32:37[0m [32m | |__| | |_) |  __/ | | |____) | |_) || |_[0m
+[0;90m2026-09-10T02:32:37[0m [32m  \____/| .__/ \___|_| |_|_____/|____/_____|[0m
+[0;90m2026-09-10T02:32:37[0m [32m        | |[0m
+[0;90m2026-09-10T02:32:37[0m [32m        |_|[0m
+[0;90m2026-09-10T02:32:37[0m [32m[0m
+[0;90m2026-09-10T02:32:37[0m [32mPlatform Name               : riscv-virtio,qemu[0m
+[0;90m2026-09-10T02:32:37[0m [32mPlatform Features           : medeleg[0m
+[0;90m2026-09-10T02:32:37[0m [32mPlatform HART Count         : 2[0m
+[0;90m2026-09-10T02:32:37[0m [32mPlatform HART Protection    : pmp[0m
+[0;90m2026-09-10T02:32:37[0m [32mPlatform IPI Device         : aclint-mswi[0m
+[0;90m2026-09-10T02:32:37[0m [32mPlatform Timer Device       : aclint-mtimer @ 10000000Hz[0m
+[0;90m2026-09-10T02:32:37[0m [32mPlatform Console Device     : uart8250[0m
+[0;90m2026-09-10T02:32:37[0m [32mPlatform HSM Device         : ---[0m
+[0;90m2026-09-10T02:32:37[0m [32mPlatform PMU Device         : ---[0m
+[0;90m2026-09-10T02:32:37[0m [32mPlatform Reboot Device      : syscon-reboot[0m
+[0;90m2026-09-10T02:32:37[0m [32mPlatform Shutdown Device    : syscon-poweroff[0m
+[0;90m2026-09-10T02:32:37[0m [32mPlatform Suspend Device     : ---[0m
+[0;90m2026-09-10T02:32:37[0m [32mPlatform CPPC Device        : ---[0m
+[0;90m2026-09-10T02:32:37[0m [32mFirmware Base               : 0x80000000[0m
+[0;90m2026-09-10T02:32:37[0m [32mFirmware Size               : 333 KB[0m
+[0;90m2026-09-10T02:32:37[0m [32mFirmware RW Offset          : 0x40000[0m
+[0;90m2026-09-10T02:32:37[0m [32mFirmware RW Size            : 77 KB[0m
+[0;90m2026-09-10T02:32:37[0m [32mFirmware Heap Offset        : 0x49000[0m
+[0;90m2026-09-10T02:32:37[0m [32mFirmware Heap Size          : 41 KB (total), 0 KB (reserved), 12 KB (used), 27 KB (free)[0m
+[0;90m2026-09-10T02:32:37[0m [32mFirmware Scratch Size       : 4096 B (total), 1464 B (used), 2632 B (free)[0m
+[0;90m2026-09-10T02:32:37[0m [32mRuntime SBI Version         : 3.0[0m
+[0;90m2026-09-10T02:32:37[0m [32mStandard SBI Extensions     : ipi,pmu,srst,sse,hsm,rfnc,fwft,time,base,legacy,dbcn,dbtr[0m
+[0;90m2026-09-10T02:32:37[0m [32mExperimental SBI Extensions : none[0m
+[0;90m2026-09-10T02:32:37[0m [32m[0m
+[0;90m2026-09-10T02:32:37[0m [32mDomain0 Name                : root[0m
+[0;90m2026-09-10T02:32:37[0m [32mDomain0 Boot HART           : 0[0m
+[0;90m2026-09-10T02:32:37[0m [32mDomain0 HARTs               : 0*,1*[0m
+[0;90m2026-09-10T02:32:37[0m [32mDomain0 Region00            : 0x0000000080040000-0x000000008005ffff M: (F,R,W) S/U: ()[0m
+[0;90m2026-09-10T02:32:37[0m [32mDomain0 Region01            : 0x0000000080000000-0x000000008003ffff M: (F,R,X) S/U: ()[0m
+[0;90m2026-09-10T02:32:37[0m [32mDomain0 Region02            : 0x0000000000100000-0x0000000000100fff M: (I,R,W) S/U: (R,W)[0m
+[0;90m2026-09-10T02:32:37[0m [32mDomain0 Region03            : 0x0000000010000000-0x0000000010000fff M: (I,R,W) S/U: (R,W)[0m
+[0;90m2026-09-10T02:32:37[0m [32mDomain0 Region04            : 0x0000000002000000-0x000000000200ffff M: (I,R,W) S/U: ()[0m
+[0;90m2026-09-10T02:32:37[0m [32mDomain0 Region05            : 0x000000000c400000-0x000000000c5fffff M: (I,R,W) S/U: (R,W)[0m
+[0;90m2026-09-10T02:32:37[0m [32mDomain0 Region06            : 0x000000000c000000-0x000000000c3fffff M: (I,R,W) S/U: (R,W)[0m
+[0;90m2026-09-10T02:32:37[0m [32mDomain0 Region07            : 0x0000000000000000-0xffffffffffffffff M: () S/U: (R,W,X)[0m
+[0;90m2026-09-10T02:32:37[0m [32mDomain0 Next Address        : 0x0000000080200000[0m
+[0;90m2026-09-10T02:32:37[0m [32mDomain0 Next Arg1           : 0x000000017fe00000[0m
+[0;90m2026-09-10T02:32:37[0m [32mDomain0 Next Mode           : S-mode[0m
+[0;90m2026-09-10T02:32:37[0m [32mDomain0 SysReset            : yes[0m
+[0;90m2026-09-10T02:32:37[0m [32mDomain0 SysSuspend          : yes[0m
+[0;90m2026-09-10T02:32:37[0m [32m[0m
+[0;90m2026-09-10T02:32:37[0m [32mBoot HART ID                : 0[0m
+[0;90m2026-09-10T02:32:37[0m [32mBoot HART Domain            : root[0m
+[0;90m2026-09-10T02:32:37[0m [32mBoot HART Priv Version      : v1.12[0m
+[0;90m2026-09-10T02:32:37[0m [32mBoot HART Base ISA          : rv64imafdch[0m
+[0;90m2026-09-10T02:32:37[0m [32mBoot HART ISA Extensions    : sstc,zicntr,zihpm,zicboz,zicbom,sdtrig,svadu[0m
+[0;90m2026-09-10T02:32:37[0m [32mBoot HART PMP Count         : 16[0m
+[0;90m2026-09-10T02:32:37[0m [32mBoot HART PMP Granularity   : 2 bits[0m
+[0;90m2026-09-10T02:32:37[0m [32mBoot HART PMP Address Bits  : 54[0m
+[0;90m2026-09-10T02:32:37[0m [32mBoot HART MHPM Info         : 16 (0x0007fff8)[0m
+[0;90m2026-09-10T02:32:37[0m [32mBoot HART Debug Triggers    : 2 triggers[0m
+[0;90m2026-09-10T02:32:37[0m [32mBoot HART MIDELEG           : 0x0000000000001666[0m
+[0;90m2026-09-10T02:32:37[0m [32mBoot HART MEDELEG           : 0x0000000000f4b509[0m
+[0;90m2026-09-10T02:37:49[0m [1;31mThe job was canceled[0m
+[0;90m2026-09-10T02:37:49[0m [0;37mend: 2.2 auto-login-action (duration 00:05:33) [common][0m
+[0;90m2026-09-10T02:37:49[0m [1;34m{'definition': 'lava', 'namespace': 'common', 'case': 'auto-login-action', 'level': '2.2', 'duration': '332.92', 'result': 'fail', 'extra': {'fail': 'The job was canceled'}}[0m
+[0;90m2026-09-10T02:37:49[0m [1;31mThe job was canceled[0m
+[0;90m2026-09-10T02:37:49[0m [1;37mend: 2 boot-image-retry (duration 00:05:33) [common][0m
+[0;90m2026-09-10T02:37:49[0m [1;34m{'definition': 'lava', 'namespace': 'common', 'case': 'boot-image-retry', 'level': '2', 'duration': '333.24', 'result': 'fail', 'extra': {'fail': 'The job was canceled'}}[0m
+[0;90m2026-09-10T02:37:49[0m [1;37mCleaning after the job[0m
+[0;90m2026-09-10T02:37:49[0m [0;37mCleaning up downloaded image: /var/lib/lava/dispatcher/tmp/tuxrun-ds_oycto-1/deployimages-q0vq6kmq/kernel/garbage.bin[0m
+[0;90m2026-09-10T02:37:49[0m [0;37mCleaning up downloaded image: /var/lib/lava/dispatcher/tmp/tuxrun-ds_oycto-1/deployimages-q0vq6kmq/rootfs/https___storage.tuxboot.com_buildroot_riscv64_rootfs.ext4[0m
+[0;90m2026-09-10T02:37:49[0m [0;37mstart: 3.1 power-off (timeout 00:00:30) [common][0m
+[0;90m2026-09-10T02:37:49[0m [0;37mend: 3.1 power-off (duration 00:00:00) [common][0m
+[0;90m2026-09-10T02:37:49[0m [0;37mstart: 3.2 read-feedback (timeout 00:05:00) [common][0m
+[0;90m2026-09-10T02:37:49[0m [0;37mListened to connection for namespace 'common' for up to 1s[0m
+[0;90m2026-09-10T02:37:50[0m [1;37mFinalising connection for namespace 'common'[0m
+[0;90m2026-09-10T02:37:50[0m [0;37mSending line: 'poweroff'[0m
+[0;90m2026-09-10T02:37:50[0m [0;35mpoweroff[0m
+[0;90m2026-09-10T02:37:55[0m [0;37mAlready disconnected[0m
+[0;90m2026-09-10T02:37:56[0m [0;37mend: 3.2 read-feedback (duration 00:00:06) [common][0m
+[0;90m2026-09-10T02:37:56[0m [1;37mRemoving root tmp directory at /var/lib/lava/dispatcher/tmp/tuxrun-ds_oycto-1[0m
+[0;90m2026-09-10T02:37:56[0m [1;31mJobCanceled: The job was canceled[0m
+[0;90m2026-09-10T02:37:56[0m [1;34m{'definition': 'lava', 'case': 'job', 'result': 'fail', 'error_msg': 'The job was canceled', 'error_type': 'Canceled'}[0m

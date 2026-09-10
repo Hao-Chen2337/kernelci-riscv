@@ -9,6 +9,12 @@ kernelci-project/
 # runtime workspace: regenerable, never committed
 work/
 *.log
+# ...except the test fixtures: real tuxrun console captures that
+# verify-lava-body.py replays through the upstream LAVA parser.  They are
+# test data, not logs - ignoring them broke a fresh clone (verify died with
+# FileNotFoundError, and run.sh's gate swallowed the traceback into a green
+# exit code).
+!scripts/fixtures/*.log
 __pycache__/
 
 # docs: only the runbook is public; everything else (tool deep dives, SOW
