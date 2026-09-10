@@ -80,28 +80,79 @@ api_up() { curl -s -m 3 -o /dev/null "$API_URL/latest/"; }
 # 200 = the token authenticates; anything else = invalid/expired/missing.
 whoami_code() { curl -s -m 15 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" "$API_URL/latest/whoami"; }
 
-# mint_token_in_container  Print a fresh JWT for the existing admin (from the
-# DB) by running the API's own JWT strategy INSIDE the api container, so the
-# SECRET_KEY comes from the .env the API itself loaded. Used as a fallback when
-# a kernelci-api build has no registered login route. Prints the token on
-# stdout; exits non-zero (message on stderr) when there is no user yet or the
-# container is unreachable.
+# mint_token_in_container  Print a fresh JWT for the admin, by running the
+# API's own code INSIDE the api container: the JWT strategy (so the token is
+# signed with the SECRET_KEY the API itself loaded) and, on a database with no
+# user at all, the same first-admin bootstrap that api/main.py's
+# ensure_initial_admin_user() performs.
+#
+# That bootstrap has to happen here because the app actually served is
+# `versioned_app`, whose on_startup list does not include
+# ensure_initial_admin_user - so a genuinely fresh database never gets an
+# admin, and with no admin no token can be minted at all.  Credentials come
+# from the container's own environment (KCI_INITIAL_*), the same place the API
+# would have read them.  Prints the token on stdout; exits non-zero (message on
+# stderr) when the container is unreachable or the bootstrap is impossible.
 mint_token_in_container() {
   (cd "$API_DIR" && docker compose -p "$PROJECT" exec -T api python3 - <<'PY'
-import asyncio, sys
-from api.main import initialize_beanie, User, auth_backend
+import asyncio
+import os
+import sys
+
+from api.main import User, auth_backend, db, initialize_beanie
+
+
+async def ensure_admin():
+    """Create the first admin when the database has none."""
+    if await db.count(User, {"is_superuser": True}) > 0:
+        return
+    password = os.getenv("KCI_INITIAL_PASSWORD")
+    if not password:
+        print(
+            "no admin in the database and KCI_INITIAL_PASSWORD is not set in "
+            "the api container; set it in kernelci-api/.env and restart",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # NOT Authentication.get_password_hash(): the api image ships passlib 1.7.4
+    # together with bcrypt 5.0.0, and passlib 1.7.4 reads
+    # bcrypt.__about__.__version__, which bcrypt 4.1 removed.  passlib traps
+    # that failure, falls back to a stub backend and then raises the thoroughly
+    # misleading "password cannot be longer than 72 bytes".  bcrypt itself
+    # works, so hash with it directly - this is the call passlib would have
+    # made anyway, and it keeps the flow independent of that mismatch.
+    import bcrypt
+
+    def hash_password(clear_text):
+        return bcrypt.hashpw(clear_text.encode(), bcrypt.gensalt()).decode()
+
+    username = os.getenv("KCI_INITIAL_ADMIN_USERNAME") or "admin"
+    email = os.getenv("KCI_INITIAL_ADMIN_EMAIL") or f"{username}@kernelci.org"
+    await db.create(
+        User(
+            username=username,
+            hashed_password=hash_password(password),
+            email=email,
+            is_superuser=1,
+            is_verified=1,
+        )
+    )
+    print(f"created the initial admin user '{username}' ({email})",
+          file=sys.stderr)
+
 
 async def main():
     await initialize_beanie()
+    await ensure_admin()
     users = await User.find_all().to_list()
     user = next((u for u in users if getattr(u, "is_superuser", False)), None) \
         or (users[0] if users else None)
     if user is None:
-        print("no user in DB yet - the API must finish its first startup "
-              "(it creates the initial admin) before a token can be minted",
-              file=sys.stderr)
+        print("no user in the database even after bootstrapping", file=sys.stderr)
         sys.exit(1)
     print(await auth_backend.get_strategy().write_token(user))
+
 
 asyncio.run(main())
 PY
@@ -124,7 +175,7 @@ else
   set_env "$API_ENV" PUBLIC_BASE_URL "$API_URL"
   set_env "$API_ENV" KCI_INITIAL_ADMIN_USERNAME "admin"
   set_env "$API_ENV" KCI_INITIAL_PASSWORD "$(openssl rand -hex 16)"
-  set_env "$API_ENV" KCI_INITIAL_ADMIN_EMAIL "admin@kernelci.local"
+  set_env "$API_ENV" KCI_INITIAL_ADMIN_EMAIL "admin@kernelci.org"
   chmod 600 "$API_ENV"
   ok "kernelci-api/.env: generated (SECRET_KEY, MONGO_SERVICE, PUBLIC_BASE_URL, initial admin username/password/email)"
 fi
