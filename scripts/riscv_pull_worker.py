@@ -108,48 +108,117 @@ def runtime_name(args):
     return "podman" if shutil.which("podman") else "docker"
 
 
+def _resume_offset(part_path, meta_path, url):
+    """Bytes already on disk for *url* from an earlier attempt (0 = start over).
+
+    production storage truncates big transfers routinely (a 144MB rootfs
+    arriving as 1.3MB is ordinary), and restarting from zero each time means a
+    flaky link never finishes.  The partial file is only trusted when its
+    sidecar says it belongs to *url* and does not already exceed the expected
+    size - otherwise a stale partial would be prepended to good data."""
+    try:
+        with open(meta_path) as handle:
+            meta = json.load(handle)
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(meta, dict) or meta.get("url") != url:
+        return 0
+    try:
+        size = os.path.getsize(part_path)
+    except OSError:
+        return 0
+    total = meta.get("total")
+    if isinstance(total, int) and size > total:
+        return 0
+    return size
+
+
+def _write_resume_meta(meta_path, url, total):
+    tmp_path = f"{meta_path}.tmp"
+    with open(tmp_path, "w") as handle:
+        json.dump({"url": url, "total": total}, handle)
+    os.replace(tmp_path, meta_path)
+
+
 def download(url, dest, max_size=MAX_DOWNLOAD_SIZE):
-    """Stream *url* to *dest*, verifying size.  Retries a few times: production
-    storage intermittently stalls/truncates (documented); a partial file is
-    removed on failure so the next attempt starts clean."""
+    """Stream *url* to *dest*, verifying size and resuming partial transfers.
+
+    The bytes land in ``<dest>.part`` and are only renamed into place once the
+    full length has arrived, so *dest* is never a half file.  A truncated or
+    stalled attempt keeps its partial data (with a sidecar recording which URL
+    it belongs to), and the next attempt - even a later run of the same
+    command - asks the server for the remainder with a Range request."""
     print(f"Downloading {url}")
     last_error = None
     parent = os.path.dirname(dest)
     if parent:
         os.makedirs(parent, exist_ok=True)
+    part_path = f"{dest}.part"
+    meta_path = f"{dest}.part.json"
     for attempt in range(3):
         try:
+            offset = _resume_offset(part_path, meta_path, url)
+            headers = {"Range": f"bytes={offset}-"} if offset else {}
+            if offset:
+                print(f"  resuming at {offset} bytes")
             with requests.get(
                 url, stream=True, timeout=DOWNLOAD_TIMEOUT,
-                allow_redirects=False
+                allow_redirects=False, headers=headers
             ) as response:
                 if response.is_redirect or response.is_permanent_redirect:
                     raise requests.exceptions.RequestException(
                         f"refusing redirect for {url}"
                     )
+                if offset and response.status_code == 200:
+                    # Server ignored the Range header: start from scratch
+                    # rather than appending to a file it knows nothing about.
+                    print("  server ignored the Range request; restarting")
+                    offset = 0
+                    headers = {}
+                elif offset and response.status_code != 206:
+                    raise requests.exceptions.RequestException(
+                        f"unexpected status {response.status_code} for a "
+                        f"resumed download of {url}"
+                    )
                 response.raise_for_status()
-                length = response.headers.get("Content-Length")
+                total = None
+                content_range = response.headers.get("Content-Range")
+                if content_range and "/" in content_range:
+                    try:
+                        total = int(content_range.rsplit("/", 1)[1])
+                    except ValueError:
+                        total = None
+                if total is None:
+                    length = response.headers.get("Content-Length")
+                    try:
+                        total = int(length) + offset if length else None
+                    except ValueError:
+                        total = None
+                if total is not None and total > max_size:
+                    raise OSError(f"Download too large {url}: {total} > {max_size}")
+                size = offset
                 try:
-                    length = int(length) if length else None
-                except ValueError:
-                    length = None
-                if length is not None and length > max_size:
-                    raise OSError(f"Download too large {url}: {length} > {max_size}")
-                size = 0
-                try:
-                    with open(dest, "wb") as f:
+                    with open(part_path, "ab" if offset else "wb") as handle:
                         for chunk in response.iter_content(chunk_size=1 << 20):
-                            f.write(chunk)
+                            if not chunk:
+                                continue
+                            handle.write(chunk)
                             size += len(chunk)
                             if size > max_size:
-                                raise OSError(f"Download too large {url}: > {max_size}")
+                                raise OSError(
+                                    f"Download too large {url}: > {max_size}")
+                        handle.flush()
+                        os.fsync(handle.fileno())
                 except Exception:
-                    if os.path.exists(dest):
-                        os.unlink(dest)
+                    # Keep what arrived: the next attempt resumes from here.
+                    _write_resume_meta(meta_path, url, total)
                     raise
-            if length is not None and size != length:
-                os.unlink(dest)
-                raise OSError(f"Truncated download {url}: {size}/{length} bytes")
+            _write_resume_meta(meta_path, url, total)
+            if total is not None and size != total:
+                raise OSError(f"Truncated download {url}: {size}/{total} bytes")
+            os.replace(part_path, dest)
+            if os.path.exists(meta_path):
+                os.unlink(meta_path)
             print(f"           -> {dest} ({size} bytes)")
             return
         except (requests.exceptions.RequestException, OSError) as error:

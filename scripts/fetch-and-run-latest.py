@@ -289,20 +289,15 @@ def provision_kernel(kernel_url, image_path, serve_image_path, manifest):
     return image_path
 
 
-def _looks_like_a_tarball(path):
-    """Cheap sanity check before reusing a cached tarball: the compression
-    magic must be there.  A truncated file still fails loudly later (the bake
-    raises), but catching the obvious cases early gives a better message."""
+def _remote_size(url, timeout=60):
+    """Content-Length of *url* without downloading it, or None."""
     try:
-        with open(path, "rb") as handle:
-            head = handle.read(6)
-    except OSError:
-        return False
-    if path.endswith(".xz"):
-        return head.startswith(b"\xfd7zXZ\x00")
-    if path.endswith((".gz", ".tgz")):
-        return head.startswith(b"\x1f\x8b")
-    return bool(head)
+        request = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            length = response.headers.get("Content-Length")
+        return int(length) if length else None
+    except (OSError, ValueError):
+        return None
 
 
 def provision_rootfs(rootfs_url, modules_url, ext4_path, manifest):
@@ -319,18 +314,26 @@ def provision_rootfs(rootfs_url, modules_url, ext4_path, manifest):
     print(f"baking rootfs ext4 from {rootfs_url}")
     started = time.time()
     os.makedirs(WORK_ENV, exist_ok=True)
-    # Re-bake from a tarball already sitting next to us when its name matches
-    # the versioned source URL (those paths are versioned, so the content is
-    # fixed).  A re-bake then costs no network at all, which matters because
-    # this CDN truncates 144MB downloads often enough to be routine.
+    # Download the tarball to a stable path rather than into the temporary bake
+    # directory: the worker's download() resumes an interrupted transfer with a
+    # Range request, so a fetch that this CDN cut short is continued by the
+    # next run instead of restarting from zero - which is the difference
+    # between a fresh clone provisioning successfully and never finishing.
     source = rootfs_url
     if not rootfs_url.startswith("file://"):
         cached = os.path.join(
             WORK_ENV, os.path.basename(unquote(urlparse(rootfs_url).path)))
-        if os.path.exists(cached) and _looks_like_a_tarball(cached):
-            print(f"  reusing cached tarball {cached} "
-                  f"({_human(os.path.getsize(cached))})")
-            source = "file://" + os.path.abspath(cached)
+        expected = _remote_size(rootfs_url)
+        have = os.path.getsize(cached) if os.path.exists(cached) else 0
+        if expected is not None and have == expected:
+            print(f"  reusing cached tarball {cached} ({_human(have)})")
+        else:
+            if have:
+                print(f"  tarball on disk is incomplete ({_human(have)} of "
+                      f"{_human(expected) if expected else 'an unknown size'}); "
+                      "resuming")
+            _worker.download(rootfs_url, cached)
+        source = "file://" + os.path.abspath(cached)
     workspace = tempfile.mkdtemp(prefix="kci-bake-", dir=WORK_ENV)
     try:
         # bake_rootfs_image calls the module-global download; swap in _fetch so
