@@ -1,5 +1,5 @@
 diff --git a/config/jobs-pull-labs.yaml b/config/jobs-pull-labs.yaml
-index 9354f2a..5d6a966 100644
+index 006782f..389d13f 100644
 --- a/config/jobs-pull-labs.yaml
 +++ b/config/jobs-pull-labs.yaml
 @@ -224,6 +224,24 @@ jobs:
@@ -28,13 +28,13 @@ index 9354f2a..5d6a966 100644
      template: baseline.jinja2
      kind: job
 diff --git a/config/pipeline-pull-labs.yaml b/config/pipeline-pull-labs.yaml
-index e4a4be1..2dc4367 100644
+index aa9f8ac..e201917 100644
 --- a/config/pipeline-pull-labs.yaml
 +++ b/config/pipeline-pull-labs.yaml
-@@ -27,3 +27,11 @@ runtimes:
-     notify:
-       callback:
-         token: kernelci-pull-lab
+@@ -32,3 +32,11 @@ runtimes:
+     lab_type: pull_labs
+     poll_interval: 60
+     timeout: 7200
 +
 +  pull-labs-riscv:
 +    lab_type: pull_labs
@@ -44,10 +44,10 @@ index e4a4be1..2dc4367 100644
 +      callback:
 +        token: kernelci-pull-labs-riscv
 diff --git a/config/platforms.yaml b/config/platforms.yaml
-index 0a64cb7..1d21568 100644
+index b60aa01..5150b4c 100644
 --- a/config/platforms.yaml
 +++ b/config/platforms.yaml
-@@ -574,6 +574,16 @@ platforms:
+@@ -573,6 +573,16 @@ platforms:
        guestfs_interface: virtio
        memory: 4G
  
@@ -65,10 +65,10 @@ index 0a64cb7..1d21568 100644
      base_name: fvp
      arch: arm64
 diff --git a/config/scheduler-pull-labs.yaml b/config/scheduler-pull-labs.yaml
-index b46a56a..2a61d11 100644
+index 2dd04b5..6b3864a 100644
 --- a/config/scheduler-pull-labs.yaml
 +++ b/config/scheduler-pull-labs.yaml
-@@ -224,6 +224,33 @@ scheduler:
+@@ -224,6 +224,28 @@ scheduler:
      platforms:
        - exynos850-e850-96
  
@@ -82,17 +82,12 @@ index b46a56a..2a61d11 100644
 +    platforms:
 +      - qemu-riscv64
 +
-+  # The riscv64-kselftest-kernelci build image ships a kselftest tarball for
-+  # the plain riscv defconfig build too, so both jobs can use the same event.
 +  - job: kselftest-riscv-pull-labs
 +    event: *kbuild-gcc-14-riscv-node-event
 +    runtime: *pull-labs-riscv-runtime
 +    platforms:
 +      - qemu-riscv64
 +
-+  # Hypervisor: the same build ships a kvm module (CONFIG_KVM=m) and a kvm
-+  # kselftest collection; the lab boots QEMU with the H extension and runs a
-+  # curated subset (perf/stress tests are meaningless under TCG).
 +  - job: kselftest-kvm-riscv-pull-labs
 +    event: *kbuild-gcc-14-riscv-node-event
 +    runtime: *pull-labs-riscv-runtime
