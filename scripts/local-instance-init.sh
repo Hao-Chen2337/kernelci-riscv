@@ -29,8 +29,17 @@ PIPE_DIR="$ROOT/kernelci-pipeline"
 # owns, so a second isolated stack on the same machine keeps its own database.
 PROJECT="${KCI_COMPOSE_PROJECT:-kcirv}"
 API_PORT="${KCI_API_PORT:-8001}"
+STORAGE_PORT="${KCI_STORAGE_PORT:-8002}"
+SSH_PORT="${KCI_SSH_PORT:-8022}"
+MONGO_PORT="${KCI_MONGO_PORT:-8017}"
 API_URL="${KCI_API_URL:-http://127.0.0.1:$API_PORT}"
-export API_HOST_PORT="$API_PORT"
+# Keep in sync with scripts/run-local-stack.sh: the compose file publishes
+# ${API_HOST_PORT:-8001} and friends, so starting the containers here without
+# all of them leaves this deployment on the default ports while the rendered
+# cb-config points at the custom ones - which surfaces later as the scheduler
+# failing to store a job definition ("unable to connect to port <ssh port>").
+export API_HOST_PORT="$API_PORT" STORAGE_HOST_PORT="$STORAGE_PORT"
+export SSH_HOST_PORT="$SSH_PORT" MONGO_HOST_PORT="$MONGO_PORT"
 
 API_ENV="$API_DIR/.env"
 PIPE_ENV="$PIPE_DIR/.env"

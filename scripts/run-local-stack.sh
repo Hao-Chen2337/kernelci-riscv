@@ -75,8 +75,17 @@ python3 "$ROOT/scripts/render-local-config.py" \
 ok "settings rendered ($SETTINGS, $CB_CONFIG; project=$PROJECT api=$API_PORT)"
 
 # 1) KernelCI API stack
+#
+# `docker compose up -d` runs even when the API already answers, because only
+# compose knows whether the running containers still match the requested port
+# mappings: skipping it left containers on the default ports while the rendered
+# cb-config pointed at this deployment's ports, and the scheduler then failed to
+# store any job definition ("unable to connect to port 18022").  With nothing to
+# change this is a no-op that costs about a second.
 if curl -s -m 3 -o /dev/null "$API_URL/latest/"; then
   ok "API stack already up ($API_URL)"
+  (cd "$API_DIR" && docker compose -p "$PROJECT" up -d api db redis storage ssh >/dev/null) \
+    || echo "  !! compose could not reconcile the running containers; ports may be stale"
 else
   echo "-> starting: docker compose -p $PROJECT up -d api db redis storage ssh"
   if ! (cd "$API_DIR" && docker compose -p "$PROJECT" up -d api db redis storage ssh >/dev/null); then
@@ -88,19 +97,23 @@ else
     done
     (cd "$API_DIR" && docker compose -p "$PROJECT" up -d api db redis storage ssh >/dev/null) || die "compose failed"
   fi
-  for i in $(seq 1 40); do
-    curl -s -m 2 -o /dev/null "$API_URL/latest/" && break
-    sleep 2
-  done
-  curl -s -m 3 -o /dev/null "$API_URL/latest/" || die "API not ready at $API_URL"
-  ok "API stack started"
 fi
+for i in $(seq 1 40); do
+  curl -s -m 2 -o /dev/null "$API_URL/latest/" && break
+  sleep 2
+done
+curl -s -m 3 -o /dev/null "$API_URL/latest/" || die "API not ready at $API_URL"
+ok "API stack up"
 
+# Note on the service launches below: each one redirects the SUBSHELL's own
+# stdout/stderr as well as the service's.  Redirecting only the service left the
+# subshell holding the caller's stdout, so `./run.sh stack | tee log` never saw
+# EOF and appeared to hang long after the stack was up.
 # 2) artifact server (8999)
 if curl -s -m 3 -o /dev/null "http://127.0.0.1:$SERVE_PORT/Image"; then
   ok "artifact server already up (:$SERVE_PORT)"
 else
-  (cd "$SERVE_DIR" && setsid nohup python3 -m http.server $SERVE_PORT --bind 0.0.0.0 >/tmp/fs$SERVE_PORT.log 2>&1 < /dev/null &)
+  (cd "$SERVE_DIR" && setsid nohup python3 -m http.server $SERVE_PORT --bind 0.0.0.0 >/tmp/fs$SERVE_PORT.log 2>&1 < /dev/null &) >/dev/null 2>&1
   sleep 2
   curl -s -m 3 -o /dev/null "http://127.0.0.1:$SERVE_PORT/Image" && ok "artifact server started (:$SERVE_PORT)" || die "artifact server failed"
 fi
@@ -109,7 +122,7 @@ fi
 if curl -s -m 3 -o /dev/null "http://127.0.0.1:$CB_PORT/"; then
   ok "lava_callback already up (:$CB_PORT)"
 else
-  (cd "$PIPE_DIR/src" && KCI_SETTINGS="$SETTINGS" KCI_API_TOKEN="$TOKEN" PYTHONPATH="$ROOT/kernelci-core" setsid nohup python3 -m uvicorn lava_callback:app --port $CB_PORT --host 0.0.0.0 >/tmp/cb$CB_PORT.log 2>&1 < /dev/null &)
+  (cd "$PIPE_DIR/src" && KCI_SETTINGS="$SETTINGS" KCI_API_TOKEN="$TOKEN" PYTHONPATH="$ROOT/kernelci-core" setsid nohup python3 -m uvicorn lava_callback:app --port $CB_PORT --host 0.0.0.0 >/tmp/cb$CB_PORT.log 2>&1 < /dev/null &) >/dev/null 2>&1
   sleep 4
   curl -s -m 3 -o /dev/null "http://127.0.0.1:$CB_PORT/" && ok "lava_callback started (:$CB_PORT)" || die "callback failed (see /tmp/cb$CB_PORT.log)"
 fi
@@ -141,7 +154,7 @@ a = yaml.safe_load(open(os.environ["PIPE_CONF"]))
 b = yaml.safe_load(open(os.environ["CB_CONF"]))
 open(sys.argv[1], "w").write(yaml.safe_dump(merge(a, b), sort_keys=False))
 PYEOF
-  (cd "$KCFG" && KCI_SETTINGS="$SETTINGS" KCI_API_TOKEN="$TOKEN" KCI_INSTANCE_CALLBACK="http://127.0.0.1:$CB_PORT" PYTHONPATH="$ROOT/kernelci-core" setsid nohup python3 "$PIPE_DIR/src/scheduler.py" --yaml-config "$KCFG/config" --settings "$SETTINGS" loop --runtimes pull-labs-riscv --name local-full-stack --output /tmp/sched-output >/tmp/sched-local.log 2>&1 < /dev/null &)
+  (cd "$KCFG" && KCI_SETTINGS="$SETTINGS" KCI_API_TOKEN="$TOKEN" KCI_INSTANCE_CALLBACK="http://127.0.0.1:$CB_PORT" PYTHONPATH="$ROOT/kernelci-core" setsid nohup python3 "$PIPE_DIR/src/scheduler.py" --yaml-config "$KCFG/config" --settings "$SETTINGS" loop --runtimes pull-labs-riscv --name local-full-stack --output /tmp/sched-output >/tmp/sched-local.log 2>&1 < /dev/null &) >/dev/null 2>&1
   sleep 10
   pgrep -f "scheduler.py.*pull-labs-riscv" >/dev/null && ok "scheduler started (pull-labs-riscv)" || die "scheduler failed (see /tmp/sched-local.log)"
 fi
@@ -216,8 +229,11 @@ except Exception:
 print(items[0]["id"] if items else "")')"
   if [ -z "$PARENT" ]; then
     echo "    no checkout node yet (fresh database); creating one"
-    PARENT="$(kci_curl -s -m 30 -X POST -H "Authorization: Bearer $TOKEN" \
-      -H "Content-Type: application/json" --data @- "$API_URL/latest/node" <<EOF
+    # The body goes through a file rather than piping a heredoc into python:
+    # a pipe after a heredoc terminator inside a command substitution is a
+    # syntax error bash only reports when it reaches the line.
+    CHECKOUT_BODY="$(mktemp)"
+    cat > "$CHECKOUT_BODY" <<EOF
 {
   "name": "checkout", "kind": "checkout", "state": "done", "result": "pass",
   "group": "checkout", "path": ["checkout"],
@@ -230,11 +246,15 @@ print(items[0]["id"] if items else "")')"
             "commit_tags": ["v7.3-rc1"], "tip_of_branch": true}}
 }
 EOF
+    PARENT="$(kci_curl -s -m 30 -X POST -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" --data @"$CHECKOUT_BODY" \
+      "$API_URL/latest/node" \
       | python3 -c 'import json,sys
 try:
     print(json.load(sys.stdin).get("id", ""))
 except Exception:
     print("")')"
+    rm -f "$CHECKOUT_BODY"
     [ -n "$PARENT" ] || die "could not create a checkout node on $API_URL (is the API up and the token valid?)"
     echo "    checkout node created: $PARENT"
   fi
