@@ -278,7 +278,10 @@ def build_command(job, args, workspace):
     elif test_type != "boot":
         raise KeyError("job definition has no rootfs for a kselftest job")
 
-    if artifacts.get("modules"):
+    # modules.tar.xz is only needed by kselftest-kvm (kvm.ko loaded at
+    # boot).  For boot/kselftest-riscv it is a needless 100MB+ download
+    # that adds a flaky network dependency per job - skip it.
+    if test_type == "kselftest-kvm" and artifacts.get("modules"):
         cmd += ["--modules", artifacts["modules"]]
 
     label = test_type
@@ -1002,8 +1005,8 @@ def main():
     )
     parser.add_argument(
         "--cpu",
-        default=os.environ.get("QEMU_CPU", "rv64,v=true"),
-        help="QEMU cpu properties (default: rv64,v=true; "
+        default=os.environ.get("QEMU_CPU", "rv64,v=true,ssnpm=true"),
+        help="QEMU cpu properties (default: rv64,v=true,ssnpm=true; "
         "KVM jobs add ,h=true).",
     )
     parser.add_argument(

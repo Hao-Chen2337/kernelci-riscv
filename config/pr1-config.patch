@@ -44,7 +44,7 @@ index e4a4be1..2dc4367 100644
 +      callback:
 +        token: kernelci-pull-labs-riscv
 diff --git a/config/platforms.yaml b/config/platforms.yaml
-index 0a64cb7..d160387 100644
+index 0a64cb7..1d21568 100644
 --- a/config/platforms.yaml
 +++ b/config/platforms.yaml
 @@ -574,6 +574,16 @@ platforms:
@@ -56,7 +56,7 @@ index 0a64cb7..d160387 100644
 +    arch: riscv
 +    context:
 +      arch: riscv
-+      cpu: rv64,v=true
++      cpu: rv64,v=true,ssnpm=true
 +      machine: virt
 +      guestfs_interface: virtio
 +      memory: 4G

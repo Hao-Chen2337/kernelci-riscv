@@ -60,9 +60,12 @@ clang 是上游缺口(记档,不是我们的默认路径会失败)。
 - validate_yaml → "All yaml files are valid";verify-lava-body / verify-worker-guards 全绿。
 - **baseline PoC**:节点 6a9fb8bfdb925f2f584f0771 done/pass;重放 6aa11653fa416dea4a15a0bf
   done/pass + setup 子节点 + 三构件入库;防假绿节点 6aa114ef…(EPERM → incomplete+Infrastructure,如实上报)。
-- **官方调度器本地闭环(9-09,9-10 一键化复验同款)**:seed kbuild → 官方调度器读我们 4 个
+- **官方调度器本地闭环(9-10 一键化实测,多批次复验)**:seed kbuild → 官方调度器读我们 4 个
   YAML → 渲染 3 份任务书 → 自动建 3 个 job 节点 → worker 接单 → tuxrun/QEMU → LAVA body →
-  真实 lava_callback(8003)→ baseline **done/pass**、kselftest-kvm **done/pass**。
+  真实 lava_callback(8003)→ baseline **done/pass**、kselftest-kvm **done/pass**;
+  kselftest-riscv **done/fail**(如实上报:riscv collection 10 项 8 pass / 2 fail,
+  fail = which-cpus、validate_v_ptrace——TCG 模拟环境的 CPU 拓扑/ptrace 语义差异;
+  pointer_masking 在 ssnpm=true 下 pass;每项结果都挂在节点子层级)。
 - **riscv collection(Vector)**:v7.3-rc1(ssnpm=true)本地复跑 10 项 **9 ok / 1 not ok**
   (not ok = pointer_masking 的 PMLEN constraint,TCG 限制);v6.18 对照 7 ok/1 not ok(51/61 SKIP)。
 - **配置漂移**:6.18 同 commit 两次构建 5412 项 0 漂移;生产两次 5583 项 0 漂移;

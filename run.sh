@@ -129,10 +129,12 @@ cmd_verify() {
 }
 
 cmd_drift() {
+  no_proxy_setup
   KCI_API_URL="$API_URL" python3 "$ROOT/scripts/config_drift.py" --json --job kbuild-gcc-14-riscv
 }
 
 cmd_trend() {
+  no_proxy_setup
   KCI_API_URL="$API_URL" python3 "$ROOT/scripts/regression_tracker.py" trend
 }
 
