@@ -14,7 +14,10 @@
 api_config = "docker-host"
 storage_config = "docker-host"
 verbose = true
-yaml_config = ["@KCI_ROOT@/kernelci-pipeline/config", "@KCI_ROOT@/config/cb-config"]
+# The second directory is the RENDERED copy of config/cb-config (which is a
+# template carrying the deployment's port placeholders): the tracked directory
+# itself would give the callback a literal placeholder instead of a port.
+yaml_config = ["@KCI_ROOT@/kernelci-pipeline/config", "@KCI_ROOT@/work/cb-config"]
 
 [trigger]
 # how often to poll git trees for new commits
