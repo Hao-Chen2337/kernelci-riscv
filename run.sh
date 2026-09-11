@@ -108,15 +108,31 @@ cmd_setup() {
   fi
   # tuxlava patch (site-packages, cannot be applied here - just report)
   TUXLAVA_DIR="$(python3 -c 'import tuxlava,os;print(os.path.dirname(tuxlava.__file__))' 2>/dev/null || true)"
-  if [ -n "$TUXLAVA_DIR" ] && grep -q "KselftestRiscv\|kselftest-riscv" "$TUXLAVA_DIR/tests/kselftest.py" 2>/dev/null; then
-    ok "tuxlava patch applied"
+  # The patch has to be applied where tuxlava IS, not in this interpreter's
+  # user site-packages: a virtualenv or a system-wide install put the two in
+  # different trees, and the printed command then either patched nothing or
+  # reported "Reversed (or previously applied) patch detected" (N8).
+  if [ -n "$TUXLAVA_DIR" ]; then
+    TUXLAVA_SITE="$(dirname "$TUXLAVA_DIR")"
   else
-    # Derived, not hardcoded: "python3.10" is whatever Python this machine has,
-    # and the path differs on 3.11/3.12 - which made the documented patch
-    # command fail on any other machine.
     TUXLAVA_SITE="$(python3 -c 'import site;print(site.getusersitepackages())' 2>/dev/null \
       || echo "$HOME/.local/lib/python$(python3 -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)/site-packages")"
-    echo "  !! tuxlava patch missing: patch -p1 -d $TUXLAVA_SITE < $ROOT/config/tuxlava-kselftest-riscv.patch"
+  fi
+  if [ -z "$TUXLAVA_DIR" ]; then
+    # tuxlava missing entirely is a different problem with a different fix,
+    # and the banner below would have blamed the patch for it.
+    echo "  !! tuxlava is not importable: run the jobs' guest setup needs it (pip install tuxrun pulls it in)"
+  elif grep -q "KselftestRiscv\|kselftest-riscv" "$TUXLAVA_DIR/tests/kselftest.py" 2>/dev/null; then
+    ok "tuxlava patch applied"
+  else
+    # Reported at the END of setup instead of where it is detected: this is a
+    # hard prerequisite for the riscv kselftest jobs (tuxrun builds its --tests
+    # choices from tuxlava, so without it the job dies with exit 2 and the node
+    # is filed as an infrastructure error), and as one `!!` line in the middle
+    # of ~145 lines of setup output nobody noticed it until the worker failed
+    # ~20 minutes later.  Still non-fatal: a deployment that only runs
+    # `baseline` does not need it.
+    TUXLAVA_PATCH_MISSING="$TUXLAVA_SITE"
   fi
   [ -f "$PIPE/.env" ] || cat > "$PIPE/.env" <<'EOF'
 KCI_API_TOKEN=fill in the local kernelci-api admin JWT (see kernelci-api local-instance docs)
@@ -135,6 +151,21 @@ EOF
     echo "  !! scripts/local-instance-init.sh missing; generate kernelci-api/.env, the SSH key pair and KCI_API_TOKEN before ./run.sh stack"
   fi
   ok "setup done"
+  if [ -n "${TUXLAVA_PATCH_MISSING:-}" ]; then
+    # Last thing on screen, deliberately: this is the prerequisite whose
+    # absence surfaces much later as an unexplained "Infrastructure" job error.
+    echo
+    echo "================================ WARNING ================================"
+    echo "tuxlava is NOT patched, so the kselftest-riscv job cannot run: tuxrun"
+    echo "derives its --tests choices from tuxlava and exits 2 without the class."
+    echo "Apply the one-time patch from docs/RUNBOOK.md now:"
+    echo
+    echo "  patch -p1 -d $TUXLAVA_PATCH_MISSING \\"
+    echo "    < $ROOT/config/tuxlava-kselftest-riscv.patch"
+    echo
+    echo "setup itself succeeded (exit 0); only the kselftest-riscv job needs this."
+    echo "========================================================================"
+  fi
 }
 
 cmd_provision() {
@@ -210,14 +241,22 @@ try:
 except Exception as error:
     print("  (no usable response from the API: %s)" % error)
     raise SystemExit(0)
+# The full 24-character id is printed: the previous [:16] truncation made two
+# different nodes of the same name print identically in one report.
+items = sorted(items, key=lambda n: n.get("created") or "", reverse=True)
 if not items:
     print("  (no nodes)")
-items = sorted(items, key=lambda n: n.get("created") or "", reverse=True)
 for n in items[:3]:
     revision = (n.get("data") or {}).get("kernel_revision") or {}
-    print("  {:16s} {:12s} {:14s} {} ({})".format(
-        (n.get("id") or "?")[:16], n.get("state") or "-", n.get("result") or "-",
-        (revision.get("describe") or "?")[:30], (n.get("created") or "")[:10]))'
+    print("  {:24s} {:12s} {:14s} {} ({})".format(
+        n.get("id") or "?", n.get("state") or "-", n.get("result") or "-",
+        (revision.get("describe") or "?")[:30], (n.get("created") or "")[:10]))
+if len(items) > 3:
+    print("  (%d node(s) matched, newest 3 shown)" % len(items))' \
+      || true
+    # `|| true`: curl fails when the API is down, and under `set -o pipefail`
+    # that failure became the report's exit status (7) even though the message
+    # above is exactly what the reader needs (adversarial review, N6).
   done
 }
 
@@ -226,6 +265,15 @@ cmd_verify() {
   # `tail -1` (or trailing it with `|| true`) throws its exit status away, so
   # this "full gate" used to print a traceback and still exit 0 - it reported
   # success precisely when it should have reported a crash.
+  #
+  # The tools the gates themselves need are checked first: `ruff: command not
+  # found` from the last gate, after three others have already run, told a new
+  # user nothing about what to install (ruff was in no requirements file).
+  local missing=()
+  command -v ruff >/dev/null 2>&1 || missing+=("ruff")
+  python3 -c 'import yaml' >/dev/null 2>&1 || missing+=("PyYAML")
+  [ "${#missing[@]}" -eq 0 ] || die \
+    "verify needs: ${missing[*]} - install with: python3 -m pip install -r requirements.txt"
   (cd "$PIPE" && python3 tests/validate_yaml.py) || die "validate_yaml failed"
   python3 "$ROOT/scripts/verify-lava-body.py" || die "verify-lava-body failed"
   python3 "$ROOT/scripts/verify-worker-guards.py" || die "verify-worker-guards failed"
