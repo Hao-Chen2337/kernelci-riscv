@@ -21,6 +21,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -110,7 +111,12 @@ def default_build_artifacts(job, api):
     revision = (node.get("data") or {}).get("kernel_revision") or {}
     print(f"newest {job}: {revision.get('describe', '?')} "
           f"({(revision.get('commit') or '')[:12]}) id={node.get('id')}")
-    return kernel_url, artifacts.get("modules")
+    # The revision travels with the URLs: provision records it in
+    # work/env/build.env and the seed labels its nodes from it.  Returning the
+    # URLs alone is what let the seed keep its own hardcoded revision while
+    # serving a completely different kernel, so every node - and every
+    # `./run.sh report` line - named a build nothing had booted.
+    return kernel_url, artifacts.get("modules"), revision
 
 
 def download(url, dest):
@@ -361,12 +367,24 @@ def provision_only(args):
     modules_url = args.modules_url or os.environ.get("KCI_MODULES_URL")
     rootfs_url = (args.rootfs_url or os.environ.get("KCI_ROOTFS_URL")
                   or DEFAULT_ROOTFS_URL)
+    revision = {}
     if not kernel_url:
         # No pinned build hash: ask production for the newest passing kbuild
         # and take kernel + modules from that one node.
-        kernel_url, discovered_modules = default_build_artifacts(
+        kernel_url, discovered_modules, revision = default_build_artifacts(
             args.job, args.api_url)
         modules_url = modules_url or discovered_modules
+    else:
+        # A hand-pinned kernel URL has no node to read a revision from, so let
+        # the caller state it.  Without one the seed has nothing to label its
+        # nodes with, and says so instead of quietly using its old default.
+        revision = {
+            "commit": os.environ.get("KCI_BUILD_COMMIT", ""),
+            "describe": os.environ.get("KCI_BUILD_DESCRIBE", ""),
+            "tree": os.environ.get("KCI_BUILD_TREE", ""),
+            "branch": os.environ.get("KCI_BUILD_BRANCH", ""),
+            "url": os.environ.get("KCI_BUILD_URL", ""),
+        }
     _check_consistency(kernel_url, modules_url)
     manifest = load_manifest()
     provision_kernel(kernel_url, DEFAULT_IMAGE, DEFAULT_SERVE_IMAGE, manifest)
@@ -377,18 +395,59 @@ def provision_only(args):
     # :8999, the modules baked into the rootfs and the job definition cannot
     # drift apart.  A mismatch makes every kvm test skip ("Cannot open
     # /dev/kvm"), which is exactly the failure this whole path exists to avoid.
+    #
+    # The kernel *revision* is part of that: the seed used to keep its own
+    # hardcoded commit/describe, so a deployment serving 7.3-rc2 labelled every
+    # node (and every ./run.sh report line) 7.3-rc1-516-gf217004a40c49.  The
+    # results were right, the attribution was wrong, and config_drift.py /
+    # regression_tracker.py group by that field.
     build_dir = kernel_url.rsplit("/", 1)[0]
     build_env = os.path.join(WORK_ENV, "build.env")
+    version = revision.get("version")
+    if not isinstance(version, dict):
+        # Production nodes carry either {"version": 7, "patchlevel": 3} or a
+        # bare int; .get() on the int raised AttributeError and lost the whole
+        # file (adversarial review, N10).
+        version = {"version": version} if isinstance(version, int) else {}
+    tags = " ".join(revision.get("commit_tags") or [])
+
+    def env_line(key, value):
+        """KEY=<shell-quoted value>.
+
+        build.env is *sourced* by run-local-stack.sh, so a raw value breaks the
+        deployment: a space-joined tag list ran `v7.0: command not found` and
+        silently dropped every tag to the placeholder, and a quote or backslash
+        in a describe string corrupted the shell state (adversarial review, N2).
+        """
+        return f"{key}={shlex.quote('' if value is None else str(value))}\n"
+
     with open(build_env, "w") as handle:
         handle.write("# Written by ./run.sh provision - do not edit by hand.\n")
         handle.write("# The kbuild every work/ artifact below comes from;\n")
-        handle.write("# run-local-stack.sh seeds jobs from these URLs.\n")
-        handle.write(f"KCI_BUILD_DIR={build_dir}\n")
-        handle.write(f"KCI_KERNEL_URL={kernel_url}\n")
+        handle.write("# run-local-stack.sh seeds jobs from these URLs and\n")
+        handle.write("# labels the nodes it creates with this revision.\n")
+        handle.write("# Values are shell-quoted: this file is sourced, not parsed.\n")
+        handle.write(env_line("KCI_BUILD_DIR", build_dir))
+        handle.write(env_line("KCI_KERNEL_URL", kernel_url))
         if modules_url:
-            handle.write(f"KCI_MODULES_URL={modules_url}\n")
-        handle.write(f"KCI_ROOTFS_URL={rootfs_url}\n")
+            handle.write(env_line("KCI_MODULES_URL", modules_url))
+        handle.write(env_line("KCI_ROOTFS_URL", rootfs_url))
+        handle.write(env_line("KCI_BUILD_COMMIT", revision.get("commit") or ""))
+        handle.write(env_line("KCI_BUILD_DESCRIBE", revision.get("describe") or ""))
+        handle.write(env_line("KCI_BUILD_TREE", revision.get("tree") or ""))
+        handle.write(env_line("KCI_BUILD_BRANCH", revision.get("branch") or ""))
+        handle.write(env_line("KCI_BUILD_URL", revision.get("url") or ""))
+        handle.write(env_line("KCI_BUILD_VERSION", version.get("version") or ""))
+        handle.write(env_line("KCI_BUILD_PATCHLEVEL", version.get("patchlevel") or ""))
+        handle.write(env_line("KCI_BUILD_TAGS", tags))
     print(f"build pinned at {build_env}: {build_dir}")
+    if revision.get("commit"):
+        print(f"build revision: {revision.get('describe') or '?'} "
+              f"({revision['commit'][:12]})")
+    else:
+        print("  !! build revision unknown (the kernel URL came from outside "
+              "production): the seed will fall back to its pinned placeholder "
+              "unless KCI_BUILD_COMMIT/KCI_BUILD_DESCRIBE are set")
     print("provision complete")
     return 0
 

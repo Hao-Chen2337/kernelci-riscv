@@ -105,6 +105,45 @@ done
 curl -s -m 3 -o /dev/null "$API_URL/latest/" || die "API not ready at $API_URL"
 ok "API stack up"
 
+# Which artifact is actually running - recorded, not inferred afterwards.
+# kernelci-api/docker-compose.yaml pulls a *mutable* tag
+# (${KERNELCI_API_IMAGE:-kernelci/staging-kernelci}:${KERNELCI_API_TAG:-api}), so
+# the image this deployment tested can change under it overnight; without this
+# line no report can name the artifact it verified.  Read it back from the
+# running container rather than from the tag we asked for.
+API_IMAGE_ID="$(docker inspect -f '{{.Image}}' kernelci-api 2>/dev/null || true)"
+if [ -n "$API_IMAGE_ID" ]; then
+  ok "API image: ${API_IMAGE_ID#sha256:} (${KERNELCI_API_IMAGE:-kernelci/staging-kernelci}:${KERNELCI_API_TAG:-api})"
+  mkdir -p "$ROOT/work/env"
+  {
+    echo "# Written by ./run.sh stack - the artifact this deployment runs."
+    echo "# kernelci-api's compose file pulls a mutable tag, so this is the only"
+    echo "# durable record of what was tested; re-read on every stack start."
+    echo "KCI_API_IMAGE_ID=$API_IMAGE_ID"
+    echo "KCI_API_IMAGE_REF=${KERNELCI_API_IMAGE:-kernelci/staging-kernelci}:${KERNELCI_API_TAG:-api}"
+    echo "KCI_STACK_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "KCI_COMPOSE_PROJECT=$PROJECT"
+  } > "$ROOT/work/env/images.env"
+else
+  # Say so instead of silently writing nothing: this record is the only way a
+  # later report can name the artifact it verified, and a renamed container
+  # (KCI_COMPOSE_PROJECT, an override) would otherwise vanish without a trace.
+  echo "  !! could not read the running API image id (docker inspect kernelci-api failed);"
+  echo "     work/env/images.env was NOT written, so this run's artifact is unrecorded"
+fi
+
+# `stop` + `stack` used to truncate the previous round's service logs, because
+# every service logs to a fixed /tmp path - so after a restart the round that
+# produced a result was no longer auditable.  Rotate one generation instead,
+# and ONLY when the service is about to be started below: rotating here
+# unconditionally moved the log file of an ALREADY RUNNING service to .prev,
+# leaving the live round with no log path at all while the service kept writing
+# to the moved inode (caught by an adversarial review, then observed live).
+rotate_log() {
+  [ -f "$1" ] && mv -f "$1" "$1.prev"
+  return 0
+}
+
 # Note on the service launches below: each one redirects the SUBSHELL's own
 # stdout/stderr as well as the service's.  Redirecting only the service left the
 # subshell holding the caller's stdout, so `./run.sh stack | tee log` never saw
@@ -113,6 +152,7 @@ ok "API stack up"
 if curl -s -m 3 -o /dev/null "http://127.0.0.1:$SERVE_PORT/Image"; then
   ok "artifact server already up (:$SERVE_PORT)"
 else
+  rotate_log "/tmp/fs$SERVE_PORT.log"
   (cd "$SERVE_DIR" && setsid nohup python3 -m http.server $SERVE_PORT --bind 0.0.0.0 >/tmp/fs$SERVE_PORT.log 2>&1 < /dev/null &) >/dev/null 2>&1
   sleep 2
   curl -s -m 3 -o /dev/null "http://127.0.0.1:$SERVE_PORT/Image" && ok "artifact server started (:$SERVE_PORT)" || die "artifact server failed"
@@ -122,6 +162,25 @@ fi
 if curl -s -m 3 -o /dev/null "http://127.0.0.1:$CB_PORT/"; then
   ok "lava_callback already up (:$CB_PORT)"
 else
+  # lava_callback runs on the HOST (not in a container) and imports the cloned
+  # kernelci-core, so its imports have to be installed here.  Importing the
+  # module is the honest check: listing four packages missed what the callback
+  # actually needs transitively (kernelci-core wants elftools, and a machine
+  # with only PyJWT/toml/uvicorn/fastapi still died here with a bare
+  # "callback failed (see /tmp/cb8003.log)").
+  #
+  # KCI_SETTINGS must be set for the check to mean anything: lava_callback.py
+  # reads it AT IMPORT TIME (toml.load), and it is otherwise only set inline on
+  # the launch line - so an import check without it fails with
+  # FileNotFoundError: 'config/kernelci.toml' on a perfectly healthy machine and
+  # blames dependencies that are installed.  (Caught by adversarial review of
+  # this very check, N11.)
+  if ! CALLBACK_IMPORT_ERROR="$(cd "$PIPE_DIR/src" && KCI_SETTINGS="$SETTINGS" \
+      PYTHONPATH="$ROOT/kernelci-core" python3 -c 'import lava_callback' 2>&1)"; then
+    echo "$CALLBACK_IMPORT_ERROR" | tail -3 >&2
+    die "the callback service cannot be imported (see the traceback above); install the host deps with: python3 -m pip install -r requirements.txt && python3 -m pip install -r kernelci-core/requirements.txt"
+  fi
+  rotate_log "/tmp/cb$CB_PORT.log"
   (cd "$PIPE_DIR/src" && KCI_SETTINGS="$SETTINGS" KCI_API_TOKEN="$TOKEN" PYTHONPATH="$ROOT/kernelci-core" setsid nohup python3 -m uvicorn lava_callback:app --port $CB_PORT --host 0.0.0.0 >/tmp/cb$CB_PORT.log 2>&1 < /dev/null &) >/dev/null 2>&1
   sleep 4
   curl -s -m 3 -o /dev/null "http://127.0.0.1:$CB_PORT/" && ok "lava_callback started (:$CB_PORT)" || die "callback failed (see /tmp/cb$CB_PORT.log)"
@@ -154,6 +213,7 @@ a = yaml.safe_load(open(os.environ["PIPE_CONF"]))
 b = yaml.safe_load(open(os.environ["CB_CONF"]))
 open(sys.argv[1], "w").write(yaml.safe_dump(merge(a, b), sort_keys=False))
 PYEOF
+  rotate_log "/tmp/sched-local.log"
   (cd "$KCFG" && KCI_SETTINGS="$SETTINGS" KCI_API_TOKEN="$TOKEN" KCI_INSTANCE_CALLBACK="http://127.0.0.1:$CB_PORT" PYTHONPATH="$ROOT/kernelci-core" setsid nohup python3 "$PIPE_DIR/src/scheduler.py" --yaml-config "$KCFG/config" --settings "$SETTINGS" loop --runtimes pull-labs-riscv --name local-full-stack --output /tmp/sched-output >/tmp/sched-local.log 2>&1 < /dev/null &) >/dev/null 2>&1
   sleep 10
   pgrep -f "scheduler.py.*pull-labs-riscv" >/dev/null && ok "scheduler started (pull-labs-riscv)" || die "scheduler failed (see /tmp/sched-local.log)"
@@ -190,13 +250,57 @@ if [ "${1:-}" = "--seed" ] || [ "${1:-}" = "--worker" ]; then
       SEED_KSELFTEST_URL="${SEED_KSELFTEST_URL:-$KCI_BUILD_DIR/kselftest.tar.xz}"
       SEED_CONFIG_URL="${SEED_CONFIG_URL:-$KCI_BUILD_DIR/.config}"
     fi
+    # The revision of that build, so the nodes created below name the kernel
+    # that actually boots.  These used to be hardcoded defaults, which meant a
+    # deployment serving 7.3-rc2 created nodes labelled
+    # v7.3-rc1-516-gf217004a40c49: the runs were real, the attribution was not.
+    # An explicit SEED_* in the environment still wins over all of it.
+    SEED_COMMIT="${SEED_COMMIT:-${KCI_BUILD_COMMIT:-}}"
+    SEED_DESCRIBE="${SEED_DESCRIBE:-${KCI_BUILD_DESCRIBE:-}}"
+    SEED_TREE="${SEED_TREE:-${KCI_BUILD_TREE:-}}"
+    SEED_BRANCH="${SEED_BRANCH:-${KCI_BUILD_BRANCH:-}}"
+    SEED_TREE_URL="${SEED_TREE_URL:-${KCI_BUILD_URL:-}}"
+    SEED_VERSION="${SEED_VERSION:-${KCI_BUILD_VERSION:-}}"
+    SEED_PATCHLEVEL="${SEED_PATCHLEVEL:-${KCI_BUILD_PATCHLEVEL:-}}"
+    SEED_TAGS="${SEED_TAGS:-${KCI_BUILD_TAGS:-}}"
   fi
   # The whole seed is env-overridable: when production storage prunes the
   # original build, point SEED_*_URL at a newer build and replay.
   SEED_TREE="${SEED_TREE:-riscv}"
   SEED_BRANCH="${SEED_BRANCH:-master}"
+  SEED_TREE_URL="${SEED_TREE_URL:-https://git.kernel.org/pub/scm/linux/kernel/git/riscv/linux.git}"
+  SEED_VERSION="${SEED_VERSION:-7}"
+  SEED_PATCHLEVEL="${SEED_PATCHLEVEL:-3}"
+  # No tag placeholder: a build whose node carries no commit_tags reports none.
+  # Defaulting to ["v7.3-rc1"] (the previous behaviour) put a tag on a node
+  # whose describe said v7.3-rc2-655-... - a self-contradicting record nobody
+  # would notice, since only the describe is displayed.
+  SEED_TAGS="${SEED_TAGS:-${KCI_BUILD_TAGS:-}}"
   SEED_COMMIT="${SEED_COMMIT:-f217004a40c49e787372e798785aecb983828d35}"
   SEED_DESCRIBE="${SEED_DESCRIBE:-v7.3-rc1-516-gf217004a40c49}"
+  if [ -z "${KCI_BUILD_COMMIT:-}" ]; then
+    # Seeding with the placeholder is allowed (a hand-made Image has no build
+    # metadata), but it must not happen quietly: every node this creates, and
+    # every line ./run.sh report prints for them, will name a kernel that was
+    # never booted.
+    echo "  !! no build revision recorded: nodes from this seed will be labelled"
+    echo "     $SEED_DESCRIBE, which is a placeholder, not the kernel in work/serve/Image."
+    echo "     Fix: ./run.sh provision (records it), or set SEED_COMMIT/SEED_DESCRIBE."
+  fi
+  if [ -z "$SEED_TAGS" ] && [ -n "${KCI_BUILD_COMMIT:-}" ]; then
+    echo "    (this build's node carries no commit_tags: the seeded nodes report none)"
+  fi
+  # Every value below is spliced into a JSON heredoc, so each one is escaped for
+  # JSON rather than interpolated raw: a quote or backslash in a branch name or
+  # a describe string used to produce an invalid body, and the API answered with
+  # a parse error instead of a node.
+  seed_json() { python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$1"; }
+  SEED_TREE_JSON="$(seed_json "$SEED_TREE")"
+  SEED_TREE_URL_JSON="$(seed_json "$SEED_TREE_URL")"
+  SEED_BRANCH_JSON="$(seed_json "$SEED_BRANCH")"
+  SEED_COMMIT_JSON="$(seed_json "$SEED_COMMIT")"
+  SEED_DESCRIBE_JSON="$(seed_json "$SEED_DESCRIBE")"
+  SEED_TAGS_JSON="$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1].split()))' "$SEED_TAGS")"
   SEED_MODULES_URL="${SEED_MODULES_URL:-https://files.kernelci.org/kbuild-gcc-14-riscv-6aa2170920239ade901a683f/modules.tar.xz}"
   SEED_KSELFTEST_URL="${SEED_KSELFTEST_URL:-https://files.kernelci.org/kbuild-gcc-14-riscv-6aa2170920239ade901a683f/kselftest.tar.xz}"
   SEED_CONFIG_URL="${SEED_CONFIG_URL:-https://files.kernelci.org/kbuild-gcc-14-riscv-6aa2170920239ade901a683f/.config}"
@@ -205,7 +309,7 @@ if [ "${1:-}" = "--seed" ] || [ "${1:-}" = "--worker" ]; then
   [ -f "$SERVE_DIR/Image" ] || die "seed needs $SERVE_DIR/Image (run ./run.sh fetch or drop one there)"
   # Probe the seed artifacts with the user's proxy configuration as-is.
   # (This used to unset http_proxy/https_proxy unconditionally, with a comment
-  # about "the dead 7890 proxy" - one machine's temporary state.  Someone whose
+  # about "the dead local proxy" - one machine's temporary state.  Someone whose
   # proxy works would have it silently removed; KCI_BYPASS_PROXY=1 is the
   # explicit opt-in for a broken one.)
   for u in "$SEED_MODULES_URL" "$SEED_KSELFTEST_URL" "$SEED_CONFIG_URL"; do
@@ -237,13 +341,13 @@ print(items[0]["id"] if items else "")')"
 {
   "name": "checkout", "kind": "checkout", "state": "done", "result": "pass",
   "group": "checkout", "path": ["checkout"],
-  "data": {"kernel_revision": {"tree": "$SEED_TREE",
-            "url": "https://git.kernel.org/pub/scm/linux/kernel/git/riscv/linux.git",
-            "branch": "$SEED_BRANCH",
-            "commit": "$SEED_COMMIT",
-            "describe": "$SEED_DESCRIBE",
-            "version": {"version": 7, "patchlevel": 3},
-            "commit_tags": ["v7.3-rc1"], "tip_of_branch": true}}
+  "data": {"kernel_revision": {"tree": $SEED_TREE_JSON,
+            "url": $SEED_TREE_URL_JSON,
+            "branch": $SEED_BRANCH_JSON,
+            "commit": $SEED_COMMIT_JSON,
+            "describe": $SEED_DESCRIBE_JSON,
+            "version": {"version": $SEED_VERSION, "patchlevel": $SEED_PATCHLEVEL},
+            "commit_tags": $SEED_TAGS_JSON, "tip_of_branch": true}}
 }
 EOF
     PARENT="$(kci_curl -s -m 30 -X POST -H "Authorization: Bearer $TOKEN" \
@@ -267,13 +371,13 @@ except Exception:
   "parent": "$PARENT",
   "group": "kbuild-gcc-14-riscv", "path": ["checkout", "kbuild-gcc-14-riscv"],
   "data": {"arch": "riscv", "defconfig": "defconfig", "compiler": "gcc-14",
-           "kernel_revision": {"tree": "$SEED_TREE",
-             "url": "https://git.kernel.org/pub/scm/linux/kernel/git/riscv/linux.git",
-             "branch": "$SEED_BRANCH",
-             "commit": "$SEED_COMMIT",
-             "describe": "$SEED_DESCRIBE",
-             "version": {"version": 7, "patchlevel": 3},
-             "commit_tags": ["v7.3-rc1"], "tip_of_branch": true}},
+           "kernel_revision": {"tree": $SEED_TREE_JSON,
+             "url": $SEED_TREE_URL_JSON,
+             "branch": $SEED_BRANCH_JSON,
+             "commit": $SEED_COMMIT_JSON,
+             "describe": $SEED_DESCRIBE_JSON,
+             "version": {"version": $SEED_VERSION, "patchlevel": $SEED_PATCHLEVEL},
+             "commit_tags": $SEED_TAGS_JSON, "tip_of_branch": true}},
   "artifacts": {
     "kernel": "http://172.17.0.1:$SERVE_PORT/Image",
     "modules": "$SEED_MODULES_URL",
