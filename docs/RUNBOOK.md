@@ -4,9 +4,16 @@
 
 ## Environment
 
-- docker + the host-side Python packages. `pip install tuxrun` alone is not
-  enough - it only brings the fetch/worker dependencies (requests, PyYAML,
-  jinja2) - so install this repository's list as well:
+- **system packages**: `docker` with the compose plugin, `git`, `curl`, `patch`
+  (the tuxlava patch), `openssh-client` (`setup` runs `ssh-keygen` for the key
+  pair the scheduler uploads job definitions with) and `e2fsprogs` (the worker
+  bakes a 4GB ext4 image with `mkfs.ext4`). A bare Ubuntu has none of `patch`,
+  `ssh-keygen` or `mkfs.ext4`, and each missing one stops a documented stage.
+  On Debian/Ubuntu:
+  `sudo apt-get install -y docker.io docker-compose-v2 git curl patch openssh-client e2fsprogs python3 python3-pip`
+- **Python host packages**: `pip install tuxrun` alone is not enough - it only
+  brings the fetch/worker dependencies (requests, PyYAML, jinja2) - so install
+  this repository's list as well:
 
 ```bash
 python3 -m pip install tuxrun -r requirements.txt
@@ -21,16 +28,28 @@ python3 -m pip install tuxrun -r requirements.txt
 ```bash
 python3 -m pip install -r kernelci-core/requirements.txt   # after ./run.sh setup
 ```
+
+- **one directory rule**: `kernelci-api/docker/storage/data` and
+  `kernelci-api/docker/ssh/user-data` must be writable by **uid 1000** - that is
+  the `kernelci` user inside the ssh container, which stores every job
+  definition and result log through those bind mounts. A clone owned by root (or
+  by any other uid) makes the scheduler's upload fail *silently*: job nodes stay
+  `available` and `stack --seed` prints "no job node appeared within 90s".
+  `stack` checks this and prints the `chown` to run; running `stack` as root
+  fixes it automatically.
 - Tier B (local full stack) additionally needs `KCI_API_TOKEN` (local API
   admin JWT, **never committed**) in `kernelci-pipeline/.env`; `./run.sh setup`
   generates it (see below)
 - One-time patch for an already-installed tuxlava (riscv kselftest support).
-  The directory is derived, not hardcoded - `python3.10` in the path only ever
-  matched one machine's Python:
+  The directory is derived from tuxlava itself, never hardcoded: the old
+  `site.getusersitepackages()` pointed at a directory that does not exist when
+  tuxrun was installed system-wide (`patch: Can't change to directory`), so
+  apply it where the package actually is, and check that the test class appears:
 
 ```bash
-patch -p1 -d "$(python3 -c 'import site;print(site.getusersitepackages())')" \
+patch -p1 -d "$(python3 -c 'import tuxlava,os;print(os.path.dirname(os.path.dirname(tuxlava.__file__)))')" \
   < config/tuxlava-kselftest-riscv.patch
+tuxrun --list-tests | grep -w kselftest-riscv    # must print it
 ```
 
 ## Commands
@@ -53,7 +72,7 @@ git clone https://github.com/Hao-Chen2337/kernelci-riscv.git && cd kernelci-risc
 python3 -m pip install tuxrun -r requirements.txt   # host deps (see Environment)
 # step 0, once per machine: riscv kselftest support in the installed tuxlava
 # (`setup` only WARNS when it is missing - the failure shows up much later)
-patch -p1 -d "$(python3 -c 'import site;print(site.getusersitepackages())')" \
+patch -p1 -d "$(python3 -c 'import tuxlava,os;print(os.path.dirname(os.path.dirname(tuxlava.__file__)))')" \
   < config/tuxlava-kselftest-riscv.patch
 ./run.sh setup          # upstream clones + patches + runtime config (see below)
 python3 -m pip install -r kernelci-core/requirements.txt   # deps of the cloned callback
