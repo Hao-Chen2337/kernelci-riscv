@@ -26,6 +26,19 @@ PASS_LOG = os.path.join(FIXTURES, "tuxrun-pass.log")
 FAIL_LOG = os.path.join(FIXTURES, "tuxrun-fail.log")
 
 
+def check(condition, message):
+    """A guard that also holds under `python3 -O` / PYTHONOPTIMIZE=1.
+
+    These checks used to be `assert` statements.  run.sh fails the `verify`
+    gate on a non-zero exit, but -O strips every assert, so a broken check
+    printed "ALL PARSER CHECKS PASSED" and exited 0: the gate reported
+    success precisely when it had verified nothing.
+    """
+    if not condition:
+        print(f"FAIL: {message}", file=sys.stderr)
+        sys.exit(1)
+
+
 def fake_args():
     return argparse.Namespace(
         api_config_name="docker-host", storage_config_name="docker-host")
@@ -41,7 +54,7 @@ def run_case(tag, log_path, returncode, expect_status):
 
     cb = Callback(body)
     status = cb.get_job_status()
-    assert status == expect_status, f"status {status} != {expect_status}"
+    check(status == expect_status, f"status {status} != {expect_status}")
     print("get_job_status:", status)
     print("get_meta(api_config_name):", cb.get_meta("api_config_name"))
     print("get_meta(storage_config_name):", cb.get_meta("storage_config_name"))
@@ -49,7 +62,8 @@ def run_case(tag, log_path, returncode, expect_status):
     print("is_infra_error:", cb.is_infra_error())
 
     lp = cb.get_log_parser()
-    assert lp is not None, "log parser is None -> result would be forced incomplete"
+    check(lp is not None,
+          "log parser is None -> result would be forced incomplete")
     text = lp.get_text()
     print(f"log parser OK, {len(text.splitlines())} target lines, "
           f"sample: {text.splitlines()[0][:60] if text else '(empty)'}")
@@ -79,27 +93,27 @@ def run_kselftest_tap_cases():
     print("\n===== kselftest TAP: rc=0 + not ok -> job fail =====")
     summary, _tests_out, per_test = worker.tap_summary(output, "kselftest-riscv")
     print("tap summary:", summary, "per_test:", per_test)
-    assert summary["failed"] == 1, summary
+    check(summary["failed"] == 1, summary)
     body = worker.lava_body("qemu-riscv64", 0, output, fake_args(),
                             tap=("kselftest-riscv", summary, per_test))
     with open("/tmp/lava-body-kselftest-fail.json", "w") as f:
         json.dump(body, f, indent=1)
 
     cb = Callback(body)
-    assert cb.get_job_status() == "pass", \
-        "job completed: status stays 2, the hierarchy carries the fail"
+    check(cb.get_job_status() == "pass",
+          "job completed: status stays 2, the hierarchy carries the fail")
     results = cb.get_results()
     print("get_results:", results)
-    assert results["kselftest.riscv"]["mm"] == "fail", results
-    assert results["kselftest.riscv"]["vector"] == "pass", results
-    assert results["kselftest.riscv"]["hwprobe"] == "skip", results
+    check(results["kselftest.riscv"]["mm"] == "fail", results)
+    check(results["kselftest.riscv"]["vector"] == "pass", results)
+    check(results["kselftest.riscv"]["hwprobe"] == "skip", results)
 
     job_node = {"id": "test", "name": "kselftest-riscv-pull-labs",
                 "result": "pass", "data": {}, "artifacts": {}}
     hierarchy = cb.get_hierarchy(results, job_node)
     print("get_hierarchy job result:", hierarchy["node"]["result"])
     print("child nodes:", [c["node"]["name"] for c in hierarchy["child_nodes"]])
-    assert hierarchy["node"]["result"] == "fail", hierarchy
+    check(hierarchy["node"]["result"] == "fail", hierarchy)
     print("FAIL-carrying TAP flips the job node to fail: OK")
 
     # Same TAP with every test passing must stay pass.
@@ -109,14 +123,14 @@ def run_kselftest_tap_cases():
         "ok 2 selftests: riscv: hwprobe\n"
     )
     summary, _tests_out, per_test = worker.tap_summary(output_pass, "kselftest-riscv")
-    assert summary["failed"] == 0, summary
+    check(summary["failed"] == 0, summary)
     body = worker.lava_body("qemu-riscv64", 0, output_pass, fake_args(),
                             tap=("kselftest-riscv", summary, per_test))
     cb = Callback(body)
     job_node = {"id": "test", "name": "kselftest-riscv-pull-labs",
                 "result": "pass", "data": {}, "artifacts": {}}
     hierarchy = cb.get_hierarchy(cb.get_results(), job_node)
-    assert hierarchy["node"]["result"] == "pass", hierarchy
+    check(hierarchy["node"]["result"] == "pass", hierarchy)
     print("All-pass TAP keeps the job node pass: OK")
 
 
@@ -131,17 +145,17 @@ def run_no_tap_case():
         "2026-09-08T00:00:00 {'definition': 'lava', 'case': 'job', "
         "'result': 'fail'}\n"
     )
-    assert worker.tuxrun_job_error(1, output), "JobError must be detected"
+    check(worker.tuxrun_job_error(1, output), "JobError must be detected")
     summary, tests_out, per_test = worker.tap_summary(output, "kselftest-kvm")
     print("tap summary:", summary, tests_out)
-    assert summary["failed"] == 1, summary
-    assert tests_out["kselftest-kvm"]["status"] == "fail", tests_out
+    check(summary["failed"] == 1, summary)
+    check(tests_out["kselftest-kvm"]["status"] == "fail", tests_out)
     body = worker.lava_body("qemu-riscv64", 2, output, fake_args(),
                             tap=("kselftest-kvm", summary, per_test),
                             infra=True, error_msg=output)
     cb = Callback(body)
-    assert cb.get_job_status() == "incomplete", cb.get_job_status()
-    assert cb.is_infra_error(), "JobError must map to Infrastructure"
+    check(cb.get_job_status() == "incomplete", cb.get_job_status())
+    check(cb.is_infra_error(), "JobError must map to Infrastructure")
     print("no-TAP suite fail + JobError infra: OK")
 
 
@@ -154,8 +168,8 @@ def run_infra_case():
     body = worker.lava_body("qemu-riscv64", 2, output, fake_args(),
                             infra=True, error_msg=output)
     cb = Callback(body)
-    assert cb.get_job_status() == "incomplete", cb.get_job_status()
-    assert cb.is_infra_error() is True, "infra flag must set Infrastructure"
+    check(cb.get_job_status() == "incomplete", cb.get_job_status())
+    check(cb.is_infra_error() is True, "infra flag must set Infrastructure")
     print("is_infra_error:", cb.is_infra_error(), "-> OK")
 
 
