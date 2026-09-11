@@ -74,6 +74,38 @@ python3 "$ROOT/scripts/render-local-config.py" \
   || die "could not render $CB_CONFIG from config/cb-config/pipeline.yaml"
 ok "settings rendered ($SETTINGS, $CB_CONFIG; project=$PROJECT api=$API_PORT)"
 
+# The ssh container stores job definitions and result logs through bind mounts
+# into these two directories, as its own user `kernelci` - uid 1000, see
+# kernelci-api/docker/ssh/Dockerfile.  A host directory owned by anybody else
+# makes that upload fail, and it fails SILENTLY: kernelci-core's
+# StorageSSH._upload runs `mkdir -p` fire-and-forget, so the scheduler sees only
+# "submit error: Failed to store job definition", every job node is parked as
+# incomplete and `stack --seed` reports "no job node appeared within 90s" - with
+# nothing pointing at permissions.  Checked here so nobody has to find that out
+# from a hang; root can simply fix it, another uid is told exactly what to run.
+check_uid1000_dir() {
+  local dir="$1" what="$2" owner
+  mkdir -p "$dir" 2>/dev/null || true
+  if [ ! -d "$dir" ]; then
+    echo "  !! $dir does not exist and could not be created ($what)"
+    return 0
+  fi
+  owner="$(stat -c %u "$dir" 2>/dev/null || echo '?')"
+  if [ "$(id -u)" = "0" ]; then
+    chown -R 1000:1000 "$dir" 2>/dev/null && \
+      echo "  $dir -> uid 1000 ($what)"
+    return 0
+  fi
+  if [ "$owner" = "1000" ]; then
+    return 0
+  fi
+  echo "  !! $dir is owned by uid $owner, but the ssh container writes it as uid 1000 ($what)"
+  echo "     Job definitions would not be stored and every job would stay incomplete"
+  echo "     with 'submit error'.  Fix with: sudo chown -R 1000:1000 $dir"
+}
+check_uid1000_dir "$API_DIR/docker/storage/data" "job definitions and result logs"
+check_uid1000_dir "$API_DIR/docker/ssh/user-data" "the scheduler's upload key"
+
 # 1) KernelCI API stack
 #
 # `docker compose up -d` runs even when the API already answers, because only
