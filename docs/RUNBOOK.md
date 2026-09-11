@@ -4,9 +4,23 @@
 
 ## Environment
 
-- docker + `pip install tuxrun` (see `requirements.txt` for the Python packages
-  the scripts themselves import; there is no virtualenv requirement, but the
-  versions are what `requirements.txt` pins)
+- docker + the host-side Python packages. `pip install tuxrun` alone is not
+  enough - it only brings the fetch/worker dependencies (requests, PyYAML,
+  jinja2) - so install this repository's list as well:
+
+```bash
+python3 -m pip install tuxrun -r requirements.txt
+# requests + PyYAML (fetch/worker), uvicorn + fastapi + PyJWT + toml (the
+# callback service `./run.sh stack` starts on the HOST), ruff (`verify`)
+```
+
+  There is no virtualenv requirement - the scripts run under the system
+  `python3`. Once `setup` has cloned the upstreams, the callback also imports
+  `kernelci-core` from that clone, so its requirements are needed as well:
+
+```bash
+python3 -m pip install -r kernelci-core/requirements.txt   # after ./run.sh setup
+```
 - Tier B (local full stack) additionally needs `KCI_API_TOKEN` (local API
   admin JWT, **never committed**) in `kernelci-pipeline/.env`; `./run.sh setup`
   generates it (see below)
@@ -36,20 +50,47 @@ patch -p1 -d "$(python3 -c 'import site;print(site.getusersitepackages())')" \
 
 ```bash
 git clone https://github.com/Hao-Chen2337/kernelci-riscv.git && cd kernelci-riscv
+python3 -m pip install tuxrun -r requirements.txt   # host deps (see Environment)
+# step 0, once per machine: riscv kselftest support in the installed tuxlava
+# (`setup` only WARNS when it is missing - the failure shows up much later)
+patch -p1 -d "$(python3 -c 'import site;print(site.getusersitepackages())')" \
+  < config/tuxlava-kselftest-riscv.patch
 ./run.sh setup          # upstream clones + patches + runtime config (see below)
+python3 -m pip install -r kernelci-core/requirements.txt   # deps of the cloned callback
 ./run.sh provision      # fetch + bake the artifacts a run needs
 ./run.sh stack --seed   # API/db/redis/storage/ssh + artifact server + callback + scheduler, then seed
 ./run.sh worker --once  # execute the queued jobs and report back
 ./run.sh report         # results
 ```
 
+Two things to know before the first run on a new machine:
+
+- **A stale or dead proxy** makes the `git clone` above hang with no output
+  before any script of ours is running: fix the proxy settings, or bypass them
+  for that one command (`env -u http_proxy -u https_proxy -u HTTP_PROXY -u
+  HTTPS_PROXY git clone ...`). The scripts themselves probe the network and
+  print the exact settings that are broken; `KCI_BYPASS_PROXY=1 ./run.sh setup`
+  (or `fetch`/`stack`/`provision`) makes their downloads and clones ignore the
+  proxy for that run.
+- **Several GB of images** are pulled on first use: the API/db/redis/nginx
+  images (~4 GB) at `stack`, then the tuxrun runtime images on the first job
+  (`tuxrun-dispatcher` + `qemu-riscv64` + `gcc-14`/`clang-21`
+  `riscv64-kselftest` ≈ 12.3 GB measured here). Docker Hub and ghcr.io both have
+  to be reachable.
+
 `setup` generates everything the runtime needs that must not live in git, so
 nothing has to be filled in by hand:
 
-- `kernelci-api/.env` — generated from `kernelci-api/env.sample`
-  (`SECRET_KEY`, `MONGO_SERVICE`, `PUBLIC_BASE_URL`, initial admin
-  user/password/email). Re-running keeps an existing file; `--force`
-  regenerates it (a new `SECRET_KEY` invalidates every JWT).
+- `kernelci-api/.env` — a fresh one is generated from `kernelci-api/env.sample`
+  with `SECRET_KEY`, `MONGO_SERVICE`, `PUBLIC_BASE_URL` and the initial admin
+  (`KCI_INITIAL_ADMIN_USERNAME=admin`, a random `KCI_INITIAL_PASSWORD`,
+  `KCI_INITIAL_ADMIN_EMAIL` defaulting to `admin@kernelci.org` and used only
+  when that account is created). An existing file is kept **as-is, not
+  backfilled**: one left by an earlier deployment can still hold only the four
+  keys the API itself reads (`SECRET_KEY`, `MONGO_SERVICE`,
+  `KCI_INITIAL_PASSWORD`, `KCI_INITIAL_ADMIN_USERNAME`) and no
+  `PUBLIC_BASE_URL`. `--force` regenerates it (a new `SECRET_KEY` invalidates
+  every JWT).
 - SSH keypair — `kernelci-pipeline/data/ssh/id_rsa_tarball` (private, `0600`)
   and `kernelci-api/docker/ssh/user-data/authorized_keys` (public, `0644`);
   lets the scheduler upload jobdefs to storage via scp.
@@ -72,12 +113,51 @@ recorded in `work/env/build.env`, which `stack --seed` then seeds from, so the
 kernel served to the guest and the modules baked into the rootfs cannot drift
 apart.
 
+The worker also uses that ext4 image: it keeps the baked images it produces in
+`work/env/baked/`, keyed by the rootfs and modules URLs it baked them from, so
+the second kselftest job in a batch reuses the image instead of downloading
+144MB and re-baking 4GB again (measured: 180.9s → 0.0s for the second job). The
+directory is gitignored and holds up to three entries, each ~4GB (sparse on
+disk); `KCI_BAKE_CACHE=0` disables the cache and `rm -rf work/env/baked` clears
+it. A changed URL always bakes a new entry, and an interrupted bake is never
+published.
+
 Both `.env` files and the keypair live in gitignored directories, so no secret
 is ever committed. To force-refresh the keys or the `.env`:
 
 ```bash
 bash scripts/local-instance-init.sh --force   # then restart the stack
 ```
+
+### Known limitations of the upstream image
+
+`kernelci/staging-kernelci:api` ships three upstream kernelci-api defects
+(unfixed upstream as of the revision this deployment uses): `POST
+/latest/user/login` — and logout/forgot-password/reset-password — return
+**405**, `/latest/docs` and `/latest/openapi.json` return **404**, and a fresh
+database gets no initial admin. So `./run.sh setup` mints the admin and the API
+token itself, and `KCI_API_TOKEN` in `kernelci-pipeline/.env` is the supported
+way to authenticate; **password reset is unavailable**. `setup` still tries the
+official login endpoint first, so it reverts to the documented path by itself
+if upstream fixes the route.
+
+### Reading the results
+
+- A job whose run produced **no TAP output at all** is recorded two ways: the
+  job node is `done` / `incomplete` with `data.error_type: Infrastructure`,
+  while its suite child (e.g. `kselftest.riscv`) is `fail` — a suite that emits
+  nothing is never reported as `pass`. When you group results, read the job's
+  `error_type` first: `Infrastructure` means "no usable data", not "the kernel
+  regressed".
+- The `baseline` job boots **tuxrun's own rootfs**, not the artifact the job
+  definition declares: the definition carries a cpio ramdisk, which the
+  `qemu-riscv64` device cannot boot, and the worker says so in its log
+  (`Warning: job definition carries a cpio ramdisk … using tuxrun's built-in
+  disk`). Its `pass` therefore describes the boot path, not the declared
+  artifact. The kselftest jobs do use the provisioned rootfs.
+- Every node carries the kernel revision recorded by `./run.sh provision`
+  (`work/env/build.env`); a deployment seeded without it says so loudly and
+  labels its nodes with a placeholder revision instead.
 
 ### A second, isolated deployment on the same machine
 

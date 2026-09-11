@@ -1,4 +1,4 @@
-# Python packages the scripts in this repository import directly.
+# Python packages the scripts and host services in this repository import.
 #
 # There is no virtualenv requirement: the scripts are run by the system python3
 # (`./run.sh` calls `python3`), and on the reference machine `requests` and
@@ -8,8 +8,38 @@
 #
 #   python3 -m pip install -r requirements.txt
 #
+# That single command covers everything this repository's own code imports on
+# the host.  `pip install tuxrun` does NOT bring any of the four packages below
+# that `./run.sh stack` needs, and `./run.sh verify` needs ruff as well - before
+# this file listed them, the documented one-go flow died at the callback stage
+# ("X callback failed (see /tmp/cb8003.log)") and at the last verify gate.
+#
+# The callback service additionally imports the cloned `kernelci-core`, which
+# declares its own dependencies: after `./run.sh setup` has cloned it, install
+# `python3 -m pip install -r kernelci-core/requirements.txt` too (docs/RUNBOOK.md,
+# Environment).
+#
 # tuxrun and tuxlava are NOT listed: tuxrun is installed separately
-# (`pip install tuxrun`) and carries its own dependencies, and tuxlava needs
-# the one-time riscv kselftest patch described in docs/RUNBOOK.md.
-requests>=2.25
-PyYAML>=5.4
+# (`pip install tuxrun`) and carries its own dependencies (requests, PyYAML,
+# jinja2, ...), and tuxlava needs the one-time riscv kselftest patch described
+# in docs/RUNBOOK.md.
+#
+# The bounds are the oldest versions this checkout is verified with (the
+# versions installed on the reference machine).  Upstream pins the callback's
+# four in kernelci-pipeline/requirements-lava-callback.txt (uvicorn==0.52.4,
+# fastapi==0.141.1, pyjwt==2.13.0).
+requests>=2.25        # fetch/worker: downloading kernel, rootfs and artifacts
+PyYAML>=5.4           # setup/worker: reading config and job YAML
+
+# stack: the callback service (kernelci-pipeline/src/lava_callback.py) runs on
+# the HOST, launched as `python3 -m uvicorn lava_callback:app`, so these have to
+# be installed here and not in a container.  PyJWT is imported as `jwt` and
+# validates the tokens the callback receives; toml parses the runtime config.
+uvicorn>=0.52
+fastapi>=0.141
+PyJWT>=2.3
+toml>=0.10
+
+# verify: `./run.sh verify` runs `ruff check .` as its last gate and fails
+# outright when ruff is missing (it used to be in no requirements file at all).
+ruff>=0.16
