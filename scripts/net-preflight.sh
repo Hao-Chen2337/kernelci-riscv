@@ -2,7 +2,7 @@
 # Network preflight + proxy handling, shared by run.sh and run-local-stack.sh.
 #
 # Why this exists: the previous code unconditionally unset http_proxy/
-# https_proxy with a comment saying "the local 127.0.0.1:7890 proxy is dead;
+# https_proxy with a comment saying "the local proxy is dead;
 # direct access works".  That is one machine's temporary state baked into a
 # public repository.  Someone behind a working proxy (a lab, a corporate
 # egress proxy, a mirror-only network) would have it silently removed, and
@@ -77,20 +77,54 @@ kci_net_ok_direct() {
   kci_curl_direct -s -o /dev/null -m "$KCI_PROBE_TIMEOUT" -I "$KCI_PROBE_URL"
 }
 
+# Probe one proxy URL with the probe endpoint.  Returns 0 when it can carry the
+# request.  Used to name the *failing* entries instead of listing every setting
+# a user has: the list used to imply a working proxy was broken and never
+# tested git's own proxy - which is the one that actually kills `git clone`
+# (it is what `git` uses, regardless of what the http_proxy environment says).
+kci_proxy_works() {
+  [ -n "${1:-}" ] || return 1
+  curl -x "$1" -s -o /dev/null -m "$KCI_PROBE_TIMEOUT" -I "$KCI_PROBE_URL"
+}
+
+kci_proxy_is_ssh() {
+  case "${1:-}" in
+    socks5://*|socks5h://*|socks4://*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Where the proxy configuration currently comes from (for error messages).
+# Only settings that FAILED the probe are printed as broken; the rest are
+# listed as working, because "these are your proxy settings" was read as
+# "these are the problem" even when the proxy in question answered fine.
 kci_proxy_report() {
-  local found=0 name value git_proxy
+  local found=0 name value git_proxy probed
   for name in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY; do
     value="${!name:-}"
-    if [ -n "$value" ]; then
-      echo "      $name=$value"
-      found=1
+    [ -n "$value" ] || continue
+    found=1
+    if kci_proxy_is_ssh "$value"; then
+      echo "      $name=$value (not probed: socks proxy)"
+    elif kci_proxy_works "$value"; then
+      echo "      $name=$value (reachable)"
+    else
+      echo "      $name=$value  <-- BROKEN (did not answer $KCI_PROBE_URL)"
     fi
   done
   git_proxy="$(git config --get http.proxy 2>/dev/null || true)"
   if [ -n "$git_proxy" ]; then
-    echo "      git config http.proxy=$git_proxy"
     found=1
+    probed="$(git config --get https.proxy 2>/dev/null || true)"
+    if kci_proxy_is_ssh "$git_proxy"; then
+      echo "      git config http.proxy=$git_proxy (not probed: socks proxy)"
+    elif kci_proxy_works "$git_proxy"; then
+      echo "      git config http.proxy=$git_proxy (reachable)"
+    else
+      echo "      git config http.proxy=$git_proxy  <-- BROKEN (this is the one git clone uses)"
+    fi
+    [ -n "$probed" ] && [ "$probed" != "$git_proxy" ] && \
+      echo "      git config https.proxy=$probed"
   fi
   [ "$found" = 0 ] && echo "      (no proxy configured)"
   return 0
