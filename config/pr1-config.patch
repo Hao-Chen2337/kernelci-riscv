@@ -40,6 +40,9 @@ index aa9f8ac..e201917 100644
 +    lab_type: pull_labs
 +    poll_interval: 45
 +    timeout: 7200
++    rules:
++      tree:
++        - riscv
 +    notify:
 +      callback:
 +        token: kernelci-pull-labs-riscv
