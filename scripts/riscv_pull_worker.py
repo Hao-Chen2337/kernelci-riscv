@@ -17,6 +17,12 @@ test result.  Protocol robustness: state cursor, seen-node dedup, flock,
 callback retries, and unposted results persisted across runs (re-posted,
 never re-run).
 
+The persisted cursor is authoritative: --since only seeds a state file that has
+no cursor yet (--ignore-state-cursor forces it).  Every event's seen/pending
+change is flushed to the state file immediately, a SIGTERM flushes before
+exiting, and each job's tuxrun console is archived to work/logs/<node_id>.log
+before its workspace is deleted, so a real run's evidence outlives the job.
+
 Job mapping (rendered by config/runtime/*-pull-labs.jinja2):
   boot             -> ``tuxrun --device qemu-riscv64 --kernel <url>`` (a cpio
                       ramdisk in the job def is not bootable by the qemu
@@ -46,6 +52,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tarfile
 import tempfile
@@ -99,7 +106,27 @@ DISK_SIZE = "4G"  # ext4 image size; unrelated to QEMU memory
 BAKE_CACHE_MAX_ENTRIES = 3
 BAKE_CACHE_TMP_AGE_S = 3600  # a killed bake's .tmp is ignored, then aged out
 DEFAULT_TIMEOUT = 1800  # seconds, when the job def carries no timeout
+# Bounds applied to whatever the job definition asked for.  The clamp used to
+# be a silent max(60, min(timeout_s, args.max_timeout)): a definition asking
+# for 1800s was cut to the 1200s the shell entry points pass, the job was
+# killed at 20 minutes and reported as Infrastructure, and nothing in the log
+# said the timeout had been reduced.  Both bounds now have a name, a CLI flag
+# and a line of their own the moment they bite (see clamp_timeout).
+MIN_TIMEOUT = 60  # floor: below this tuxrun cannot even boot a guest
+DEFAULT_MAX_TIMEOUT = 7200  # ceiling, matching the pull-labs runtime timeout
 LOG_LIMIT = 2 << 20  # cap of log text embedded in a result body
+# Where the per-job tuxrun console is archived before its workspace is removed
+# (#6): the console is written inside the workspace and the workspace is
+# deleted at the end of every job, so the only local copy of a real run used to
+# disappear with it - all that survived was the callback's LOG_LIMIT-capped
+# copy, and nothing at all when the callback failed.  Anchored to the
+# repository root rather than the CWD, so "the logs are in work/logs" holds
+# whatever directory the worker was started from (work/ is the gitignored tree
+# this repo already treats as durable).
+LOG_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "work", "logs"
+)
+LOG_ARCHIVE_KEEP = 200  # newest archived consoles kept in LOG_DIR
 MAX_DOWNLOAD_SIZE = 4 << 30  # 4 GiB per download; rootfs tarballs fit easily
 CURSOR_OVERLAP_S = 900  # re-scan window: the events API is not sorted
 SEEN_LIMIT = 20000  # seen-node ids kept in the state file; sized far
@@ -172,6 +199,67 @@ def _write_resume_meta(meta_path, url, total):
     os.replace(tmp_path, meta_path)
 
 
+def _publish_complete_part(part_path, meta_path, dest, url, max_size):
+    """Finish a transfer whose ``.part`` is already complete; 0 = not complete.
+
+    A crash between the last byte and ``os.replace`` leaves the full file under
+    ``<dest>.part`` beside a sidecar recording that exact size.  The old code
+    resumed from that offset instead of publishing it, so every attempt asked
+    for ``bytes=<total>-`` and the server answered 416 "Requested Range Not
+    Satisfiable" three times before raising: that artifact stayed
+    undownloadable, and every job needing it reported Infrastructure, until
+    somebody deleted the ``.part`` by hand (#7).
+
+    Only a sidecar that names *url* and a size that is exactly the recorded
+    total makes a partial publishable - a short file is a normal resume and a
+    long one is not trustworthy at all."""
+    try:
+        with open(meta_path) as handle:
+            meta = json.load(handle)
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(meta, dict) or meta.get("url") != url:
+        return 0
+    total = meta.get("total")
+    if not isinstance(total, int) or total <= 0 or total > max_size:
+        return 0
+    try:
+        if os.path.getsize(part_path) != total:
+            return 0
+        os.replace(part_path, dest)
+        if os.path.exists(meta_path):
+            os.unlink(meta_path)
+    except OSError:
+        return 0
+    return total
+
+
+def _discard_partial(part_path, meta_path):
+    """Drop a partial transfer whose bytes cannot be trusted (a refused range).
+
+    Appending to it would hand the caller a file that is silently corrupt, so
+    the transfer restarts from zero instead of risking that."""
+    for path in (part_path, meta_path):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _content_range_total(response):
+    """Total length from a ``Content-Range`` header, or None.
+
+    Both the 206 body (``bytes 100-999/1000``) and the 416 error form
+    (``bytes */1000``) carry it, so the parser is shared."""
+    content_range = response.headers.get("Content-Range")
+    if not content_range or "/" not in content_range:
+        return None
+    try:
+        return int(content_range.rsplit("/", 1)[1])
+    except ValueError:
+        return None
+
+
 def download(url, dest, max_size=MAX_DOWNLOAD_SIZE):
     """Stream *url* to *dest*, verifying size and resuming partial transfers.
 
@@ -187,6 +275,14 @@ def download(url, dest, max_size=MAX_DOWNLOAD_SIZE):
         os.makedirs(parent, exist_ok=True)
     part_path = f"{dest}.part"
     meta_path = f"{dest}.part.json"
+    # A .part that an earlier run left complete (crash between the last write
+    # and the rename) is published here, before any range request is built:
+    # resuming from its own total is what produced the permanent 416 (#7).
+    completed = _publish_complete_part(part_path, meta_path, dest, url, max_size)
+    if completed:
+        print(f"           -> {dest} ({completed} bytes, completed by an "
+              "earlier attempt)")
+        return
     for attempt in range(3):
         try:
             offset = _resume_offset(part_path, meta_path, url)
@@ -207,19 +303,34 @@ def download(url, dest, max_size=MAX_DOWNLOAD_SIZE):
                     print("  server ignored the Range request; restarting")
                     offset = 0
                     headers = {}
+                elif offset and response.status_code == 416:
+                    # The server refuses bytes=<offset>-: the partial file is
+                    # not what its sidecar claims, or the artifact changed
+                    # under us.  Trust the server's own total - when it says
+                    # the offset IS the whole file, the transfer was complete
+                    # all along; otherwise the stored bytes are unusable, so
+                    # drop them and restart from zero.  This is the state that
+                    # used to raise after three 416s and wedge the artifact
+                    # for good (#7).
+                    refused_total = _content_range_total(response)
+                    if refused_total == offset:
+                        os.replace(part_path, dest)
+                        if os.path.exists(meta_path):
+                            os.unlink(meta_path)
+                        print(f"           -> {dest} ({offset} bytes, the "
+                              "server confirmed the partial file was complete)")
+                        return
+                    print("  server rejected the resume range (416); "
+                          "discarding the partial file and restarting")
+                    _discard_partial(part_path, meta_path)
+                    continue
                 elif offset and response.status_code != 206:
                     raise requests.exceptions.RequestException(
                         f"unexpected status {response.status_code} for a "
                         f"resumed download of {url}"
                     )
                 response.raise_for_status()
-                total = None
-                content_range = response.headers.get("Content-Range")
-                if content_range and "/" in content_range:
-                    try:
-                        total = int(content_range.rsplit("/", 1)[1])
-                    except ValueError:
-                        total = None
+                total = _content_range_total(response)
                 if total is None:
                     length = response.headers.get("Content-Length")
                     try:
@@ -881,6 +992,73 @@ def run_command(cmd, timeout_s, workspace):
     return proc.returncode, output
 
 
+def prune_console_logs(log_dir, keep=LOG_ARCHIVE_KEEP):
+    """Keep only the newest *keep* archived consoles in *log_dir*.
+
+    Archiving every job's console is a real disk cost (one 25-minute kselftest
+    console is hundreds of KB, and a resident lab runs hundreds of jobs a
+    month), so the archive is bounded by count and pruned oldest-first - the
+    same shape as prune_bake_cache.  Only ``<node id>.log`` files this module
+    writes are considered, so a hand-placed file in the same directory is never
+    removed.  Returns the names it removed."""
+    try:
+        names = [
+            name
+            for name in os.listdir(log_dir)
+            if re.fullmatch(r"[A-Za-z0-9._-]+\.log", name)
+        ]
+    except OSError:
+        return []
+    entries = []
+    for name in names:
+        try:
+            entries.append((os.path.getmtime(os.path.join(log_dir, name)), name))
+        except OSError:
+            continue
+    entries.sort()
+    removed = []
+    for _mtime, name in entries[: max(0, len(entries) - keep)]:
+        try:
+            os.unlink(os.path.join(log_dir, name))
+            removed.append(name)
+        except OSError:
+            pass
+    if removed:
+        print(f"Pruned {len(removed)} archived console log(s) from {log_dir} "
+              f"(keeping the newest {keep})")
+    return removed
+
+
+def archive_console_log(workspace, log_dir, node_id):
+    """Copy the job's tuxrun console out of the workspace before it is removed.
+
+    The console is written inside the per-job workspace and the workspace is
+    deleted at the end of every job unless --keep-workspace is passed - which
+    neither shell entry point does - so the only local copy of a real run's
+    console used to disappear with it (#6).  All that survived was the copy
+    embedded in the callback body, capped at LOG_LIMIT, and nothing at all when
+    the callback itself failed.
+
+    Returns the archived path, or "" when the job produced no console.  Raises
+    OSError when the copy itself fails, so the caller can keep the workspace
+    instead of deleting the last copy of the evidence."""
+    if not log_dir or not node_id:
+        return ""
+    source = os.path.join(workspace, "tuxrun.log")
+    if not os.path.isfile(source):
+        return ""
+    # The node id comes from the API and ends up in a filename: keep it to
+    # characters that cannot escape the log directory.
+    safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", str(node_id))
+    if not safe_id:
+        return ""
+    os.makedirs(log_dir, exist_ok=True)
+    target = os.path.join(log_dir, f"{safe_id}.log")
+    shutil.copyfile(source, target)
+    prune_console_logs(log_dir)
+    return target
+
+
 def tap_summary(output, label):
     """Count top-level TAP results for a kselftest job from the tuxrun
     console log.  tuxrun/LAVA report "job pass" even when a selftest fails,
@@ -1088,7 +1266,22 @@ def retrieve_job_definition(url):
             f"refusing redirect for {url}"
         )
     response.raise_for_status()
-    return response.json()
+    # Same rule as the node API (#11): a non-JSON body (proxy error page) or a
+    # JSON body of the wrong shape is a transient fetch error, so the node is
+    # retried - not an unexpected exception that gives up on the node and marks
+    # it seen with its result never produced.
+    try:
+        job = response.json()
+    except ValueError as error:
+        raise requests.exceptions.RequestException(
+            f"non-JSON body from the job definition URL "
+            f"(HTTP {response.status_code}): {error}"
+        ) from error
+    if not isinstance(job, dict):
+        raise requests.exceptions.RequestException(
+            f"job definition at {url} is {type(job).__name__}, not an object"
+        )
+    return job
 
 
 class CallbackPermanentError(Exception):
@@ -1099,12 +1292,30 @@ class CallbackTransientError(Exception):
     """Network/5xx trouble posting the result: retry later."""
 
 
+class CallbackMissingURLError(CallbackTransientError):
+    """The job definition carries no callback URL: there is nowhere to post.
+
+    Deliberately treated as transient rather than as a give-up.  The run has
+    already happened and its result is the only copy, so the caller keeps it in
+    the persisted pending set and does not mark the node seen; an operator who
+    fixes the job definition (or the deployment's callback) then gets the
+    result posted instead of losing it.  The old code printed a warning and
+    returned normally, so the caller went on to log "result posted to the
+    callback" while the job stayed available forever and the result existed
+    nowhere (#3)."""
+
+
 def post_result(callback, token, body):
     """Post a result body to the recorded callback endpoint, retrying a few
-    times - a single network blip must not lose a result."""
+    times - a single network blip must not lose a result.
+
+    Raises CallbackPermanentError / CallbackTransientError instead of returning
+    quietly, so a caller can never mistake "not posted" for "posted"."""
     if not callback:
-        print("Warning: no callback URL in job definition, result not reported")
-        return
+        raise CallbackMissingURLError(
+            "no callback URL in the job definition; result NOT reported, "
+            "kept pending"
+        )
     headers = {}
     if token:
         headers["Authorization"] = f"Token {token}"
@@ -1400,11 +1611,40 @@ def tuxrun_error_message(output, label=""):
     )
 
 
-def run_job(job, args):
+def clamp_timeout(timeout_s, max_timeout, min_timeout=MIN_TIMEOUT):
+    """Apply the worker's timeout bounds and report it when they bite.
+
+    Returns (effective_timeout, note); note is "" when nothing was clamped.
+
+    Clamping a job definition's timeout is intended (a definition must not be
+    able to run forever), but it used to be silent: a definition asking for
+    1800s, cut to the 1200s the shell entry points pass, was killed at 20
+    minutes and reported as Infrastructure with nothing in the log saying the
+    timeout had been reduced - indistinguishable from a job that genuinely
+    needs more time.  Both bounds are now named, both are CLI flags
+    (--min-timeout / --max-timeout) and every clamp is announced.  (#15)"""
+    effective = max(min_timeout, min(timeout_s, max_timeout))
+    if effective == timeout_s:
+        return effective, ""
+    if timeout_s > max_timeout:
+        return effective, (
+            f"job timeout {timeout_s}s reduced to {effective}s "
+            f"(--max-timeout {max_timeout}); the job definition asked for more"
+        )
+    return effective, (
+        f"job timeout {timeout_s}s raised to {effective}s "
+        f"(--min-timeout {min_timeout})"
+    )
+
+
+def run_job(job, args, node_id=None):
     """Execute one job definition in a per-job workspace and return the
     report tuple (callback_url, token, body); the caller posts it.  Every
     failure inside is converted into an infra-error LAVA body, so a report
-    is always produced (unless the workspace itself cannot be created)."""
+    is always produced (unless the workspace itself cannot be created).
+
+    *node_id* labels the progress lines and names the archived console log
+    (see archive_console_log)."""
     environment = job.get("environment", {})
     system = environment.get("platform", args.platform)
     callback = job.get("callback", {})
@@ -1420,7 +1660,14 @@ def run_job(job, args):
         ),
         DEFAULT_TIMEOUT,
     )
-    timeout_s = max(60, min(timeout_s, args.max_timeout))
+    timeout_s, clamp_note = clamp_timeout(
+        timeout_s, args.max_timeout, args.min_timeout
+    )
+    if clamp_note:
+        # Announced once per job, before anything runs: the effective timeout
+        # is the number to look at first when a job comes back Infrastructure
+        # after a kill (#15).
+        stamp(f"{node_id or 'job'}: {clamp_note}")
 
     own_base = not args.output_dir
     base = args.output_dir or tempfile.mkdtemp(prefix="riscv-pull-")
@@ -1466,7 +1713,23 @@ def run_job(job, args):
         infra = True
         error_msg = str(error)
     finally:
-        if not args.keep_workspace:
+        keep_workspace = args.keep_workspace
+        try:
+            archived = archive_console_log(workspace, args.log_dir, node_id)
+        except OSError as error:
+            # Keep the workspace when its console could not be archived: it is
+            # the only surviving copy of the run, and deleting it is exactly
+            # the evidence loss this archiving exists to stop (#6).
+            keep_workspace = True
+            print(
+                f"Warning: could not archive the console log to "
+                f"{args.log_dir} ({error}); keeping the workspace at "
+                f"{workspace}"
+            )
+        else:
+            if archived:
+                stamp(f"{node_id or 'job'}: console log kept at {archived}")
+        if not keep_workspace:
             if own_base:
                 shutil.rmtree(base, ignore_errors=True)
             else:
@@ -1499,11 +1762,31 @@ def handle_event(event, args, reports):
     # that are still available NOW, so a fresh worker never replays
     # yesterday's queue.
     try:
-        current = requests.get(
+        response = requests.get(
             f"{_latest_base(args.api_url)}/node/{node_id}", timeout=30
-        ).json()
+        )
+        # A proxy's HTML error page is not JSON.  .json() used to be called
+        # straight on the response, so a 502 page from a reverse proxy raised
+        # json.JSONDecodeError (a ValueError) which nothing here, at the call
+        # site or in poll_loop caught: one bad response killed the whole worker
+        # while the lab was running (#11).  Now it is an ordinary API error:
+        # log, do not handle this event, retry on the next poll.
+        response.raise_for_status()
+        try:
+            current = response.json()
+        except ValueError as error:
+            raise requests.exceptions.RequestException(
+                f"non-JSON body from the node API "
+                f"(HTTP {response.status_code}): {error}"
+            ) from error
     except requests.exceptions.RequestException as error:
         print(f"{node_id}: node state check failed: {error}")
+        return False
+    if not isinstance(current, dict):
+        # A well-formed JSON body of the wrong shape (a list, a string) must
+        # not turn into an AttributeError that kills the poll loop either.
+        print(f"{node_id}: node state check returned {type(current).__name__}, "
+              "not a node object")
         return False
     if current.get("state") != "available":
         return True
@@ -1544,7 +1827,7 @@ def handle_event(event, args, reports):
 
     try:
         job = retrieve_job_definition(job_definition_url)
-        report = run_job(job, args)
+        report = run_job(job, args, node_id)
     except requests.exceptions.RequestException as error:
         status_code = getattr(
             getattr(error, "response", None), "status_code", None
@@ -1624,6 +1907,64 @@ def iso_ago(timestamp, seconds):
     ).isoformat()
 
 
+def _parseable_iso(value):
+    """True for a timestamp string iso_ago() and the events API can consume.
+
+    A state file hand-edited into nonsense would otherwise reach
+    datetime.fromisoformat inside iso_ago and raise ValueError, killing the
+    worker at startup - far away from the file that caused it."""
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def start_cursor(state_timestamp, since, ignore_state_cursor):
+    """The timestamp the first poll scans from, and say which one it is.
+
+    The persisted cursor is authoritative by default (#8).  Every entry point
+    passed --since (run.sh: the current day's 00:00) and the CLI value used to
+    win over the stored cursor, so a worker started the next day never looked
+    back at a job that arrived yesterday and is still ``available``: it sat in
+    the queue forever with no error anywhere.  --since is now the bootstrap
+    cursor - used only when the state file has none - unless the operator asks
+    for the override deliberately with --ignore-state-cursor."""
+    stored = state_timestamp if _parseable_iso(state_timestamp) else None
+    if state_timestamp and stored is None:
+        print(f"Warning: state file cursor {state_timestamp!r} is not an "
+              "ISO-8601 timestamp; ignoring it")
+    if ignore_state_cursor:
+        if since:
+            print(f"Poll cursor: {since} (--since, forced by "
+                  f"--ignore-state-cursor; the persisted cursor "
+                  f"{stored or '<none>'} is overridden)")
+            return since
+        print("Warning: --ignore-state-cursor given without --since; "
+              "falling back to the persisted cursor")
+    if stored:
+        if since:
+            print(f"Poll cursor: {stored} (persisted in the state file); "
+                  f"--since {since} is ignored - pass --ignore-state-cursor "
+                  "to use it instead")
+        else:
+            print(f"Poll cursor: {stored} (persisted in the state file)")
+        return stored
+    if since and not _parseable_iso(since):
+        print(f"Warning: --since {since!r} is not an ISO-8601 timestamp; "
+              "ignoring it")
+        since = None
+    if since:
+        print(f"Poll cursor: {since} (--since; the state file has no cursor "
+              "yet)")
+        return since
+    print("Poll cursor: 1970-01-01T00:00:00.000000 (no cursor in the state "
+          "file and no --since: scanning the whole available queue)")
+    return "1970-01-01T00:00:00.000000"
+
+
 def poll_loop(args):
     import fcntl
 
@@ -1640,8 +1981,12 @@ def poll_loop(args):
     state = load_state(state_file)
     seen_order = list(state.get("seen", []))
     seen = set(seen_order)
-    timestamp = (
-        args.since or state.get("timestamp") or "1970-01-01T00:00:00.000000"
+    # Which cursor wins is start_cursor()'s decision, and it says so on stdout:
+    # the operator needs to know whether this run scans from the persisted
+    # position or from --since before reading anything else (#8).
+    print(f"State file: {state_file}", flush=True)
+    timestamp = start_cursor(
+        state.get("timestamp"), args.since, args.ignore_state_cursor
     )
     # Unposted results left over from a previous run (e.g. --once exiting on
     # a transient callback failure): re-post them without re-running tuxrun.
@@ -1654,6 +1999,54 @@ def poll_loop(args):
                 os.environ.get("PULL_LABS_CALLBACK_TOKEN"),
                 pending["body"],
             )
+
+    flushing = False
+    last_flushed = None
+
+    def flush():
+        """Write the cursor, the seen set and the pending reports out now.
+
+        Called after EVERY event, not once per batch (#9).  A worker killed
+        after a transient callback failure but before the batch ended used to
+        lose the in-memory report, the pending entry and the seen update, so
+        the next start re-ran tuxrun for a node whose result it already had -
+        exactly what the module's "re-posted, never re-run" contract promises
+        not to do.
+
+        Two guards keep that honest rather than expensive: the re-entrancy flag
+        (a signal handler flushing while a flush is in progress must not write
+        the same temporary file twice), and a signature of everything the file
+        holds - a batch of a thousand events with nothing new to record must
+        not rewrite a state file that can carry up to SEEN_LIMIT node ids a
+        thousand times."""
+        nonlocal flushing, last_flushed
+        if flushing:
+            return
+        signature = (timestamp, len(seen_order), tuple(sorted(reports)))
+        if signature == last_flushed:
+            return
+        flushing = True
+        try:
+            state["pending"] = {
+                node_id: {"callback": report[0], "body": report[2]}
+                for node_id, report in reports.items()
+            }
+            state["timestamp"] = timestamp
+            state["seen"] = seen_order
+            save_state(state_file, state)
+            last_flushed = signature
+        finally:
+            flushing = False
+
+    def flush_and_exit(signum, _frame):
+        """A SIGTERM/SIGINT must not cost the results already collected."""
+        print(f"Received signal {signum}: flushing state, then exiting.",
+              flush=True)
+        flush()
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, flush_and_exit)
+    signal.signal(signal.SIGINT, flush_and_exit)
     retry_count = 0
     while True:
         # The events API is not sorted and can deliver events out of order,
@@ -1688,25 +2081,36 @@ def poll_loop(args):
         # Only advance the cursor when the whole batch succeeded, so a
         # failed job is retried next poll; a job done once is skipped.
         all_ok = True
+        processed = 0
         for event in events:
             node_id = event.get("node", {}).get("id") or "unknown"
             if node_id in seen:
                 continue
-            if not handle_event(event, args, reports):
+            handled = False
+            try:
+                handled = handle_event(event, args, reports)
+                if handled and node_id and event.get("node", {}).get(
+                    "artifacts", {}
+                ).get("job_definition"):
+                    # Only remember nodes that were actually processed.  The
+                    # first event for a node may arrive before its
+                    # job_definition artifact is attached (e.g. create then
+                    # update), and handle_event() skips such events silently;
+                    # marking them seen would hide the later, complete event.
+                    seen.add(node_id)
+                    if node_id not in seen_order:
+                        seen_order.append(node_id)
+                    while len(seen_order) > SEEN_LIMIT:
+                        seen.discard(seen_order.pop(0))
+                    processed += 1
+            finally:
+                # One flush per event, in a `finally` so it also runs for an
+                # event that raised: whatever handle_event() already changed (a
+                # node marked seen, a result queued for re-posting) survives a
+                # crash or a kill from here on (#9).
+                flush()
+            if not handled:
                 all_ok = False
-            elif node_id and event.get("node", {}).get("artifacts", {}).get(
-                "job_definition"
-            ):
-                # Only remember nodes that were actually processed.  The
-                # first event for a node may arrive before its
-                # job_definition artifact is attached (e.g. create then
-                # update), and handle_event() skips such events silently;
-                # marking them seen would hide the later, complete event.
-                seen.add(node_id)
-                if node_id not in seen_order:
-                    seen_order.append(node_id)
-                while len(seen_order) > SEEN_LIMIT:
-                    seen.discard(seen_order.pop(0))
         if all_ok:
             timestamp = max(
                 (e.get("timestamp") or timestamp for e in events),
@@ -1720,15 +2124,17 @@ def poll_loop(args):
             # Never busy-loop on a failing batch: the API needs a breather
             # and the failure is usually environmental (404 jobdef, network).
             time.sleep(args.poll_period)
-        state["pending"] = {
-            node_id: {"callback": report[0], "body": report[2]}
-            for node_id, report in reports.items()
-        }
-        state["timestamp"] = timestamp
-        state["seen"] = seen_order
-        save_state(state_file, state)
+        # The cursor only moves on a fully successful batch, so this final
+        # flush persists the advanced cursor; the per-event flushes above
+        # already persisted the seen/pending mutations.
+        flush()
         if args.once:
-            print("--once: batch processed, exiting", flush=True)
+            print(
+                f"--once: batch processed ({processed} node(s) run); the "
+                f"cursor ({timestamp}) and any unposted result are in "
+                f"{state_file} - exiting",
+                flush=True,
+            )
             break
 
 
@@ -1759,7 +2165,15 @@ def main():
     parser.add_argument(
         "--keep-workspace",
         action="store_true",
-        help="Do not remove per-job workspaces.",
+        help="Do not remove per-job workspaces.  The tuxrun console is "
+        "archived to --log-dir either way.",
+    )
+    parser.add_argument(
+        "--log-dir",
+        default=LOG_DIR,
+        help=f"Where each job's tuxrun console is archived as "
+        f"<node_id>.log before its workspace is removed (default: "
+        f"{LOG_DIR}; the newest {LOG_ARCHIVE_KEEP} are kept).",
     )
     parser.add_argument(
         "--state-file",
@@ -1769,7 +2183,17 @@ def main():
         "without re-running tuxrun).",
     )
     parser.add_argument(
-        "--since", help="Poll events starting from this timestamp."
+        "--since",
+        help="Bootstrap poll cursor (ISO-8601).  Used only when the state "
+        "file has no cursor yet: the persisted cursor is authoritative, "
+        "so a restart does not silently skip jobs that arrived while the "
+        "worker was down.  Pass --ignore-state-cursor to force this value.",
+    )
+    parser.add_argument(
+        "--ignore-state-cursor",
+        action="store_true",
+        help="Use --since instead of the cursor stored in --state-file "
+        "(re-scans from that timestamp and may re-poll seen events).",
     )
     parser.add_argument(
         "--max-retries",
@@ -1810,8 +2234,19 @@ def main():
     parser.add_argument(
         "--max-timeout",
         type=int,
-        default=7200,
-        help="Upper bound for a job's timeout_s (default: 7200).",
+        default=DEFAULT_MAX_TIMEOUT,
+        help=f"Upper bound for a job's timeout_s (default: "
+        f"{DEFAULT_MAX_TIMEOUT}, the pull-labs runtime's own timeout).  A "
+        "definition asking for more is clamped and the clamp is logged; the "
+        "shell entry points pass 1200, which cuts the 1800s the kselftest "
+        "template asks for.",
+    )
+    parser.add_argument(
+        "--min-timeout",
+        type=int,
+        default=MIN_TIMEOUT,
+        help=f"Lower bound for a job's timeout_s (default: {MIN_TIMEOUT}).  "
+        "Raising it is not enough to help: check --max-timeout too.",
     )
     parser.add_argument(
         "--max-download-mb",
@@ -1861,6 +2296,13 @@ def main():
         "pipeline deployment's storage config name.",
     )
     args = parser.parse_args()
+    if args.min_timeout > args.max_timeout:
+        # Otherwise clamp_timeout() would quietly return the floor and the
+        # "upper bound" would mean nothing.
+        parser.error(
+            f"--min-timeout {args.min_timeout} is above --max-timeout "
+            f"{args.max_timeout}"
+        )
     args.max_download_size = args.max_download_size << 20
     poll_loop(args)
 
