@@ -185,8 +185,17 @@ def existing_regressions():
 
 
 def done_runs(job):
-    """Chronological list of done runs of a job."""
-    runs = list_nodes(name=job, state="done")
+    """Chronological list of done runs of a job.
+
+    kind="job" is not decoration: `track` creates kind=regression nodes that
+    copy the job's own name/group/path (build_regression below), so without
+    the filter this function also returned the regression records describing
+    those very runs.  `trend` then printed one extra row per regression -
+    with commit "?" (a regression node carries failed_kernel_revision, not
+    kernel_revision) - counted it in the "N pass / M fail" line, and
+    `track` rescanned its own output as if it were history.
+    """
+    runs = list_nodes(name=job, kind="job", state="done")
     runs.sort(key=lambda n: (n.get("created") or "", n.get("id", "")))
     return runs
 

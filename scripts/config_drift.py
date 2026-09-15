@@ -46,7 +46,15 @@ API_URL = os.environ.get("KCI_API_URL", "http://localhost:8001").rstrip("/")
 API_LATEST = API_URL if API_URL.endswith("/latest") else f"{API_URL}/latest"
 # Storage convention of the docker-compose deployment:
 # {STORAGE_BASE}/{job}-{node_id}/.config
-STORAGE_BASE = os.environ.get("KCI_STORAGE_URL", "http://localhost:8002")
+# KCI_STORAGE_URL wins; otherwise the port comes from the deployment, which
+# moves the stack off the defaults with KCI_STORAGE_PORT (run-local-stack.sh
+# exports it for the compose file, and ./run.sh drift forwards it).  Hardcoding
+# 8002 here meant a deployment on e.g. 18002 fetched from the wrong host - and
+# only in the one case this fallback exists for, a node without a _config
+# artifact in its own artifacts.
+STORAGE_BASE = os.environ.get("KCI_STORAGE_URL") or (
+    "http://localhost:{}".format(os.environ.get("KCI_STORAGE_PORT", "8002"))
+)
 
 
 def api_headers():
