@@ -10,9 +10,19 @@ pull-lab worker uses.
 Usage:
     fetch-and-run-latest.py                 # newest build, kselftest-riscv
     fetch-and-run-latest.py --test kselftest-kvm   # curated kvm subset
+    fetch-and-run-latest.py --kvm-full      # whole kvm collection
+                                            # (implies --test kselftest-kvm)
     fetch-and-run-latest.py --test boot            # boot only
     fetch-and-run-latest.py --api-url http://127.0.0.1:8001  # local DB
     fetch-and-run-latest.py --provision-only       # produce work/ artifacts
+
+Exit status - this path is driven from cron/CI, so the verdict IS the exit
+status (it used to be 0 for every outcome, including a guest that never booted):
+    0   the run passed: TAP produced and no selftest failed, or the guest booted
+    1   the run completed and at least one selftest failed
+    3   infrastructure error: tuxrun never started, the guest never booted, no
+        TAP lines at all, or the artifacts/artifact server could not be verified
+Every outcome is also recorded in work/results/<build-id>/<test>.json.
 """
 
 import argparse
@@ -66,6 +76,32 @@ DEFAULT_SERVE_IMAGE = os.path.join(WORK_SERVE, "Image")
 DEFAULT_ROOTFS_URL = (
     "https://storage.kernelci.org/images/rootfs/debian/"
     "trixie-kselftest/20260606.0/riscv64/full.rootfs.tar.xz")
+
+# One verdict vocabulary for the script and for the record it writes.  Exit 3
+# for "infrastructure" mirrors LAVA's job status 3 (incomplete), so a caller
+# can tell "the tests ran and failed" from "nothing ran at all".
+EXIT_PASS = 0
+EXIT_TEST_FAIL = 1
+EXIT_INFRA = 3
+VERDICT_PASS = "pass"
+VERDICT_FAIL = "fail"
+VERDICT_INFRA = "infra"
+# The run never produced a verdict at all (stale artifact server, truncated
+# download, ...): still a non-zero outcome worth recording.
+VERDICT_ERROR = "error"
+
+RESULTS_DIR = os.path.join(ROOT, "work", "results")
+BUILD_ID_FILE = "build-id.json"
+ARTIFACT_RECORD = "artifacts.json"
+TUXRUN_TIMEOUT = 1800
+# How long the freshly started artifact server gets to serve its build-id file
+# back before the run is refused (see start_artifact_server).
+SERVE_READY_TIMEOUT = 15.0
+
+# The guest's own console output: the only boot evidence that does not come
+# from LAVA's own "Wait for prompt [...]" chatter.  Used to judge a --test boot
+# run, which has no TAP to read (see judge_run).
+BOOT_EVIDENCE_RE = re.compile(r"\[\s*0\.000000\]|Booting Linux")
 
 
 def api_get(path, api):
@@ -178,11 +214,42 @@ def _record(manifest, key, dest):
     }
 
 
+def _gzip_isize(path):
+    """Uncompressed size from a gzip member's 4-byte trailer, or None.
+
+    A complete *download* is not proof of a complete *gunzip*: the kernel is
+    decompressed into its final name, so a run killed mid-gunzip leaves a
+    truncated Image that still exists and is still non-empty.  The trailer is
+    the only size a finished .gz carries, and reading 4 bytes costs nothing."""
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(-4, os.SEEK_END)
+            return int.from_bytes(handle.read(4), "little")
+    except (OSError, ValueError):
+        return None
+
+
+def _looks_complete(dest):
+    """True when *dest* can be a complete decompression of dest + ".gz".
+
+    Only consulted for a file with NO manifest record, i.e. the one case where
+    _cache_hit() would otherwise adopt a file on trust (#13)."""
+    gz = dest + ".gz"
+    if not os.path.exists(gz):
+        return True
+    isize = _gzip_isize(gz)
+    if not isize:
+        return True
+    return os.path.getsize(dest) == isize
+
+
 def _cache_hit(manifest, key, dest):
     """True when *dest* is usable for *key*: non-empty, size matches the
     record (if any).  An existing file with no record at all is adopted
     (fresh clone / pre-seeded work/), but a file recorded under a different
-    key (another build's kernel/modules) must be regenerated."""
+    key (another build's kernel/modules) must be regenerated - and a
+    record-less file still has to look complete, because a truncated Image
+    boots as garbage while the stage "succeeds" (#13)."""
     if not os.path.exists(dest):
         return False
     size = os.path.getsize(dest)
@@ -192,7 +259,13 @@ def _cache_hit(manifest, key, dest):
     if entry is not None:
         return entry.get("size") == size
     rel = os.path.relpath(dest, ROOT)
-    return not any(e.get("dest") == rel for e in manifest.values())
+    if any(e.get("dest") == rel for e in manifest.values()):
+        return False
+    if not _looks_complete(dest):
+        print(f"  {os.path.basename(dest)} has no manifest record and does not "
+              "match its .gz trailer; regenerating")
+        return False
+    return True
 
 
 _ORIGINAL_DOWNLOAD = _worker.download
@@ -452,30 +525,437 @@ def provision_only(args):
     return 0
 
 
-def strip_ansi(text):
-    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+# There is deliberately no local strip_ansi()/parse_tap() any more: the fetch
+# path used a second, weaker copy that missed "not  ok", "NOT OK", ANSI-glued
+# failures and tests that started but never finished, so it could print a
+# summary that looked green when nothing had run (#23).  TAP parsing is
+# riscv_pull_worker.tap_summary() from the import above, exactly as the worker
+# uses it - one parser, no drift.
 
 
-def parse_tap(output):
-    rows = []
-    for line in output.splitlines():
-        line = strip_ansi(line)
-        m = re.search(r"(?<![a-z])(not ok|ok)\s+(\d+)\s+selftests:\s+(.*)", line)
-        if m:
-            name = m.group(3).strip()
-            if ":" in name:
-                name = name.split(":", 1)[1].strip()
-            rows.append((m.group(1), m.group(2), name))
-    return rows
+def _load_artifact_record(out):
+    """Per-build record of what was downloaded and how big it was."""
+    try:
+        with open(os.path.join(out, ARTIFACT_RECORD)) as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_artifact_record(out, record):
+    path = os.path.join(out, ARTIFACT_RECORD)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as handle:
+        json.dump(record, handle, indent=1, sort_keys=True)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+
+
+def _recorded_size(record, name, url):
+    """The size this script recorded when it wrote *name* from *url*, or None."""
+    entry = record.get(name)
+    if entry and entry.get("url") == url:
+        size = entry.get("size")
+        if isinstance(size, int) and size > 0:
+            return size
+    return None
+
+
+def ensure_artifact(url, dest, record, name, what):
+    """Make sure *dest* holds the complete artifact at *url*.
+
+    A bare os.path.exists() adopted an Image that an interrupted run had left
+    truncated, and handed it to tuxrun as a kernel (#13).  Reuse therefore has
+    to be proven: by the size recorded when this script wrote the file, or -
+    for a file it did not write (a pre-seeded work/downloads/) - by the
+    server's Content-Length.  A recorded size that does not match is proof of
+    truncation and is said so; anything that cannot be shown complete is
+    fetched again."""
+    expected = _recorded_size(record, name, url)
+    if os.path.exists(dest):
+        size = os.path.getsize(dest)
+        if expected is not None and size == expected:
+            print(f"  cache hit: {os.path.basename(dest)} ({_human(size)})")
+            return dest
+        if expected is not None:
+            print(f"  cached {what} {os.path.basename(dest)} is truncated "
+                  f"({_human(size)} of {_human(expected)}); re-downloading")
+        elif size == 0:
+            print(f"  cached {what} {os.path.basename(dest)} is empty; "
+                  "re-downloading")
+        else:
+            remote = _remote_size(url)
+            if remote is not None and remote == size:
+                print(f"  cache hit: {os.path.basename(dest)} ({_human(size)}, "
+                      "size confirmed by the server)")
+                record[name] = {"url": url, "size": size}
+                return dest
+            detail = (_human(remote) if remote is not None
+                      else "no Content-Length from the server")
+            print(f"  cached {what} {os.path.basename(dest)} cannot be verified "
+                  f"({_human(size)} vs {detail}); re-downloading")
+        os.unlink(dest)
+    download(url, dest)
+    record[name] = {"url": url, "size": os.path.getsize(dest)}
+    return dest
+
+
+def ensure_kernel_image(url, gz_path, image_path, record):
+    """Ensure the gunzipped kernel at *image_path* is complete.
+
+    The Image is written through a .part file + rename, so a partial kernel can
+    never appear under the final name, and it is only reused when its recorded
+    size still matches the compressed artifact it came from: an interrupted
+    *gunzip* leaves both files present and non-empty, which is exactly the case
+    a plain existence check cannot see (#13)."""
+    ensure_artifact(url, gz_path, record, "Image.gz", "kernel")
+    gz_size = os.path.getsize(gz_path)
+    entry = record.get("Image") or {}
+    have = os.path.getsize(image_path) if os.path.exists(image_path) else 0
+    if have > 0 and entry.get("gz_size") == gz_size and entry.get("size") == have:
+        print(f"  cache hit: {os.path.basename(image_path)} ({_human(have)})")
+        return image_path
+    if have:
+        recorded = entry.get("size")
+        print(f"  cached Image does not match its Image.gz ("
+              f"{_human(have)} vs "
+              f"{_human(recorded) if isinstance(recorded, int) else 'no record'}"
+              "); re-gunzipping")
+    tmp = image_path + ".part"
+    try:
+        with gzip.open(gz_path, "rb") as src, open(tmp, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+    except (OSError, EOFError) as error:
+        # A truncated .gz fails here (EOFError / BadGzipFile) instead of
+        # leaving a half-written Image in place.
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise OSError(f"gunzip {gz_path} failed: {error}") from error
+    os.replace(tmp, image_path)
+    record["Image"] = {"url": url, "size": os.path.getsize(image_path),
+                       "gz_size": gz_size}
+    print(f"kernel -> {image_path} ({_human(os.path.getsize(image_path))})")
+    return image_path
+
+
+def _port_error(port):
+    """The bind error for *port*, or None when the port is free.
+
+    Binding is the only honest test: a stale artifact server that answers
+    nothing (or answers with an OLDER build) still owns the port, and the
+    failure mode that matters is tuxrun downloading the previous build's
+    artifacts while the console names the new one (#12)."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind(("0.0.0.0", port))
+    except OSError as error:
+        return str(error)
+    finally:
+        probe.close()
+    return None
+
+
+def _served_body(port, name, timeout=5):
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/{name}",
+                                timeout=timeout) as response:
+        return response.read()
+
+
+def _served_size(port, name, timeout=5):
+    """Content-Length the artifact server reports for *name*, or None."""
+    request = urllib.request.Request(f"http://127.0.0.1:{port}/{name}",
+                                     method="HEAD")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        length = response.headers.get("Content-Length")
+    return int(length) if length else None
+
+
+def _log_tail(path, lines=8):
+    try:
+        with open(path) as handle:
+            tail = handle.read().strip().splitlines()[-lines:]
+    except OSError:
+        return "      (no server log)"
+    return "\n".join("      " + line for line in tail)
+
+
+def stop_artifact_server(server):
+    server.terminate()
+    try:
+        server.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        server.kill()
+
+
+def start_artifact_server(out, port, node, kernel_path):
+    """Start the artifact server and prove what it serves before tuxrun runs.
+
+    The old code started http.server with stdout/stderr on DEVNULL and slept a
+    fixed 1.5s: a server left on the port by a killed earlier run kept serving
+    an older work/downloads/<node>/, so the run tested one kernel while the
+    console - and the log - named another (#12).  Now the port is probed first
+    (busy = a loud refusal, never a silent swap), the server logs into the
+    build directory instead of DEVNULL, and its build-id file plus the served
+    Image size are read back through the very port tuxrun is handed."""
+    busy = _port_error(port)
+    if busy:
+        sys.exit(
+            f"artifact server port {port} is already in use ({busy}).\n"
+            "    A stale server from an earlier run would serve an OLDER build "
+            f"to tuxrun while this run reports {node.get('id')} - refusing to "
+            "run against a build it cannot verify.\n"
+            f"    Stop it (e.g. pkill -f 'http.server {port}') or pass "
+            "--serve-port <other port>.")
+    build_id = {
+        "node_id": node.get("id"),
+        "name": node.get("name"),
+        "created": node.get("created"),
+        "kernel": os.path.basename(kernel_path),
+    }
+    with open(os.path.join(out, BUILD_ID_FILE), "w") as handle:
+        json.dump(build_id, handle, indent=1, sort_keys=True)
+    log_path = os.path.join(out, "serve.log")
+    pybin = sys.executable or shutil.which("python3") or "python3"
+    with open(log_path, "w") as log:
+        server = subprocess.Popen(
+            [pybin, "-m", "http.server", str(port),
+             "--bind", "0.0.0.0", "--directory", out],
+            stdout=log, stderr=subprocess.STDOUT)
+    deadline = time.time() + SERVE_READY_TIMEOUT
+    served = None
+    while time.time() < deadline:
+        if server.poll() is not None:
+            break
+        try:
+            served = json.loads(_served_body(port, BUILD_ID_FILE))
+            break
+        except (OSError, ValueError):
+            time.sleep(0.25)
+    if served is None or served.get("node_id") != node.get("id"):
+        stop_artifact_server(server)
+        got = served.get("node_id") if isinstance(served, dict) else "no answer"
+        sys.exit(
+            f"artifact server on port {port} did not serve build "
+            f"{node.get('id')} (got {got}); refusing to run tuxrun against an "
+            "unknown build.\n"
+            f"    its log ({log_path}):\n{_log_tail(log_path)}")
+    name = os.path.basename(kernel_path)
+    try:
+        served_size = _served_size(port, name)
+    except OSError as error:
+        # A 404 for the kernel we just verified is itself the failure this
+        # guard exists for, so report it instead of tracing back.
+        served_size = f"unreadable ({error})"
+    local_size = os.path.getsize(kernel_path)
+    if served_size != local_size:
+        stop_artifact_server(server)
+        sys.exit(
+            f"artifact server serves {name} as {served_size} but the verified "
+            f"file on disk is {local_size} bytes; refusing to boot a different "
+            "or truncated kernel.")
+    print(f"artifact server on {port} serves {os.path.relpath(out, ROOT)} "
+          f"(build {node.get('id')}, {os.path.basename(kernel_path)} "
+          f"{_human(local_size)})")
+    return server
+
+
+def judge_run(test, returncode, output):
+    """The verdict for one tuxrun run:
+    (verdict, exit_code, detail, summary, per_test).
+
+    TAP parsing is the worker's, not a second weaker copy (#23): tuxrun exits 0
+    even when every selftest fails, so riscv_pull_worker.tap_summary() is
+    authoritative for a kselftest collection, and its total=0 encoding is the
+    "the suite never ran" case that used to be printed as a harmless summary
+    (#2).  returncode is None after a timeout."""
+    if returncode is None:
+        return (VERDICT_INFRA, EXIT_INFRA,
+                f"tuxrun timed out after {TUXRUN_TIMEOUT}s", None, {})
+    if (_worker.tuxrun_invocation_error(returncode, output)
+            or _worker.tuxrun_job_error(returncode, output)
+            or _worker.tuxrun_infra_error(returncode, output)):
+        return (VERDICT_INFRA, EXIT_INFRA,
+                _worker.tuxrun_error_message(output, test), None, {})
+    if test != "boot":
+        summary, _status, per_test = _worker.tap_summary(output, test)
+        if summary["total"] == 0:
+            # No TAP at all: the suite never ran.  Never a pass - this is
+            # exactly the false green the worker's tap_summary() guards against.
+            if returncode != 0:
+                return (VERDICT_INFRA, EXIT_INFRA,
+                        (f"no TAP lines and tuxrun exited {returncode}: the "
+                         "guest never booted or the suite never started"),
+                        summary, per_test)
+            return (VERDICT_FAIL, EXIT_TEST_FAIL,
+                    "tuxrun exited 0 but produced no TAP lines at all",
+                    summary, per_test)
+        detail = (f"{summary['total']} selftest(s): "
+                  f"{summary['total'] - summary['failed'] - summary['skipped']} "
+                  f"pass, {summary['failed']} fail, "
+                  f"{summary['skipped']} skip")
+        if summary["failed"]:
+            return VERDICT_FAIL, EXIT_TEST_FAIL, detail, summary, per_test
+        if returncode != 0:
+            detail += (f" (tuxrun exited {returncode}; the TAP, not tuxrun's "
+                       "exit code, carries the selftest verdict)")
+        return VERDICT_PASS, EXIT_PASS, detail, summary, per_test
+    # boot: there is no TAP, and the exit code alone is not a verdict - the
+    # worker's lava_body() also refuses to call a run with no boot evidence a
+    # pass - so require output that only a booted guest can have produced.
+    if returncode != 0:
+        return (VERDICT_FAIL, EXIT_TEST_FAIL,
+                f"tuxrun exited {returncode}; see the log", None, {})
+    cleaned = _worker.strip_ansi(output)
+    job_result = None
+    boot_cases = []
+    for raw in cleaned.splitlines():
+        match = _worker.LAVA_CASE_RE.search(raw)
+        if not match:
+            continue
+        if match.group(1) in ("login-action", "kernel-messages"):
+            boot_cases.append(match.group(2))
+        elif match.group(1) == "job":
+            job_result = match.group(2)
+    if job_result == "fail" or "fail" in boot_cases:
+        return (VERDICT_FAIL, EXIT_TEST_FAIL,
+                "tuxrun reported the boot as failed", None, {})
+    if boot_cases or job_result == "pass" or BOOT_EVIDENCE_RE.search(cleaned):
+        return (VERDICT_PASS, EXIT_PASS, "guest booted", None, {})
+    return (VERDICT_INFRA, EXIT_INFRA,
+            ("tuxrun exited 0 but the log shows no boot at all (no kernel "
+             "console output, no login prompt, no boot case)"), None, {})
+
+
+def write_result(path, node, test, verdict, exit_code, detail, out, summary):
+    """Write the durable (build, test, verdict) record under work/results/.
+
+    Mode (A) kept nothing but a console log inside work/downloads/<build>/, so
+    "which build was this test run against, when, and how did it end" could
+    only be reconstructed by hand.  The record is written for EVERY outcome -
+    a failed run is exactly the one worth having a record of."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    data = {
+        "build_id": node.get("id"),
+        "build_created": node.get("created"),
+        "job": node.get("name") or "",
+        "test": test,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "verdict": verdict,
+        "exit_code": exit_code,
+        "detail": detail,
+        "revision": (node.get("data") or {}).get("kernel_revision") or {},
+        "artifacts_dir": os.path.relpath(out, ROOT),
+        "log": os.path.relpath(os.path.join(out, "tuxrun.log"), ROOT),
+        "results": summary,
+    }
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as handle:
+        json.dump(data, handle, indent=1, sort_keys=True)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+    return path
+
+
+def run_once(args, node, out, record, rootfs):
+    """Download/verify this build's artifacts, serve them and run tuxrun once.
+
+    Returns the outcome dict (verdict, exit_code, detail, summary, per_test,
+    log, output).  Anything that prevents a verdict raises, and the caller
+    records it: a run that dies before tuxrun is still a run that happened."""
+    arts = node.get("artifacts") or {}
+    kernel_gz = os.path.join(out, "Image.gz")
+    kernel = os.path.join(out, "Image")
+    ensure_kernel_image(arts["kernel"], kernel_gz, kernel, record)
+    ensure_artifact(arts["kselftest_tar_xz"],
+                    os.path.join(out, "kselftest.tar.xz"), record,
+                    "kselftest.tar.xz", "kselftest")
+    modules = None
+    if args.test == "kselftest-kvm":
+        modules = os.path.join(out, "modules.tar.xz")
+        ensure_artifact(arts["modules"], modules, record, "modules.tar.xz",
+                        "modules")
+    ensure_artifact(arts["_config"], os.path.join(out, ".config"), record,
+                    ".config", "kernel config")
+    _save_artifact_record(out, record)
+    with open(os.path.join(out, "node.json"), "w") as f:
+        json.dump({k: node[k] for k in ("id", "name", "created", "data")}, f,
+                  indent=1)
+
+    # The default rootfs used to be a hand-made 4GB file nothing generated:
+    # bake it on first use so a fresh clone works.  An explicit --rootfs is
+    # used verbatim (never auto-generated).
+    if args.rootfs is None and not os.path.exists(rootfs):
+        rootfs_url = (args.rootfs_url or os.environ.get("KCI_ROOTFS_URL")
+                      or DEFAULT_ROOTFS_URL)
+        manifest = load_manifest()
+        provision_rootfs(rootfs_url, arts.get("modules"), rootfs, manifest)
+        save_manifest(manifest)
+
+    gateway = args.gateway
+    if not gateway:
+        try:
+            gateway = socket.gethostbyname("host.docker.internal")
+        except OSError:
+            gateway = "172.17.0.1"
+    base = f"http://{gateway}:{args.serve_port}"
+    server = start_artifact_server(out, args.serve_port, node, kernel)
+    try:
+        cmd = [TUXRUN, "--runtime", args.runtime, "--device", "qemu-riscv64",
+               "--kernel", f"{base}/Image", "--boot-args", "rw",
+               "--rootfs", f"file://{os.path.abspath(rootfs)}"]
+        params = [f"cpu={args.cpu}"]
+        if args.test != "boot":
+            params.append(f"KSELFTEST={base}/kselftest.tar.xz")
+            if args.test == "kselftest-kvm" and modules:
+                cmd += ["--modules", f"{base}/modules.tar.xz"]
+                if not args.kvm_full:
+                    params.append(f"TST_CASENAME={KVM_SUBSET}")
+            cmd += ["--tests", TESTS[args.test][0]]
+        cmd += ["--parameters", *params]
+        print("running:", " ".join(cmd))
+        output = ""
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=TUXRUN_TIMEOUT, check=False)
+            returncode = proc.returncode
+            output = proc.stdout + proc.stderr
+        except subprocess.TimeoutExpired as error:
+            # A timed-out run still has a partial console log worth keeping,
+            # and it is an infrastructure failure, not a test failure (#2).
+            returncode = None
+            output = f"{error.stdout or ''}\n{error.stderr or ''}"
+    finally:
+        stop_artifact_server(server)
+    log_path = os.path.join(out, "tuxrun.log")
+    with open(log_path, "w") as handle:
+        handle.write(output)
+    verdict, exit_code, detail, summary, per_test = judge_run(
+        args.test, returncode, output)
+    return {
+        "verdict": verdict,
+        "exit_code": exit_code,
+        "detail": detail,
+        "summary": summary,
+        "per_test": per_test,
+        "log": log_path,
+        "output": output,
+    }
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        epilog="exit status: 0 pass, 1 test failure, 3 infrastructure error")
     ap.add_argument("--job", default=JOB)
-    ap.add_argument("--test", choices=sorted(TESTS), default="kselftest-riscv")
+    ap.add_argument("--test", choices=sorted(TESTS), default=None,
+                    help="test collection to run (default: kselftest-riscv)")
     ap.add_argument("--kvm-full", action="store_true",
                     help="kvm: run whole collection (no TST_CASENAME "
-                         "allow-list); timeouts are TCG limitation, not fails")
+                         "allow-list); implies --test kselftest-kvm. "
+                         "Timeouts are a TCG limitation, not fails")
     ap.add_argument("--api-url", default=API)
     ap.add_argument("--rootfs", default=None,
                     help="rootfs ext4 path (default: work/env/rootfs-kvm.ext4)")
@@ -496,96 +976,69 @@ def main():
     ap.add_argument("--cpu", default="rv64,v=true,ssnpm=true")
     ap.add_argument("--runtime", default="docker")
     args = ap.parse_args()
+    # --kvm-full without the kvm collection used to be a silent no-op: the flag
+    # is read only inside the kselftest-kvm branch, so "./run.sh fetch
+    # --kvm-full" ran the whole *riscv* collection - a different and much
+    # larger suite than the help promised (#5).  It now means what it says.
+    if args.kvm_full:
+        if args.test is None:
+            print("--kvm-full implies --test kselftest-kvm")
+            args.test = "kselftest-kvm"
+        elif args.test != "kselftest-kvm":
+            ap.error("--kvm-full runs the whole kvm collection, but --test "
+                     f"{args.test} was also given; pass --test kselftest-kvm "
+                     "(or --kvm-full alone)")
+    if args.test is None:
+        args.test = "kselftest-riscv"
     if args.provision_only:
         sys.exit(provision_only(args))
     rootfs = args.rootfs or DEFAULT_ROOTFS
-    api = args.api_url
 
-    node = pick_newest(args.job, api)
+    node = pick_newest(args.job, args.api_url)
     kr = (node.get("data") or {}).get("kernel_revision") or {}
-    arts = node.get("artifacts") or {}
     print(f"newest {args.job}: {kr.get('describe', '?')} "
           f"({kr.get('commit', '')[:12]}) {node.get('created')} id={node['id']}")
 
     out = args.out_dir or os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "..", "work", "downloads", node["id"])
     os.makedirs(out, exist_ok=True)
+    record = _load_artifact_record(out)
+    result_path = os.path.join(RESULTS_DIR, node["id"], f"{args.test}.json")
 
-    kernel_gz = os.path.join(out, "Image.gz")
-    kernel = os.path.join(out, "Image")
-    if not os.path.exists(kernel):
-        download(arts["kernel"], kernel_gz)
-        with gzip.open(kernel_gz, "rb") as src, open(kernel, "wb") as dst:
-            shutil.copyfileobj(src, dst)
-    kselftest = os.path.join(out, "kselftest.tar.xz")
-    if not os.path.exists(kselftest):
-        download(arts["kselftest_tar_xz"], kselftest)
-    modules = None
-    if args.test == "kselftest-kvm":
-        modules = os.path.join(out, "modules.tar.xz")
-        if not os.path.exists(modules):
-            download(arts["modules"], modules)
-    cfg = os.path.join(out, ".config")
-    if not os.path.exists(cfg):
-        download(arts["_config"], cfg)
-    with open(os.path.join(out, "node.json"), "w") as f:
-        json.dump({k: node[k] for k in ("id", "name", "created", "data")}, f, indent=1)
-
-    # The default rootfs used to be a hand-made 4GB file nothing generated:
-    # bake it on first use so a fresh clone works.  An explicit --rootfs is
-    # used verbatim (never auto-generated).
-    if args.rootfs is None and not os.path.exists(rootfs):
-        rootfs_url = (args.rootfs_url or os.environ.get("KCI_ROOTFS_URL")
-                      or DEFAULT_ROOTFS_URL)
-        manifest = load_manifest()
-        provision_rootfs(rootfs_url, arts.get("modules"), rootfs, manifest)
-        save_manifest(manifest)
-
-    # serve artifacts for the dispatcher container / guest
-    gateway = args.gateway
-    if not gateway:
-        try:
-            gateway = socket.gethostbyname("host.docker.internal")
-        except OSError:
-            gateway = "172.17.0.1"
-    base = f"http://{gateway}:{args.serve_port}"
-    pybin = sys.executable or shutil.which("python3") or "python3"
-    server = subprocess.Popen(
-        [pybin, "-m", "http.server", str(args.serve_port),
-         "--bind", "0.0.0.0", "--directory", out],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(1.5)
-
-    cmd = [TUXRUN, "--runtime", args.runtime, "--device", "qemu-riscv64",
-           "--kernel", f"{base}/Image", "--boot-args", "rw",
-           "--rootfs", f"file://{os.path.abspath(rootfs)}"]
-    params = [f"cpu={args.cpu}"]
-    if args.test != "boot":
-        params.append(f"KSELFTEST={base}/kselftest.tar.xz")
-        if args.test == "kselftest-kvm" and modules:
-            cmd += ["--modules", f"{base}/modules.tar.xz"]
-            if not args.kvm_full:
-                params.append(f"TST_CASENAME={KVM_SUBSET}")
-        cmd += ["--tests", TESTS[args.test][0]]
-    cmd += ["--parameters", *params]
-    print("running:", " ".join(cmd))
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
-                              check=False)
-        output = proc.stdout + proc.stderr
-    finally:
-        server.terminate()
-    with open(os.path.join(out, "tuxrun.log"), "w") as f:
-        f.write(output)
-    rows = parse_tap(output)
-    print("\n=== TAP summary ===")
-    for status, num, name in rows:
-        print(f"  {status:6s} {num:>3s}  {name}")
-    if not rows:
-        tail = "\n".join(output.strip().splitlines()[-12:])
-        print("no selftest TAP lines found; log tail:\n", tail)
-    print(f"\nlog kept at: {out}")
+        outcome = run_once(args, node, out, record, rootfs)
+    except BaseException as error:
+        # Anything that stops the run before it produced a verdict (a stale
+        # artifact server, a truncated download, Ctrl-C) is recorded too: the
+        # record only has value if a failed run leaves one.
+        try:
+            write_result(result_path, node, args.test, VERDICT_ERROR,
+                         EXIT_INFRA, f"{type(error).__name__}: {error}", out,
+                         None)
+        except OSError as write_error:
+            print(f"Warning: could not write {result_path}: {write_error}")
+        raise
+
+    print(f"\n=== TAP summary ({args.test}) ===")
+    if outcome["per_test"]:
+        for name, result in outcome["per_test"].items():
+            print(f"  {result:4s}  {name}")
+        summary = outcome["summary"]
+        print(f"  {summary['total']} test(s): "
+              f"{summary['total'] - summary['failed'] - summary['skipped']} pass, "
+              f"{summary['failed']} fail, {summary['skipped']} skip")
+    else:
+        tail = "\n".join(outcome["output"].strip().splitlines()[-12:])
+        print("no TAP results; log tail:\n", tail)
+
+    write_result(result_path, node, args.test, outcome["verdict"],
+                 outcome["exit_code"], outcome["detail"], out,
+                 outcome["summary"])
+    print(f"\nverdict: {outcome['verdict'].upper()} - {outcome['detail']}")
+    print(f"log kept at: {out}")
+    print(f"result record: {result_path}")
+    return outcome["exit_code"]
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
