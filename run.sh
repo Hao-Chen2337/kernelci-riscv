@@ -9,6 +9,11 @@ PIPE="$ROOT/kernelci-pipeline"
 TUXRUN_BIN="${TUXRUN_BIN:-$(command -v tuxrun || echo "$HOME/.local/bin/tuxrun")}"
 CALLBACK_TOKEN="${PULL_LABS_CALLBACK_TOKEN:-labtoken-callback}"
 API_URL="${KCI_API_URL:-http://127.0.0.1:${KCI_API_PORT:-8001}}"
+# Where the stack's storage service publishes build artifacts.  config_drift
+# falls back to it for a kbuild node that carries no _config artifact, so it is
+# derived from the same KCI_STORAGE_PORT run-local-stack.sh moves the stack
+# with - a deployment on 18002 used to be read from 8002.
+STORAGE_URL="${KCI_STORAGE_URL:-http://127.0.0.1:${KCI_STORAGE_PORT:-8002}}"
 
 die() { echo "X $*" >&2; exit 1; }
 ok()  { echo "OK $*"; }
@@ -18,8 +23,34 @@ ok()  { echo "OK $*"; }
 # asked (KCI_BYPASS_PROXY=1) or when the proxy is demonstrably broken - it never
 # silently unsets a working proxy configuration the way the old no_proxy_setup()
 # did (that function hardcoded one machine's dead proxy into the repository).
+# An explicit KCI_PROBE_URL is captured BEFORE sourcing: net-preflight.sh
+# defaults it to files.kernelci.org, and the per-endpoint preflight below must
+# both honour a user-supplied probe and name the URL it really probed.
+KCI_PROBE_URL_OVERRIDE="${KCI_PROBE_URL:-}"
 # shellcheck source=scripts/net-preflight.sh
 . "$ROOT/scripts/net-preflight.sh"
+
+# Probe the endpoint(s) the NEXT command actually talks to, one line each, and
+# name the URL that was probed.  The preflight probes a single endpoint while
+# its message used to read "kernelci API" (it probed files.kernelci.org): an OK
+# verdict then looked like a general network verdict and the next command could
+# still time out through the same proxy - measured, api.kernelci.org answered
+# 000/exit 28 while files.kernelci.org answered 200 (docs/RUN-MODES-AND-BUGS.md
+# #17).  So: probe per endpoint, say which one, and keep the verdict as narrow
+# as the check.  Returns 1 when at least one endpoint failed.
+kci_preflight() {
+  local label="$1" url probe failed=0
+  shift
+  for url in "$@"; do
+    probe="${KCI_PROBE_URL_OVERRIDE:-$url}"
+    KCI_PROBE_URL="$probe" kci_net_preflight "$label @ $probe" || failed=1
+  done
+  if [ "$failed" = 1 ]; then
+    echo "    note: only the endpoint(s) printed above were checked; this says"
+    echo "          nothing about any other host the command may need."
+  fi
+  return "$failed"
+}
 
 cmd_help() {
   cat <<EOF
@@ -41,7 +72,13 @@ Subcommands:
                     Take jobs, execute, report back (--once exits after the
                     queue; default --since takes only today's new jobs).
                     Other worker flags (--kvm-full/--kvm-tests/...) pass through.
-  report            Latest baseline/kselftest node states
+  report            Latest baseline/kselftest node states (incl. the job's
+                    data.error_type, which docs/RUNBOOK.md says to read first)
+  prune [--keep N] [--dry-run]
+                    Retention for work/downloads (one ~45 MB directory per
+                    fetched build): keep the newest N (default 5) plus the
+                    build work/env/build.env records.  Never touches the build
+                    this deployment serves; --dry-run only reports
   verify            Full gate: validate_yaml + verify-lava-body +
                     verify-worker-guards + ruff (any failure fails this command)
   drift             Config drift between the newest two kbuild .config files
@@ -169,7 +206,10 @@ EOF
 }
 
 cmd_provision() {
-  kci_net_preflight "artifact download" \
+  # Provisioning picks the newest passing kbuild from the production API and
+  # then downloads that build's artifacts: two different hosts, two probes.
+  kci_preflight "provisioning" \
+    "https://api.kernelci.org/latest/" "https://files.kernelci.org/" \
     || die "no usable network for provisioning (see the proxy advice above)"
   TUXRUN_BIN="$TUXRUN_BIN" kci_run python3 \
     "$ROOT/scripts/fetch-and-run-latest.py" --provision-only
@@ -187,8 +227,14 @@ cmd_fetch() {
       args+=("$a")
     fi
   done
-  kci_net_preflight "artifact download" \
-    || echo "    (continuing: fetch reports its own download errors)"
+  # fetch discovers the build on the production API and downloads the kernel,
+  # modules and kselftest from files.kernelci.org - probe both, separately.
+  if ! kci_preflight "fetch" \
+      "https://api.kernelci.org/latest/" "https://files.kernelci.org/"; then
+    echo "    !! continuing anyway: the endpoint(s) marked X above cannot carry this"
+    echo "       run, so fetch will fail or report its own download/API errors -"
+    echo "       the exit status below is fetch's, not this preflight's."
+  fi
   TUXRUN_BIN="$TUXRUN_BIN" kci_run python3 "$ROOT/scripts/fetch-and-run-latest.py" "${args[@]}"
 }
 
@@ -205,8 +251,13 @@ cmd_worker() {
   for a in "$@"; do
     [ -n "$a" ] && extra+=("$a")
   done
-  kci_net_preflight "job polling" \
-    || echo "    (continuing: the worker retries and reports infra errors honestly)"
+  # The worker polls THIS deployment's API (KCI_API_URL) and then downloads
+  # the artifacts of every job it takes, which are production URLs
+  # (files.kernelci.org) - both are probed and named separately.
+  if ! kci_preflight "worker" "$API_URL/latest/" "https://files.kernelci.org/"; then
+    echo "    !! continuing anyway: the worker retries and reports infra errors honestly,"
+    echo "       but a run whose endpoints are marked X above cannot do useful work."
+  fi
   # mkfs.ext4 lives in /usr/sbin on Debian/Ubuntu; run-local-stack.sh's worker
   # invocation already added it, this one did not - two entry points, two
   # behaviours for the same job.
@@ -247,9 +298,22 @@ items = sorted(items, key=lambda n: n.get("created") or "", reverse=True)
 if not items:
     print("  (no nodes)")
 for n in items[:3]:
-    revision = (n.get("data") or {}).get("kernel_revision") or {}
-    print("  {:24s} {:12s} {:14s} {} ({})".format(
+    data = n.get("data") or {}
+    revision = data.get("kernel_revision") or {}
+    # The error type is printed because docs/RUNBOOK.md tells the reader to
+    # look at it FIRST: "Infrastructure" means the run produced no usable data
+    # (a boot or infra failure), not that the kernel regressed - without the
+    # column the two were only distinguishable by querying the API by hand.
+    # Both spellings are read on purpose.  The runbook names the field
+    # data.error_type, while kernelci-core lava runtime writes the job error
+    # type as data.error_code (runtime/lava.py: "error_code" = job_meta
+    # error_type) and docs/UPSTREAM-BUILD-AND-DISPATCH.md documents error_code.
+    # Printing only one of the two shows "-" for real infrastructure failures.
+    # No apostrophes in this block: it is one single-quoted shell string.
+    error_type = data.get("error_type") or data.get("error_code") or "-"
+    print("  {:24s} {:12s} {:14s} {:14s} {} ({})".format(
         n.get("id") or "?", n.get("state") or "-", n.get("result") or "-",
+        error_type,
         (revision.get("describe") or "?")[:30], (n.get("created") or "")[:10]))
 if len(items) > 3:
     print("  (%d node(s) matched, newest 3 shown)" % len(items))' \
@@ -258,6 +322,114 @@ if len(items) > 3:
     # that failure became the report's exit status (7) even though the message
     # above is exactly what the reader needs (adversarial review, N6).
   done
+}
+
+cmd_prune() {
+  # work/downloads/<node_id>/ is one directory per fetched build (~45 MB each:
+  # Image + modules + kselftest + .config) and nothing ever removed them - a
+  # daily fetch loop is ~16 GB/year, before the bounded rootfs bake cache.
+  # This is the retention policy the entry point owns: explicit, bounded, and
+  # it never removes the build this deployment is using.
+  #   * the newest --keep builds (default 5) are kept,
+  #   * a build whose commit is the one work/env/build.env records (the build
+  #     ./run.sh stack --seed and work/serve/Image serve) is kept,
+  #   * --dry-run prints the same list without deleting anything.
+  local keep=5 dry=0 want_keep=0 arg
+  for arg in "$@"; do
+    if [ "$want_keep" = 1 ]; then
+      case "$arg" in
+        ''|*[!0-9]*) die "prune: --keep takes a whole number of builds, got '$arg'" ;;
+        *) keep="$arg" ;;
+      esac
+      want_keep=0
+      continue
+    fi
+    case "$arg" in
+      --keep) want_keep=1 ;;
+      --dry-run) dry=1 ;;
+      *) die "prune: unknown argument '$arg' (usage: ./run.sh prune [--keep N] [--dry-run])" ;;
+    esac
+  done
+  [ "$want_keep" = 0 ] || die "prune: --keep needs a value"
+  [ "$keep" -ge 1 ] || die "prune: --keep must be at least 1 - the newest build is the one ./run.sh stack --seed serves"
+  python3 - "$ROOT/work/downloads" "$keep" "$dry" "$ROOT/work/env/build.env" <<'PY'
+import json
+import os
+import re
+import shutil
+import sys
+import time
+
+downloads, keep, dry, build_env = (
+    sys.argv[1], int(sys.argv[2]), sys.argv[3] == "1", sys.argv[4]
+)
+if not os.path.isdir(downloads):
+    print(f"nothing to prune: {downloads} does not exist")
+    raise SystemExit(0)
+
+# The build this deployment serves, as recorded by ./run.sh provision: its
+# commit (what every node names) and, when the directory happens to be the
+# artifact directory itself, its build id.
+commit = build_dir_id = ""
+if os.path.exists(build_env):
+    text = open(build_env).read()
+    match = re.search(r"^KCI_BUILD_COMMIT=(\S+)", text, re.M)
+    commit = match.group(1) if match else ""
+    match = re.search(r"^KCI_BUILD_DIR=(\S+)", text, re.M)
+    build_dir_id = os.path.basename(match.group(1)) if match else ""
+
+entries = []
+for name in sorted(os.listdir(downloads)):
+    path = os.path.join(downloads, name)
+    if not os.path.isdir(path):
+        continue
+    size = 0
+    for root, _dirs, files in os.walk(path):
+        for filename in files:
+            try:
+                size += os.path.getsize(os.path.join(root, filename))
+            except OSError:
+                pass
+    entries.append((os.path.getmtime(path), name, path, size))
+entries.sort(reverse=True)
+
+def recorded_commit(path):
+    """Commit of the kbuild the directory was downloaded from (node.json)."""
+    try:
+        with open(os.path.join(path, "node.json")) as handle:
+            data = (json.load(handle).get("data") or {})
+        return (data.get("kernel_revision") or {}).get("commit") or ""
+    except (OSError, ValueError):
+        return ""
+
+newest = {name for _m, name, _p, _s in entries[:keep]}
+print(
+    f"work/downloads: {len(entries)} build(s); keeping the newest {keep}"
+    + (f" and the build.env build ({commit[:12]})" if commit else "")
+)
+removed = freed = 0
+for mtime, name, path, size in entries:
+    if name in newest:
+        why = "keep: newest"
+    elif name == build_dir_id or (commit and recorded_commit(path) == commit):
+        why = "keep: the build work/env/build.env records and work/serve/Image serves"
+    else:
+        why = "PRUNE"
+    print(
+        f"  {name}  {size / 1e6:8.1f} MB  "
+        f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime))}  {why}"
+    )
+    if why == "PRUNE":
+        removed += 1
+        freed += size
+        if not dry:
+            shutil.rmtree(path)
+print(
+    ("would remove" if dry else "removed")
+    + f" {removed} build(s), {freed / 1e6:.1f} MB"
+    + (" (dry run: nothing was deleted)" if dry else "")
+)
+PY
 }
 
 cmd_verify() {
@@ -283,15 +455,49 @@ cmd_verify() {
 }
 
 cmd_drift() {
-  kci_net_preflight "kernelci API" \
-    || echo "    (continuing: drift reports its own API errors)"
-  KCI_API_URL="$API_URL" kci_run python3 "$ROOT/scripts/config_drift.py" --json --job kbuild-gcc-14-riscv
+  # The probe endpoint and the API used below are the same URL again: the old
+  # "kernelci API" verdict was produced by probing files.kernelci.org.
+  if ! kci_preflight "config drift" "$API_URL/latest/"; then
+    echo "    !! continuing anyway: drift reports its own API errors"
+  fi
+  # KCI_STORAGE_URL: config_drift's fallback for a node without a _config
+  # artifact must point at THIS deployment's storage, not at its built-in 8002.
+  KCI_API_URL="$API_URL" KCI_STORAGE_URL="$STORAGE_URL" \
+    kci_run python3 "$ROOT/scripts/config_drift.py" --json --job kbuild-gcc-14-riscv
 }
 
 cmd_trend() {
-  kci_net_preflight "kernelci API" \
-    || echo "    (continuing: trend reports its own API errors)"
+  if ! kci_preflight "regression trend" "$API_URL/latest/"; then
+    echo "    !! continuing anyway: trend reports its own API errors"
+  fi
   KCI_API_URL="$API_URL" kci_run python3 "$ROOT/scripts/regression_tracker.py" trend
+}
+
+# Stop the host services of ONE deployment from the records
+# scripts/run-local-stack.sh wrote when it started them (role|pid|start|pattern).
+# The pid's start time is re-read before killing: a record from an old run whose
+# pid was meanwhile reused by an unrelated process must not kill that process.
+stop_recorded_services() {   # pid-file
+  local file="$1" role pid start pattern now killed=0
+  while IFS='|' read -r role pid start pattern; do
+    [ -n "${pid:-}" ] || continue
+    if [ ! -d "/proc/$pid" ]; then
+      echo "  $role: pid $pid is gone already"
+      continue
+    fi
+    now="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)"
+    if [ "$now" != "$start" ]; then
+      echo "  !! $role: pid $pid now belongs to an unrelated process (start time changed); NOT killing it"
+      continue
+    fi
+    if kill "$pid" 2>/dev/null; then
+      echo "  $role stopped (pid $pid)"
+      killed=$((killed + 1))
+    else
+      echo "  !! $role (pid $pid) could not be killed - check it by hand: ps -p $pid -o args="
+    fi
+  done < "$file"
+  echo "  $killed host service(s) stopped from $file"
 }
 
 cmd_stop() {
@@ -300,14 +506,48 @@ cmd_stop() {
   # stopping one must not stop the other.
   local project="${KCI_COMPOSE_PROJECT:-kcirv}"
   local serve_port="${KCI_SERVE_PORT:-8999}"
-  pkill -f "scheduler.py.*pull-labs-riscv" 2>/dev/null && echo "scheduler stopped"
-  pkill -f "uvicorn lava_callback" 2>/dev/null && echo "callback stopped"
-  pkill -f "http.server $serve_port" 2>/dev/null && echo "artifact server stopped"
-  # API stack (api/db/redis/storage/ssh) runs under docker compose; data stays
-  # in volumes, `stack` brings it back as-is.
-  if [ -d "$ROOT/kernelci-api" ] && docker compose -p "$project" -f "$ROOT/kernelci-api/docker-compose.yaml" down >/dev/null 2>&1; then
-    echo "API stack stopped (project $project)"
+  local cb_port="${KCI_CB_PORT:-8003}"
+  local sched_conf="/tmp/kcisched-$project"
+  local pid_file="$ROOT/work/env/stack-$project.pids"
+  local rc=0
+  # These used to be machine-global pkill patterns, so stopping one deployment
+  # killed another deployment's scheduler, callback and artifact server - while
+  # the compose teardown right below was already project-scoped (#18).
+  if [ -f "$pid_file" ]; then
+    stop_recorded_services "$pid_file"
+  else
+    # No record (the stack was started before pids were recorded, or by another
+    # checkout).  Say so, show exactly what pattern matching is about to hit,
+    # and then do it - a stop that quietly stops nothing would be worse.
+    echo "  !! no service ownership record at $pid_file: this deployment cannot prove"
+    echo "     which processes are its own, so it falls back to pattern matching,"
+    echo "     which can also match ANOTHER deployment's services:"
+    pgrep -af "scheduler\.py.*--yaml-config $sched_conf/" 2>/dev/null | sed 's/^/       /'
+    pgrep -af "uvicorn lava_callback.*--port $cb_port" 2>/dev/null | sed 's/^/       /'
+    pgrep -af "http\.server $serve_port" 2>/dev/null | sed 's/^/       /'
+    pkill -f "scheduler.py.*--yaml-config $sched_conf/" 2>/dev/null && echo "  scheduler stopped"
+    pkill -f "uvicorn lava_callback.*--port $cb_port" 2>/dev/null && echo "  callback stopped"
+    pkill -f "http.server $serve_port" 2>/dev/null && echo "  artifact server stopped"
   fi
+  # API stack (api/db/redis/storage/ssh) runs under docker compose; data stays
+  # in volumes, a later stack brings it back as-is.
+  if [ ! -d "$ROOT/kernelci-api" ]; then
+    echo "  (no kernelci-api checkout: no compose project to stop)"
+  else
+    local out
+    if out="$(cd "$ROOT/kernelci-api" && docker compose -p "$project" -f docker-compose.yaml down 2>&1)"; then
+      echo "API stack stopped (project $project)"
+    else
+      # The branch had no else: a failed compose down printed nothing at all
+      # and the reader believed the stack was down while its containers kept
+      # running (#14).
+      echo "X 'docker compose -p $project down' FAILED - containers of project $project may still be up:"
+      printf '%s\n' "$out" | sed 's/^/    /'
+      echo "    inspect with: docker compose -p $project -f $ROOT/kernelci-api/docker-compose.yaml ps"
+      rc=1
+    fi
+  fi
+  return "$rc"
 }
 
 case "${1:-help}" in
@@ -317,6 +557,7 @@ case "${1:-help}" in
   stack)     shift; cmd_stack "$@" ;;
   worker)    shift; cmd_worker "$@" ;;
   report)    cmd_report ;;
+  prune)     shift; cmd_prune "$@" ;;
   verify)    cmd_verify ;;
   drift)     cmd_drift ;;
   trend)     cmd_trend ;;
