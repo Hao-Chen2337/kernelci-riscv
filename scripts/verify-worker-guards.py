@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Adversarial guard tests for riscv_pull_worker.py.
+"""Adversarial guard tests for the RISC-V pull-lab worker's behaviour.
 
 Covers the review findings that are testable offline: ANSI stripping,
 TAP edge cases, infra detection, log capping, test-type validation, and -
@@ -8,12 +8,21 @@ cursor it stores, how a result is classified when the callback is missing,
 unreachable or refusing, the resume/416 download path, the console-log archive
 and the timeout clamp.  Those are the paths where a bug loses a result or
 wedges an artifact, and none of them had a test.
+
+The behaviours are the worker's; the code implementing them now lives in
+scripts/kcilib/ (the worker itself is only its command line - the flags, their
+defaults and the call into kcilib.poll.poll_loop).  Every check below therefore
+drives the module that OWNS the behaviour and patches THAT module's seam -
+kcilib.poll.pollevents/handle_event/retrieve_job_definition,
+kcilib.jobrun.run_command/baked_rootfs_image/stamp, kcilib.callback.requests,
+kcilib.artifacts.requests, kcilib.poll.requests - instead of a re-export in the
+worker: a shim there would only test the shim.  The state file is driven
+through kcilib.state.StateFile directly, the same object the poll loop writes.
 Run from anywhere:
 
     python3 scripts/verify-worker-guards.py
 """
 import argparse as _ap
-import importlib.util
 import json
 import os
 import sys
@@ -23,11 +32,13 @@ from contextlib import contextmanager
 
 import requests as _real_requests
 
-spec = importlib.util.spec_from_file_location(
-    "worker",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "riscv_pull_worker.py"))
-w = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(w)
+# kcilib sits next to this file; resolved through the file's own directory, so
+# the guards run from any CWD.
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+from kcilib import artifacts, callback, jobrun, judge, params, poll
+from kcilib.state import SEEN_LIMIT, StateFile
 
 
 def check(condition, message):
@@ -44,15 +55,15 @@ def check(condition, message):
 
 
 def test_strip_ansi():
-    check(w.strip_ansi("\x1b[0;32mok 1\x1b[0m") == "ok 1",
+    check(judge.strip_ansi("\x1b[0;32mok 1\x1b[0m") == "ok 1",
           "SGR colour codes not stripped")
-    check(w.strip_ansi("\x1b]0;title\x07plain") == "plain",      # OSC BEL
+    check(judge.strip_ansi("\x1b]0;title\x07plain") == "plain",      # OSC BEL
           "OSC BEL sequence not stripped")
-    check(w.strip_ansi("\x1b]8;;http://x\x1b\\text") == "text",  # OSC ST
+    check(judge.strip_ansi("\x1b]8;;http://x\x1b\\text") == "text",  # OSC ST
           "OSC ST sequence not stripped")
-    check(w.strip_ansi("\x1b[2Jclear") == "clear",               # CSI letter
+    check(judge.strip_ansi("\x1b[2Jclear") == "clear",               # CSI letter
           "CSI letter-final sequence not stripped")
-    check(w.strip_ansi("plain text 100%") == "plain text 100%",
+    check(judge.strip_ansi("plain text 100%") == "plain text 100%",
           "plain text was mangled")
     print("test_strip_ansi OK")
 
@@ -64,13 +75,13 @@ def test_tap_summary():
         "2026-09-08T09:39:08 not ok 2 selftests: kvm: b # TIMEOUT 120 seconds\r\n"
         "2026-09-08T09:39:09 ok 3 selftests: kvm: c # SKIP\r\n"
     )
-    summary, tests_out, per = w.tap_summary(out, "kselftest-kvm")
+    summary, tests_out, per = judge.tap_summary(out, "kselftest-kvm")
     check(summary == {"total": 3, "failed": 1, "skipped": 1}, summary)
     check(per == {"a": "pass", "b": "fail", "c": "skip"}, per)
     check(tests_out["kselftest-kvm"]["status"] == "fail", tests_out)
 
     # "not ok" must not be double-counted as ok (the old bug)
-    summary2, _, per2 = w.tap_summary(
+    summary2, _, per2 = judge.tap_summary(
         "2026-09-08T00:00:00 ok 1 selftests: riscv: x\n"
         "2026-09-08T00:00:00 not ok 2 selftests: riscv: y\n",
         "kselftest-riscv")
@@ -78,14 +89,14 @@ def test_tap_summary():
     check(per2 == {"x": "pass", "y": "fail"}, per2)
 
     # started but never finished -> fail
-    summary3, _, per3 = w.tap_summary(
+    summary3, _, per3 = judge.tap_summary(
         "2026-09-08T00:00:00 # selftests: kvm: ghost\n"
         "2026-09-08T00:00:00 ok 1 selftests: kvm: real\n",
         "kselftest-kvm")
     check(summary3["failed"] == 1 and per3["ghost"] == "fail", (summary3, per3))
 
     # all-skip: still has results (visible skips), suite passes
-    summary4, _, per4 = w.tap_summary(
+    summary4, _, per4 = judge.tap_summary(
         "2026-09-08T00:00:00 ok 1 selftests: kvm: s1 # SKIP\n", "kselftest-kvm")
     check(summary4 == {"total": 1, "failed": 0, "skipped": 1}, summary4)
     check(per4 == {"s1": "skip"}, per4)
@@ -97,13 +108,14 @@ def test_tap_summary():
              "not\tok 3 selftests: kvm: c\n"
              "not\x1b[31mok 4 selftests: kvm: d\n"
              "notok 5 selftests: kvm: e\n")
-    sw, _, pw = w.tap_summary(weird, "kselftest-kvm")
+    sw, _, pw = judge.tap_summary(weird, "kselftest-kvm")
     check(sw["failed"] == 5, (sw, pw))
     check(pw == {"a": "fail", "b": "fail", "c": "fail",
                  "d": "fail", "e": "fail"}, pw)
 
     # garbage: no TAP -> fail, never pass
-    summary5, tests5, per5 = w.tap_summary("nothing relevant here\n", "kselftest-kvm")
+    summary5, tests5, per5 = judge.tap_summary("nothing relevant here\n",
+                                               "kselftest-kvm")
     check(summary5["failed"] == 1 and tests5["kselftest-kvm"]["status"] == "fail",
           (summary5, tests5))
     check(per5 == {}, per5)
@@ -111,20 +123,20 @@ def test_tap_summary():
 
 
 def test_job_error():
-    check(w.tuxrun_job_error(
+    check(judge.tuxrun_job_error(
         2, "2026-09-08T00:00:00 JobError: Your job cannot terminate cleanly."),
         "JobError in the log must be detected")
     # a test whose NAME mentions JobError must not be misclassified
-    check(not w.tuxrun_job_error(
+    check(not judge.tuxrun_job_error(
         0, "ok 1 selftests: kvm: job_error_checker_test\n"),
         "a test NAME containing job_error must not be read as a JobError")
     # authoritative: LAVA self-reported Infrastructure on the job case
-    check(w.tuxrun_infra_error(
+    check(judge.tuxrun_infra_error(
         1, "2026-09-08T00:00:00 {'definition': 'lava', 'case': 'job', "
            "'result': 'fail', 'error_msg': 'Connection closed', "
            "'error_type': 'Infrastructure'}"),
         "LAVA's own Infrastructure job result must be detected")
-    check(not w.tuxrun_infra_error(
+    check(not judge.tuxrun_infra_error(
         0, "2026-09-08T00:00:00 {'case': 'job', 'result': 'pass'}"),
         "a passing job case must not be read as Infrastructure")
     print("test_job_error OK")
@@ -134,12 +146,12 @@ def test_lava_body_cap_and_boot_guard():
     import argparse as _ap
     args = _ap.Namespace(api_config_name="docker-host",
                          storage_config_name="docker-host")
-    big = "2026-09-08T00:00:00 filler line\n" * (w.LOG_LIMIT // 20 + 1000)
-    body = w.lava_body("qemu-riscv64", 0, big, args)
+    big = "2026-09-08T00:00:00 filler line\n" * (callback.LOG_LIMIT // 20 + 1000)
+    body = callback.lava_body("qemu-riscv64", 0, big, args)
     import yaml as _yaml
     log_lines = _yaml.safe_load(body["log"])
     total = sum(len(ln.get("msg", "")) for ln in log_lines)
-    check(total <= w.LOG_LIMIT + (1 << 16), f"log too big: {total}")
+    check(total <= callback.LOG_LIMIT + (1 << 16), f"log too big: {total}")
     # rc 0 without any boot case -> incomplete, not a fake pass
     check(body["status"] == 3, body["status"])
     print("test_lava_body_cap_and_boot_guard OK")
@@ -149,12 +161,12 @@ def test_build_command_validation():
     import argparse as _ap
     args = _ap.Namespace(tuxrun_bin="tuxrun", platform="qemu-riscv64",
                          rootfs="", cpu="rv64,v=true", container_runtime="",
-                         kvm_tests=w.KVM_TEST_SUBSET,
-                         max_download_size=w.MAX_DOWNLOAD_SIZE)
+                         kvm_tests=params.KVM_TEST_SUBSET,
+                         max_download_size=artifacts.MAX_DOWNLOAD_SIZE)
     job = {"artifacts": {"kernel": "http://x/Image"},
            "tests": [{"type": "kselftest-kvm; rm -rf /"}]}
     try:
-        w.build_command(job, args, "/tmp/fake")
+        jobrun.build_command(job, args, "/tmp/fake")
         raise AssertionError("invalid test type must be rejected")
     except KeyError as e:
         check("invalid test type" in str(e), e)
@@ -162,7 +174,7 @@ def test_build_command_validation():
 
 
 def test_iso_ago():
-    ts = w.iso_ago("2026-09-08T12:00:00.000000", 900)
+    ts = poll.iso_ago("2026-09-08T12:00:00.000000", 900)
     check(ts == "2026-09-08T11:45:00", ts)
     print("test_iso_ago OK")
 
@@ -191,7 +203,7 @@ class _Response:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise w.requests.exceptions.HTTPError(f"HTTP {self.status_code}")
+            raise _real_requests.exceptions.HTTPError(f"HTTP {self.status_code}")
 
     def iter_content(self, chunk_size=1 << 20):
         yield from self._chunks
@@ -203,8 +215,8 @@ class _Response:
 
 
 class _RequestsStub:
-    """Replaces worker.requests: get/post are stubbed, the exception classes
-    stay the real ones so the worker's except clauses still match."""
+    """Replaces a module's requests: get/post are stubbed, the exception
+    classes stay the real ones so the module's except clauses still match."""
 
     def __init__(self, get=None, post=None):
         self.exceptions = _real_requests.exceptions
@@ -223,18 +235,26 @@ class _RequestsStub:
 
 
 @contextmanager
-def stub_requests(get=None, post=None):
-    real = w.requests
-    w.requests = _RequestsStub(get, post)
+def stub_requests(module, get=None, post=None):
+    """Replace the `requests` of the module that OWNS the call.
+
+    The module is the one whose code performs the request now - kcilib.callback
+    for the result POST, kcilib.artifacts for an artifact transfer, kcilib.poll
+    for the node-state GET - because that is the module-level name the code
+    actually resolves.  Stubbing the worker's would no longer be seen by any of
+    them, which is exactly why the worker keeps no re-export for it.
+    """
+    real = module.requests
+    module.requests = _RequestsStub(get, post)
     try:
         yield
     finally:
-        w.requests = real
+        module.requests = real
 
 
 @contextmanager
 def no_sleep():
-    """The worker retries with time.sleep; a test must not wait for it."""
+    """The code under test retries with time.sleep; a test must not wait."""
     real = _time.sleep
     _time.sleep = lambda _seconds: None
     try:
@@ -243,38 +263,64 @@ def no_sleep():
         _time.sleep = real
 
 
+def read_state(path):
+    """The state file's three documented fields, as the operators read them.
+
+    kcilib.state.StateFile owns the file (the worker's load_state()/save_state()
+    shims are gone); this is the guards' own view of the document it writes -
+    the same {timestamp, seen, pending} shape the worker has always persisted.
+    """
+    state = StateFile(path).load()
+    return {
+        "timestamp": state.cursor,
+        "seen": list(state.seen),
+        "pending": dict(state.pending),
+    }
+
+
+def write_state(path, document):
+    """Write a state document through kcilib.state.StateFile (atomic rename)."""
+    state = StateFile(path)
+    state.cursor = document.get("timestamp")
+    state.seen = list(document.get("seen", []))
+    state.pending = dict(document.get("pending") or {})
+    state.save()
+
+
 def test_post_result_classification():
     """#3: a result that was not posted must never look posted."""
-    check(issubclass(w.CallbackMissingURLError, w.CallbackTransientError),
+    check(issubclass(callback.CallbackMissingURLError,
+                     callback.CallbackTransientError),
           "a missing callback URL must take the transient path (keep the "
           "result, retry) - the permanent path gives up and marks the node "
           "seen")
-    with no_sleep(), stub_requests():     # no HTTP call may happen at all
+    with no_sleep(), stub_requests(callback):  # no HTTP call may happen at all
         try:
-            w.post_result("", "tok", {"status": 2})
+            callback.post_result("", "tok", {"status": 2})
             check(False, "post_result with no callback URL returned normally "
                          "(the caller then logs 'result posted')")
-        except w.CallbackMissingURLError as error:
+        except callback.CallbackMissingURLError as error:
             check("pending" in str(error), error)
         except Exception as error:  # noqa: BLE001 - the point of the test
             check(False, f"missing callback URL raised {error!r}")
 
     status = {"code": 200}
-    with no_sleep(), stub_requests(post=lambda url, **kw: _Response(status["code"])):
-        w.post_result("http://cb", "tok", {"status": 2})
-        w.post_result("http://cb", "tok", {"status": 2})
+    with no_sleep(), stub_requests(
+            callback, post=lambda url, **kw: _Response(status["code"])):
+        callback.post_result("http://cb", "tok", {"status": 2})
+        callback.post_result("http://cb", "tok", {"status": 2})
         status["code"] = 403
         try:
-            w.post_result("http://cb", "tok", {"status": 2})
+            callback.post_result("http://cb", "tok", {"status": 2})
             check(False, "a 4xx from the callback must raise (it used to be "
                          "reported as posted)")
-        except w.CallbackPermanentError:
+        except callback.CallbackPermanentError:
             pass
         status["code"] = 503
         try:
-            w.post_result("http://cb", "tok", {"status": 2})
+            callback.post_result("http://cb", "tok", {"status": 2})
             check(False, "a 5xx from the callback must raise after the retries")
-        except w.CallbackTransientError:
+        except callback.CallbackTransientError:
             pass
     print("test_post_result_classification OK")
 
@@ -292,8 +338,8 @@ def test_download_complete_part_and_416():
             handle.write(b"x" * 1000)
         with open(meta, "w") as handle:
             json.dump({"url": url, "total": 1000}, handle)
-        with stub_requests():   # any GET raises AssertionError
-            w.download(url, dest, max_size=1 << 20)
+        with stub_requests(artifacts):   # any GET raises AssertionError
+            artifacts.download(url, dest, max_size=1 << 20)
         check(os.path.getsize(dest) == 1000, "complete .part was not published")
         check(not os.path.exists(part), ".part left behind after publishing")
         check(not os.path.exists(meta), "sidecar left behind after publishing")
@@ -311,8 +357,8 @@ def test_download_complete_part_and_416():
             ranges.append(kwargs.get("headers", {}).get("Range"))
             return _Response(416, headers={"Content-Range": "bytes */500"})
 
-        with no_sleep(), stub_requests(get=get_416):
-            w.download(url, dest, max_size=1 << 20)
+        with no_sleep(), stub_requests(artifacts, get=get_416):
+            artifacts.download(url, dest, max_size=1 << 20)
         check(os.path.getsize(dest) == 500, "a 416 = complete was not published")
         check(ranges == ["bytes=500-"], ranges)
 
@@ -332,8 +378,8 @@ def test_download_complete_part_and_416():
             return _Response(200, headers={"Content-Length": "1000"},
                              chunks=[b"a" * 1000])
 
-        with no_sleep(), stub_requests(get=get_restart):
-            w.download(url, dest, max_size=1 << 20)
+        with no_sleep(), stub_requests(artifacts, get=get_restart):
+            artifacts.download(url, dest, max_size=1 << 20)
         check(seen[0] == "bytes=10-", seen)
         check(seen[1] is None, f"the restart still resumed: {seen}")
         check(os.path.getsize(dest) == 1000, "restart did not fetch the file")
@@ -343,16 +389,17 @@ def test_download_complete_part_and_416():
             handle.write(b"w" * 20)
         with open(meta, "w") as handle:
             json.dump({"url": "http://other/Image", "total": 20}, handle)
-        check(w._publish_complete_part(part, meta, dest, url, 1 << 20) == 0,
+        check(artifacts.publish_complete_part(
+                  part, url=url, max_size=1 << 20) == 0,
               "a sidecar naming another URL must not publish the .part")
     print("test_download_complete_part_and_416 OK")
 
 
 def test_state_roundtrip():
-    """load_state/save_state: what the pending set survives on."""
+    """kcilib.state.StateFile: what the pending set survives on."""
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "state.json")
-        empty = w.load_state(path)
+        empty = read_state(path)
         check(empty == {"timestamp": None, "seen": [], "pending": {}}, empty)
         state = {
             "timestamp": "2026-09-08T00:00:00.000000",
@@ -360,15 +407,15 @@ def test_state_roundtrip():
             "pending": {"b" * 24: {"callback": "http://cb",
                                    "body": {"status": 2}}},
         }
-        w.save_state(path, state)
-        check(w.load_state(path) == state, "state did not survive a round trip")
+        write_state(path, state)
+        check(read_state(path) == state, "state did not survive a round trip")
         with open(path, "w") as handle:
             handle.write("{ not json")
-        check(w.load_state(path)["timestamp"] is None,
+        check(read_state(path)["timestamp"] is None,
               "a corrupt state file must be refused, not trusted")
         with open(path, "w") as handle:
             json.dump({"seen": "not-a-list"}, handle)
-        check(w.load_state(path)["seen"] == [],
+        check(read_state(path)["seen"] == [],
               "a state file of the wrong shape must be refused")
     print("test_state_roundtrip OK")
 
@@ -377,20 +424,20 @@ def test_start_cursor():
     """#8: the persisted cursor is authoritative, --since is a bootstrap."""
     stored = "2026-09-08T00:00:00.000000"
     since = "2020-01-01T00:00:00"
-    check(w.start_cursor(stored, since, False) == stored,
+    check(poll.start_cursor(stored, since, False) == stored,
           "the persisted cursor must win over --since")
-    check(w.start_cursor(stored, since, True) == since,
+    check(poll.start_cursor(stored, since, True) == since,
           "--ignore-state-cursor must force --since")
-    check(w.start_cursor(stored, None, True) == stored,
+    check(poll.start_cursor(stored, None, True) == stored,
           "--ignore-state-cursor without --since must fall back to the cursor")
-    check(w.start_cursor(None, since, False) == since,
+    check(poll.start_cursor(None, since, False) == since,
           "--since seeds a state file that has no cursor")
-    check(w.start_cursor(None, None, False) == "1970-01-01T00:00:00.000000",
+    check(poll.start_cursor(None, None, False) == "1970-01-01T00:00:00.000000",
           "no cursor anywhere must scan the whole available queue")
-    check(w.start_cursor("not-a-timestamp", since, False) == since,
+    check(poll.start_cursor("not-a-timestamp", since, False) == since,
           "an unparseable stored cursor must be refused, not handed to "
           "iso_ago (that ValueError used to kill the worker at startup)")
-    check(w.start_cursor(None, "not-a-timestamp", False)
+    check(poll.start_cursor(None, "not-a-timestamp", False)
           == "1970-01-01T00:00:00.000000",
           "an unparseable --since must be refused too")
     print("test_start_cursor OK")
@@ -398,15 +445,15 @@ def test_start_cursor():
 
 def test_clamp_timeout():
     """#15: the clamp is reported, and both bounds are configurable."""
-    check(w.clamp_timeout(600, 1200) == (600, ""),
+    check(jobrun.clamp_timeout(600, 1200) == (600, ""),
           "a timeout inside the bounds must not be touched")
-    effective, note = w.clamp_timeout(1800, 1200)
+    effective, note = jobrun.clamp_timeout(1800, 1200)
     check(effective == 1200, effective)
     check("1800" in note and "1200" in note,
           f"the clamp must name both timeouts: {note!r}")
     check("--max-timeout" in note, note)
-    effective, note = w.clamp_timeout(10, 1200)
-    check(effective == w.MIN_TIMEOUT and "--min-timeout" in note,
+    effective, note = jobrun.clamp_timeout(10, 1200)
+    check(effective == jobrun.MIN_TIMEOUT and "--min-timeout" in note,
           (effective, note))
     print("test_clamp_timeout OK")
 
@@ -421,7 +468,7 @@ def test_archive_console_log():
         console = "".join(f"console line {i}\n" for i in range(20))
         with open(os.path.join(workspace, "tuxrun.log"), "w") as handle:
             handle.write(console)
-        kept = w.archive_console_log(workspace, log_dir, node_id)
+        kept = jobrun.archive_console_log(workspace, log_dir, node_id)
         check(kept == os.path.join(log_dir, f"{node_id}.log"), kept)
         with open(kept) as handle:
             check(handle.read() == console,
@@ -430,11 +477,12 @@ def test_archive_console_log():
         # a workspace without a console archives nothing and does not fail
         empty = os.path.join(tmp, "job-2")
         os.makedirs(empty)
-        check(w.archive_console_log(empty, log_dir, "other") == "",
+        check(jobrun.archive_console_log(empty, log_dir, "other") == "",
               "a job without a console must archive nothing")
 
         # an id that tries to escape the log directory is neutralised
-        escaped = w.archive_console_log(workspace, log_dir, "../../etc/passwd")
+        escaped = jobrun.archive_console_log(
+            workspace, log_dir, "../../etc/passwd")
         check(os.path.dirname(escaped) == log_dir,
               f"node id escaped the log directory: {escaped}")
 
@@ -445,7 +493,7 @@ def test_archive_console_log():
                 handle.write("x")
             os.utime(path, (1000 + i, 1000 + i))
         before = len(os.listdir(log_dir))
-        removed = w.prune_console_logs(log_dir, keep=3)
+        removed = jobrun.prune_console_logs(log_dir, keep=3)
         left = sorted(os.listdir(log_dir))
         check(len(left) == 3, f"prune kept {len(left)} of {before}: {left}")
         check(len(removed) == before - 3, removed)
@@ -453,7 +501,7 @@ def test_archive_console_log():
         # a file the worker did not write is never pruned
         with open(os.path.join(log_dir, "callback-received.json"), "w") as fh:
             fh.write("{}\n")
-        w.prune_console_logs(log_dir, keep=0)
+        jobrun.prune_console_logs(log_dir, keep=0)
         check(os.path.exists(os.path.join(log_dir, "callback-received.json")),
               "pruning removed a file that is not an archived console")
     print("test_archive_console_log OK")
@@ -464,12 +512,13 @@ def test_handle_event_non_json():
     args = _ap.Namespace(api_url="http://api", platform=None, runtime=None)
     event = {"node": {"id": "node-1", "artifacts": {}}}
     html_page = _Response(502, json_error=ValueError("Expecting value: line 1"))
-    with stub_requests(get=lambda url, **kw: html_page):
-        handled = w.handle_event(event, args, {})
+    with stub_requests(poll, get=lambda url, **kw: html_page):
+        handled = poll.handle_event(event, args, {})
     check(handled is False,
           "a non-JSON node body must be retried, not handled and marked seen")
-    with stub_requests(get=lambda url, **kw: _Response(200, json_body=["nope"])):
-        check(w.handle_event(event, args, {}) is False,
+    with stub_requests(poll,
+                       get=lambda url, **kw: _Response(200, json_body=["nope"])):
+        check(poll.handle_event(event, args, {}) is False,
               "a node body that is not an object must be retried too")
     print("test_handle_event_non_json OK")
 
@@ -480,10 +529,10 @@ def _run_job_args(tmp):
         api_url="http://api", platform=None, runtime=None,
         output_dir=os.path.join(tmp, "out"), keep_workspace=False,
         log_dir=os.path.join(tmp, "logs"), tuxrun_bin="tuxrun",
-        cpu="rv64", container_runtime="", kvm_tests=w.KVM_TEST_SUBSET,
+        cpu="rv64", container_runtime="", kvm_tests=params.KVM_TEST_SUBSET,
         max_download_size=(1 << 20), api_config_name="docker-host",
         storage_config_name="docker-host", kvm_full=False, rootfs="",
-        max_timeout=1200, min_timeout=w.MIN_TIMEOUT,
+        max_timeout=1200, min_timeout=jobrun.MIN_TIMEOUT,
     )
 
 
@@ -509,17 +558,37 @@ def test_missing_callback_keeps_result_pending():
         os.makedirs(os.path.join(tmp, "out"))
         args = _run_job_args(tmp)
         reports = {}
-        real_retrieve, real_run_command = w.retrieve_job_definition, w.run_command
-        w.retrieve_job_definition = lambda url: job_def
-        w.run_command = fake_run_command
+        baked, stamped = [], []
+        real_retrieve = poll.retrieve_job_definition
+        real_run_command = jobrun.run_command
+        real_bake = jobrun.baked_rootfs_image
+        real_stamp = jobrun.stamp
+        poll.retrieve_job_definition = lambda url: job_def
+        jobrun.run_command = fake_run_command
+
+        def no_bake(*bake_args, **bake_kwargs):
+            baked.append((bake_args, bake_kwargs))
+            return "/tmp/not-baked.ext4"
+
+        # run_job() resolves both of these as kcilib.jobrun module globals, so
+        # that is where the seam is: a boot job must never bake, and the
+        # progress lines must still be emitted.
+        jobrun.baked_rootfs_image = no_bake
+        jobrun.stamp = stamped.append
         try:
             with no_sleep(), stub_requests(
-                get=lambda url, **kw: _Response(200, json_body={"state": "available"})
+                poll,
+                get=lambda url, **kw: _Response(
+                    200, json_body={"state": "available"})
             ):
-                handled = w.handle_event(event, args, reports)
+                handled = poll.handle_event(event, args, reports)
         finally:
-            w.retrieve_job_definition = real_retrieve
-            w.run_command = real_run_command
+            poll.retrieve_job_definition = real_retrieve
+            jobrun.run_command = real_run_command
+            jobrun.baked_rootfs_image = real_bake
+            jobrun.stamp = real_stamp
+        check(baked == [], f"a boot job must not bake a guest image: {baked}")
+        check(stamped, "the job's progress lines must still be stamped")
         check(handled is False,
               "a job with no callback URL must not be treated as handled "
               "(that marks the node seen and drops the result)")
@@ -551,18 +620,18 @@ def test_state_flushed_before_a_crash():
             reports["node-1"] = ("http://cb", "tok", {"status": 2})
             raise RuntimeError("worker killed mid-batch")
 
-        real_pollevents, real_handle = w.pollevents, w.handle_event
-        w.pollevents = lambda *_a, **_k: events
-        w.handle_event = fake_handle
+        real_pollevents, real_handle = poll.pollevents, poll.handle_event
+        poll.pollevents = lambda *_a, **_k: events
+        poll.handle_event = fake_handle
         try:
             try:
-                w.poll_loop(args)
+                poll.poll_loop(args)
                 check(False, "the simulated crash did not propagate")
             except RuntimeError:
                 pass
         finally:
-            w.pollevents, w.handle_event = real_pollevents, real_handle
-        state = w.load_state(state_file)
+            poll.pollevents, poll.handle_event = real_pollevents, real_handle
+        state = read_state(state_file)
         check(state["pending"].get("node-1", {}).get("body") == {"status": 2},
               f"the unposted result did not survive the crash: {state}")
         check("node-1" not in state["seen"],
@@ -582,14 +651,14 @@ def test_poll_loop_persists_cursor_and_seen():
         events = [{"node": {"id": node_id,
                             "artifacts": {"job_definition": "http://x/job"}},
                    "timestamp": "2026-09-08T00:00:00.000000"}]
-        real_pollevents, real_handle = w.pollevents, w.handle_event
-        w.pollevents = lambda *_a, **_k: events
-        w.handle_event = lambda *_a, **_k: True
+        real_pollevents, real_handle = poll.pollevents, poll.handle_event
+        poll.pollevents = lambda *_a, **_k: events
+        poll.handle_event = lambda *_a, **_k: True
         try:
-            w.poll_loop(args)
+            poll.poll_loop(args)
         finally:
-            w.pollevents, w.handle_event = real_pollevents, real_handle
-        state = w.load_state(state_file)
+            poll.pollevents, poll.handle_event = real_pollevents, real_handle
+        state = read_state(state_file)
         check(state["seen"] == [node_id], f"the handled node was not marked "
                                           f"seen: {state}")
         check(state["timestamp"] == "2026-09-08T00:00:00.000000", state)
@@ -615,7 +684,7 @@ def test_worker_lock():
                                 ignore_state_cursor=False, api_url="http://api",
                                 max_retries=1, poll_period=0, once=True)
             try:
-                w.poll_loop(args)
+                poll.poll_loop(args)
                 check(False, "a second worker was allowed to start while the "
                              "lock was held")
             except SystemExit as exit_error:
@@ -628,28 +697,28 @@ def test_worker_lock():
 def test_seen_eviction():
     """#25: the seen set stays bounded - the oldest id is evicted, so the
     state file cannot grow without limit."""
-    limit = w.SEEN_LIMIT
+    limit = SEEN_LIMIT
     new_id = "f" * 24
     with tempfile.TemporaryDirectory() as tmp:
         state_file = os.path.join(tmp, "state.json")
         old = [f"{i:024x}" for i in range(limit)]
         check(new_id not in old, "the test's new node id collides with an old one")
-        w.save_state(state_file, {"timestamp": "2026-09-08T00:00:00.000000",
-                                  "seen": old, "pending": {}})
+        write_state(state_file, {"timestamp": "2026-09-08T00:00:00.000000",
+                                 "seen": old, "pending": {}})
         args = _ap.Namespace(state_file=state_file, since=None,
                             ignore_state_cursor=False, api_url="http://api",
                             max_retries=1, poll_period=0, once=True)
         events = [{"node": {"id": new_id,
                             "artifacts": {"job_definition": "http://x/job"}},
                    "timestamp": "2026-09-08T00:00:00.000000"}]
-        real_pollevents, real_handle = w.pollevents, w.handle_event
-        w.pollevents = lambda *_a, **_k: events
-        w.handle_event = lambda *_a, **_k: True
+        real_pollevents, real_handle = poll.pollevents, poll.handle_event
+        poll.pollevents = lambda *_a, **_k: events
+        poll.handle_event = lambda *_a, **_k: True
         try:
-            w.poll_loop(args)
+            poll.poll_loop(args)
         finally:
-            w.pollevents, w.handle_event = real_pollevents, real_handle
-        state = w.load_state(state_file)
+            poll.pollevents, poll.handle_event = real_pollevents, real_handle
+        state = read_state(state_file)
         check(len(state["seen"]) == limit, len(state["seen"]))
         check(state["seen"][-1] == new_id, state["seen"][-1])
         check(old[0] not in state["seen"],

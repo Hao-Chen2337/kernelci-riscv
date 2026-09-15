@@ -2,7 +2,6 @@
 """Verify lava_body() output against the REAL production parser
 (kernelci.runtime.lava.Callback) and every method lava_callback.py calls."""
 import argparse
-import importlib.util
 import json
 import os
 import sys
@@ -15,11 +14,13 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "kernelci-core"))
 from kernelci.runtime.lava import Callback
 
-spec = importlib.util.spec_from_file_location(
-    "riscv_pull_worker",
-    os.path.join(HERE, "riscv_pull_worker.py"))
-worker = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(worker)
+# The body under test is kcilib.callback.lava_body and the verdicts it is fed
+# are kcilib.judge's: the worker imports them from the library instead of
+# defining them (they used to live in riscv_pull_worker.py, which this script
+# loaded by path).  Same body, same parser, same expectations - and scripts/ is
+# on the path here, so kcilib resolves from any CWD.
+sys.path.insert(0, HERE)
+from kcilib import callback, judge
 
 FIXTURES = os.path.join(HERE, "fixtures")
 PASS_LOG = os.path.join(FIXTURES, "tuxrun-pass.log")
@@ -48,7 +49,7 @@ def run_case(tag, log_path, returncode, expect_status):
     print(f"\n===== {tag} =====")
     with open(log_path, encoding="utf-8") as f:
         output = f.read()
-    body = worker.lava_body("qemu-riscv64", returncode, output, fake_args())
+    body = callback.lava_body("qemu-riscv64", returncode, output, fake_args())
     with open(f"/tmp/lava-body-{tag}.json", "w") as f:
         json.dump(body, f, indent=1)
 
@@ -91,10 +92,10 @@ def run_kselftest_tap_cases():
         "not ok 3 selftests: riscv: mm\n"
     )
     print("\n===== kselftest TAP: rc=0 + not ok -> job fail =====")
-    summary, _tests_out, per_test = worker.tap_summary(output, "kselftest-riscv")
+    summary, _tests_out, per_test = judge.tap_summary(output, "kselftest-riscv")
     print("tap summary:", summary, "per_test:", per_test)
     check(summary["failed"] == 1, summary)
-    body = worker.lava_body("qemu-riscv64", 0, output, fake_args(),
+    body = callback.lava_body("qemu-riscv64", 0, output, fake_args(),
                             tap=("kselftest-riscv", summary, per_test))
     with open("/tmp/lava-body-kselftest-fail.json", "w") as f:
         json.dump(body, f, indent=1)
@@ -122,9 +123,9 @@ def run_kselftest_tap_cases():
         "ok 1 selftests: riscv: vector\n"
         "ok 2 selftests: riscv: hwprobe\n"
     )
-    summary, _tests_out, per_test = worker.tap_summary(output_pass, "kselftest-riscv")
+    summary, _tests_out, per_test = judge.tap_summary(output_pass, "kselftest-riscv")
     check(summary["failed"] == 0, summary)
-    body = worker.lava_body("qemu-riscv64", 0, output_pass, fake_args(),
+    body = callback.lava_body("qemu-riscv64", 0, output_pass, fake_args(),
                             tap=("kselftest-riscv", summary, per_test))
     cb = Callback(body)
     job_node = {"id": "test", "name": "kselftest-riscv-pull-labs",
@@ -145,12 +146,12 @@ def run_no_tap_case():
         "2026-09-08T00:00:00 {'definition': 'lava', 'case': 'job', "
         "'result': 'fail'}\n"
     )
-    check(worker.tuxrun_job_error(1, output), "JobError must be detected")
-    summary, tests_out, per_test = worker.tap_summary(output, "kselftest-kvm")
+    check(judge.tuxrun_job_error(1, output), "JobError must be detected")
+    summary, tests_out, per_test = judge.tap_summary(output, "kselftest-kvm")
     print("tap summary:", summary, tests_out)
     check(summary["failed"] == 1, summary)
     check(tests_out["kselftest-kvm"]["status"] == "fail", tests_out)
-    body = worker.lava_body("qemu-riscv64", 2, output, fake_args(),
+    body = callback.lava_body("qemu-riscv64", 2, output, fake_args(),
                             tap=("kselftest-kvm", summary, per_test),
                             infra=True, error_msg=output)
     cb = Callback(body)
@@ -165,7 +166,7 @@ def run_infra_case():
     print("\n===== infra error: rc=2 -> incomplete + Infrastructure =====")
     output = ("usage: tuxrun [options]\ntuxrun: error: argument --tests: "
               "invalid choice: 'kselftest-riscv'\n")
-    body = worker.lava_body("qemu-riscv64", 2, output, fake_args(),
+    body = callback.lava_body("qemu-riscv64", 2, output, fake_args(),
                             infra=True, error_msg=output)
     cb = Callback(body)
     check(cb.get_job_status() == "incomplete", cb.get_job_status())
