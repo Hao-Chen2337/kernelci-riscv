@@ -27,7 +27,6 @@ Every outcome is also recorded in work/results/<build-id>/<test>.json.
 
 import argparse
 import gzip
-import importlib.util
 import json
 import os
 import re
@@ -45,21 +44,21 @@ API = "https://api.kernelci.org"
 JOB = "kbuild-gcc-14-riscv"
 TESTS = {"boot": [], "kselftest-riscv": ["kselftest-riscv"], "kselftest-kvm": ["kselftest-kvm"]}
 
-# KVM whitelist, single source: imported from the worker so the two can
-# never drift apart.
-_worker_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "riscv_pull_worker.py")
-_worker_spec = importlib.util.spec_from_file_location("riscv_pull_worker", _worker_path)
-_worker = importlib.util.module_from_spec(_worker_spec)
-_worker_spec.loader.exec_module(_worker)
-KVM_SUBSET = " ".join(f"kvm:{name}" for name in _worker.KVM_TEST_SUBSET)
+# Everything this path and the pull-lab worker MUST agree on lives in
+# scripts/kcilib/: the TAP parser and the verdict, the tuxrun command line, the
+# artifact transfers, the KVM allow-list and the result ledger.  The library is
+# resolved through this file's own directory, so the script works from any CWD
+# and also when an offline test loads it by path.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _SCRIPT_DIR)
+
+from kcilib import artifacts, bake, judge, ledger, params, ports, runner
 
 TUXRUN = os.environ.get("TUXRUN_BIN", shutil.which("tuxrun")
                         or os.path.expanduser("~/.local/bin/tuxrun"))
 
 # Repository layout derived from this file's own location (never a hardcoded
 # absolute path): work/ is gitignored and holds regenerable runtime artifacts.
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(_SCRIPT_DIR)
 WORK_ENV = os.path.join(ROOT, "work", "env")
 WORK_SERVE = os.path.join(ROOT, "work", "serve")
@@ -77,31 +76,17 @@ DEFAULT_ROOTFS_URL = (
     "https://storage.kernelci.org/images/rootfs/debian/"
     "trixie-kselftest/20260606.0/riscv64/full.rootfs.tar.xz")
 
-# One verdict vocabulary for the script and for the record it writes.  Exit 3
-# for "infrastructure" mirrors LAVA's job status 3 (incomplete), so a caller
-# can tell "the tests ran and failed" from "nothing ran at all".
-EXIT_PASS = 0
-EXIT_TEST_FAIL = 1
-EXIT_INFRA = 3
-VERDICT_PASS = "pass"
-VERDICT_FAIL = "fail"
-VERDICT_INFRA = "infra"
-# The run never produced a verdict at all (stale artifact server, truncated
-# download, ...): still a non-zero outcome worth recording.
-VERDICT_ERROR = "error"
+# The verdict vocabulary is kcilib.judge's - the exit statuses (0 pass, 1 test
+# failure, 3 infrastructure), the TAP parser, the "timed out after Ns" detail
+# and the boot evidence a --test boot run is judged by (kcilib.judge reads the
+# guest's own console output).  The result record below and the worker's
+# callback are therefore the same verdict, not two copies of it.
 
-RESULTS_DIR = os.path.join(ROOT, "work", "results")
 BUILD_ID_FILE = "build-id.json"
 ARTIFACT_RECORD = "artifacts.json"
-TUXRUN_TIMEOUT = 1800
 # How long the freshly started artifact server gets to serve its build-id file
 # back before the run is refused (see start_artifact_server).
 SERVE_READY_TIMEOUT = 15.0
-
-# The guest's own console output: the only boot evidence that does not come
-# from LAVA's own "Wait for prompt [...]" chatter.  Used to judge a --test boot
-# run, which has no TAP to read (see judge_run).
-BOOT_EVIDENCE_RE = re.compile(r"\[\s*0\.000000\]|Booting Linux")
 
 
 def api_get(path, api):
@@ -157,7 +142,14 @@ def default_build_artifacts(job, api):
 
 def download(url, dest):
     """Download *url* to *dest*, verifying size against Content-Length
-    (a truncated 144MB rootfs must fail loudly, not boot half an image)."""
+    (a truncated 144MB rootfs must fail loudly, not boot half an image).
+
+    This is ensure_artifact()'s own single-shot transfer, and it is left
+    exactly as it was: kcilib.artifacts.download() - which _fetch() above uses
+    for the same job - prints different lines ("Downloading <url>", then
+    "           -> <dest> (N bytes)") and resumes partial transfers through
+    .part files, so swapping it here would change the console of every run and
+    the contents of work/downloads/<build>/ (reported)."""
     print(f"  downloading {os.path.basename(dest)} ({url})")
     with urllib.request.urlopen(url, timeout=300) as resp, open(dest, "wb") as f:
         shutil.copyfileobj(resp, f)
@@ -214,35 +206,6 @@ def _record(manifest, key, dest):
     }
 
 
-def _gzip_isize(path):
-    """Uncompressed size from a gzip member's 4-byte trailer, or None.
-
-    A complete *download* is not proof of a complete *gunzip*: the kernel is
-    decompressed into its final name, so a run killed mid-gunzip leaves a
-    truncated Image that still exists and is still non-empty.  The trailer is
-    the only size a finished .gz carries, and reading 4 bytes costs nothing."""
-    try:
-        with open(path, "rb") as handle:
-            handle.seek(-4, os.SEEK_END)
-            return int.from_bytes(handle.read(4), "little")
-    except (OSError, ValueError):
-        return None
-
-
-def _looks_complete(dest):
-    """True when *dest* can be a complete decompression of dest + ".gz".
-
-    Only consulted for a file with NO manifest record, i.e. the one case where
-    _cache_hit() would otherwise adopt a file on trust (#13)."""
-    gz = dest + ".gz"
-    if not os.path.exists(gz):
-        return True
-    isize = _gzip_isize(gz)
-    if not isize:
-        return True
-    return os.path.getsize(dest) == isize
-
-
 def _cache_hit(manifest, key, dest):
     """True when *dest* is usable for *key*: non-empty, size matches the
     record (if any).  An existing file with no record at all is adopted
@@ -261,19 +224,17 @@ def _cache_hit(manifest, key, dest):
     rel = os.path.relpath(dest, ROOT)
     if any(e.get("dest") == rel for e in manifest.values()):
         return False
-    if not _looks_complete(dest):
+    if not artifacts.looks_complete(dest):
         print(f"  {os.path.basename(dest)} has no manifest record and does not "
               "match its .gz trailer; regenerating")
         return False
     return True
 
 
-_ORIGINAL_DOWNLOAD = _worker.download
-
-
-def _fetch(url, dest, max_size=_worker.MAX_DOWNLOAD_SIZE):
+def _fetch(url, dest, max_size=artifacts.MAX_DOWNLOAD_SIZE):
     """Download *url* to *dest*.  file:// sources are copied locally (offline
-    tests); http(s) reuses worker.download (retry + size/truncation checks)."""
+    tests); http(s) is kcilib.artifacts.download (resume + size/truncation
+    checks, the one transfer implementation the worker uses too)."""
     if url.startswith("file://"):
         src = unquote(urlparse(url).path)
         if not os.path.exists(src):
@@ -287,7 +248,7 @@ def _fetch(url, dest, max_size=_worker.MAX_DOWNLOAD_SIZE):
         shutil.copyfile(src, dest)
         print(f"  copied {src} -> {dest} ({_human(size)})")
         return
-    _ORIGINAL_DOWNLOAD(url, dest, max_size=max_size)
+    artifacts.download(url, dest, max_size=max_size)
 
 
 def _ensure_symlink(target, link):
@@ -379,10 +340,20 @@ def _remote_size(url, timeout=60):
         return None
 
 
+# The nfsroot tarball -> ext4 bake machinery (DISK_SIZE, the path-traversal
+# and device-member guards, _extract and bake_rootfs_image) used to be an
+# inlined copy of the pull-lab worker's, kept here only because kcilib had no
+# bake module when this path was rewritten.  It is kcilib.bake now: the same
+# code, imported, so the guards and the mkfs.ext4 command line cannot drift
+# from the worker's a second time.  This script's own manifest cache
+# (work/env/.manifest.json, by URL, shared with the kernel artifact entries) is
+# NOT kcilib.bake's sidecar cache and stays here - see provision_rootfs().
+
+
 def provision_rootfs(rootfs_url, modules_url, ext4_path, manifest):
     """Ensure the baked ext4 rootfs exists at *ext4_path* (manifest cache).
-    Reuses worker.bake_rootfs_image: nfsroot tar.xz -> tuxrun-bootable ext4,
-    with kvm modules baked into /lib/modules."""
+    Uses kcilib.bake.bake_rootfs_image(): nfsroot tar.xz -> tuxrun-bootable
+    ext4, with kvm modules baked into /lib/modules."""
     key = f"rootfs-kvm.ext4|{rootfs_url}|{modules_url or ''}"
     if _cache_hit(manifest, key, ext4_path):
         _record(manifest, key, ext4_path)
@@ -411,20 +382,18 @@ def provision_rootfs(rootfs_url, modules_url, ext4_path, manifest):
                 print(f"  tarball on disk is incomplete ({_human(have)} of "
                       f"{_human(expected) if expected else 'an unknown size'}); "
                       "resuming")
-            _worker.download(rootfs_url, cached)
+            artifacts.download(rootfs_url, cached)
         source = "file://" + os.path.abspath(cached)
     workspace = tempfile.mkdtemp(prefix="kci-bake-", dir=WORK_ENV)
     try:
-        # bake_rootfs_image calls the module-global download; swap in _fetch so
-        # file:// URLs work too, then restore the original.
-        _worker.download = _fetch
-        try:
-            image = _worker.bake_rootfs_image(
-                workspace, source,
-                boot_modules=["kvm"],
-                modules_url=modules_url)
-        finally:
-            _worker.download = _ORIGINAL_DOWNLOAD
+        # kcilib.bake transfers through this rebindable seam: this script's
+        # _fetch() takes file:// sources (the offline tests) and its printed
+        # "copied ..." lines are this script's, so bind it before the bake.
+        bake.download = _fetch
+        image = bake.bake_rootfs_image(
+            workspace, source,
+            boot_modules=["kvm"],
+            modules_url=modules_url)
         os.replace(image, ext4_path)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
@@ -529,8 +498,8 @@ def provision_only(args):
 # path used a second, weaker copy that missed "not  ok", "NOT OK", ANSI-glued
 # failures and tests that started but never finished, so it could print a
 # summary that looked green when nothing had run (#23).  TAP parsing is
-# riscv_pull_worker.tap_summary() from the import above, exactly as the worker
-# uses it - one parser, no drift.
+# kcilib.judge.tap_summary() - reached through judge_run() below - exactly as
+# the worker's callback reaches it: one parser, no drift.
 
 
 def _load_artifact_record(out):
@@ -640,24 +609,6 @@ def ensure_kernel_image(url, gz_path, image_path, record):
     return image_path
 
 
-def _port_error(port):
-    """The bind error for *port*, or None when the port is free.
-
-    Binding is the only honest test: a stale artifact server that answers
-    nothing (or answers with an OLDER build) still owns the port, and the
-    failure mode that matters is tuxrun downloading the previous build's
-    artifacts while the console names the new one (#12)."""
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        probe.bind(("0.0.0.0", port))
-    except OSError as error:
-        return str(error)
-    finally:
-        probe.close()
-    return None
-
-
 def _served_body(port, name, timeout=5):
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/{name}",
                                 timeout=timeout) as response:
@@ -699,11 +650,14 @@ def start_artifact_server(out, port, node, kernel_path):
     console - and the log - named another (#12).  Now the port is probed first
     (busy = a loud refusal, never a silent swap), the server logs into the
     build directory instead of DEVNULL, and its build-id file plus the served
-    Image size are read back through the very port tuxrun is handed."""
-    busy = _port_error(port)
-    if busy:
+    Image size are read back through the very port tuxrun is handed.  The probe
+    is kcilib.ports.port_is_free() - binding is the only honest test, and it
+    binds 0.0.0.0 because that is how the stack serves - while the refusal names
+    the holder through kcilib.ports.port_holder()."""
+    if not ports.port_is_free(port, host="0.0.0.0"):
+        holder = ports.port_holder(port)
         sys.exit(
-            f"artifact server port {port} is already in use ({busy}).\n"
+            f"artifact server port {port} is already in use ({holder}).\n"
             "    A stale server from an earlier run would serve an OLDER build "
             f"to tuxrun while this run reports {node.get('id')} - refusing to "
             "run against a build it cannot verify.\n"
@@ -762,86 +716,19 @@ def start_artifact_server(out, port, node, kernel_path):
     return server
 
 
-def judge_run(test, returncode, output):
-    """The verdict for one tuxrun run:
-    (verdict, exit_code, detail, summary, per_test).
-
-    TAP parsing is the worker's, not a second weaker copy (#23): tuxrun exits 0
-    even when every selftest fails, so riscv_pull_worker.tap_summary() is
-    authoritative for a kselftest collection, and its total=0 encoding is the
-    "the suite never ran" case that used to be printed as a harmless summary
-    (#2).  returncode is None after a timeout."""
-    if returncode is None:
-        return (VERDICT_INFRA, EXIT_INFRA,
-                f"tuxrun timed out after {TUXRUN_TIMEOUT}s", None, {})
-    if (_worker.tuxrun_invocation_error(returncode, output)
-            or _worker.tuxrun_job_error(returncode, output)
-            or _worker.tuxrun_infra_error(returncode, output)):
-        return (VERDICT_INFRA, EXIT_INFRA,
-                _worker.tuxrun_error_message(output, test), None, {})
-    if test != "boot":
-        summary, _status, per_test = _worker.tap_summary(output, test)
-        if summary["total"] == 0:
-            # No TAP at all: the suite never ran.  Never a pass - this is
-            # exactly the false green the worker's tap_summary() guards against.
-            if returncode != 0:
-                return (VERDICT_INFRA, EXIT_INFRA,
-                        (f"no TAP lines and tuxrun exited {returncode}: the "
-                         "guest never booted or the suite never started"),
-                        summary, per_test)
-            return (VERDICT_FAIL, EXIT_TEST_FAIL,
-                    "tuxrun exited 0 but produced no TAP lines at all",
-                    summary, per_test)
-        detail = (f"{summary['total']} selftest(s): "
-                  f"{summary['total'] - summary['failed'] - summary['skipped']} "
-                  f"pass, {summary['failed']} fail, "
-                  f"{summary['skipped']} skip")
-        if summary["failed"]:
-            return VERDICT_FAIL, EXIT_TEST_FAIL, detail, summary, per_test
-        if returncode != 0:
-            detail += (f" (tuxrun exited {returncode}; the TAP, not tuxrun's "
-                       "exit code, carries the selftest verdict)")
-        return VERDICT_PASS, EXIT_PASS, detail, summary, per_test
-    # boot: there is no TAP, and the exit code alone is not a verdict - the
-    # worker's lava_body() also refuses to call a run with no boot evidence a
-    # pass - so require output that only a booted guest can have produced.
-    if returncode != 0:
-        return (VERDICT_FAIL, EXIT_TEST_FAIL,
-                f"tuxrun exited {returncode}; see the log", None, {})
-    cleaned = _worker.strip_ansi(output)
-    job_result = None
-    boot_cases = []
-    for raw in cleaned.splitlines():
-        match = _worker.LAVA_CASE_RE.search(raw)
-        if not match:
-            continue
-        if match.group(1) in ("login-action", "kernel-messages"):
-            boot_cases.append(match.group(2))
-        elif match.group(1) == "job":
-            job_result = match.group(2)
-    if job_result == "fail" or "fail" in boot_cases:
-        return (VERDICT_FAIL, EXIT_TEST_FAIL,
-                "tuxrun reported the boot as failed", None, {})
-    if boot_cases or job_result == "pass" or BOOT_EVIDENCE_RE.search(cleaned):
-        return (VERDICT_PASS, EXIT_PASS, "guest booted", None, {})
-    return (VERDICT_INFRA, EXIT_INFRA,
-            ("tuxrun exited 0 but the log shows no boot at all (no kernel "
-             "console output, no login prompt, no boot case)"), None, {})
-
-
-def write_result(path, node, test, verdict, exit_code, detail, out, summary):
-    """Write the durable (build, test, verdict) record under work/results/.
+def write_result(node, test, verdict, exit_code, detail, out, summary):
+    """Record one (build, test, verdict) under work/results/<build>/<test>.json.
 
     Mode (A) kept nothing but a console log inside work/downloads/<build>/, so
     "which build was this test run against, when, and how did it end" could
     only be reconstructed by hand.  The record is written for EVERY outcome -
-    a failed run is exactly the one worth having a record of."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    data = {
-        "build_id": node.get("id"),
+    a failed run is exactly the one worth having a record of.  The file itself
+    (path layout, tmp file + rename, fsync, the key set) is kcilib.ledger's,
+    so the regression tracker and the worker write the same records; the
+    payload below is this script's naming of the run."""
+    return ledger.write_result(node["id"], test, {
         "build_created": node.get("created"),
         "job": node.get("name") or "",
-        "test": test,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "verdict": verdict,
         "exit_code": exit_code,
@@ -850,14 +737,7 @@ def write_result(path, node, test, verdict, exit_code, detail, out, summary):
         "artifacts_dir": os.path.relpath(out, ROOT),
         "log": os.path.relpath(os.path.join(out, "tuxrun.log"), ROOT),
         "results": summary,
-    }
-    tmp = f"{path}.tmp"
-    with open(tmp, "w") as handle:
-        json.dump(data, handle, indent=1, sort_keys=True)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp, path)
-    return path
+    })
 
 
 def run_once(args, node, out, record, rootfs):
@@ -903,38 +783,47 @@ def run_once(args, node, out, record, rootfs):
             gateway = "172.17.0.1"
     base = f"http://{gateway}:{args.serve_port}"
     server = start_artifact_server(out, args.serve_port, node, kernel)
+    log_path = os.path.join(out, "tuxrun.log")
     try:
-        cmd = [TUXRUN, "--runtime", args.runtime, "--device", "qemu-riscv64",
-               "--kernel", f"{base}/Image", "--boot-args", "rw",
-               "--rootfs", f"file://{os.path.abspath(rootfs)}"]
-        params = [f"cpu={args.cpu}"]
+        # The cpu property string is kcilib.params.cpu_for(): the KVM jobs
+        # need the H extension, everything else takes --cpu as it was given.
+        parameters = [f"cpu={params.cpu_for(args.cpu, args.test)}"]
         if args.test != "boot":
-            params.append(f"KSELFTEST={base}/kselftest.tar.xz")
-            if args.test == "kselftest-kvm" and modules:
-                cmd += ["--modules", f"{base}/modules.tar.xz"]
-                if not args.kvm_full:
-                    params.append(f"TST_CASENAME={KVM_SUBSET}")
-            cmd += ["--tests", TESTS[args.test][0]]
-        cmd += ["--parameters", *params]
-        print("running:", " ".join(cmd))
-        output = ""
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True,
-                                  timeout=TUXRUN_TIMEOUT, check=False)
-            returncode = proc.returncode
-            output = proc.stdout + proc.stderr
-        except subprocess.TimeoutExpired as error:
-            # A timed-out run still has a partial console log worth keeping,
-            # and it is an infrastructure failure, not a test failure (#2).
-            returncode = None
-            output = f"{error.stdout or ''}\n{error.stderr or ''}"
+            parameters.append(f"KSELFTEST={base}/kselftest.tar.xz")
+            # kcilib.params.kvm_allow_list(): the curated functional subset
+            # in the "kvm:name kvm:name ..." form the LKFT script wants, as
+            # ONE --parameters entry.  --kvm-full asks for the whole
+            # collection, which is exactly no allow-list at all.
+            if (args.test == "kselftest-kvm" and modules
+                    and not args.kvm_full):
+                parameters.append(
+                    f"TST_CASENAME={params.kvm_allow_list()}")
+        argv = runner.build_tuxrun_argv(
+            tuxrun_bin=TUXRUN, runtime=args.runtime, device="qemu-riscv64",
+            kernel=f"{base}/Image", boot_args="rw",
+            rootfs=f"file://{os.path.abspath(rootfs)}",
+            modules=modules and f"{base}/modules.tar.xz",
+            tests=TESTS[args.test], parameters=parameters)
+        print("running:", " ".join(argv))
+        # cwd and stream_separator are explicit because they are part of the
+        # console this writes: tuxrun is run from the caller's directory, and
+        # its stdout and stderr are concatenated with NOTHING between them -
+        # these tuxrun.log files carry no blank line at the junction, unlike
+        # the worker's archived consoles.  log_path is written by run_tuxrun
+        # (partial console included on a timeout), and its proc.stdout IS the
+        # merged console the verdict is read from.
+        proc = runner.run_tuxrun(argv, timeout=judge.TUXRUN_TIMEOUT,
+                                 log_path=log_path, cwd=None,
+                                 stream_separator="")
+        returncode = proc.returncode
+        output = proc.stdout
     finally:
         stop_artifact_server(server)
-    log_path = os.path.join(out, "tuxrun.log")
-    with open(log_path, "w") as handle:
-        handle.write(output)
-    verdict, exit_code, detail, summary, per_test = judge_run(
-        args.test, returncode, output)
+    # One verdict, from kcilib.judge: the same TAP parser and the same exit
+    # statuses the worker's callback reports.  summary and per_test are what
+    # the TAP summary below and the result record print.
+    verdict, exit_code, detail, summary, per_test = judge.judge_run(
+        returncode, output, args.test)
     return {
         "verdict": verdict,
         "exit_code": exit_code,
@@ -1003,7 +892,7 @@ def main():
         os.path.dirname(os.path.abspath(__file__)), "..", "work", "downloads", node["id"])
     os.makedirs(out, exist_ok=True)
     record = _load_artifact_record(out)
-    result_path = os.path.join(RESULTS_DIR, node["id"], f"{args.test}.json")
+    result_path = ledger.result_path(node["id"], args.test)
 
     try:
         outcome = run_once(args, node, out, record, rootfs)
@@ -1012,9 +901,9 @@ def main():
         # artifact server, a truncated download, Ctrl-C) is recorded too: the
         # record only has value if a failed run leaves one.
         try:
-            write_result(result_path, node, args.test, VERDICT_ERROR,
-                         EXIT_INFRA, f"{type(error).__name__}: {error}", out,
-                         None)
+            write_result(node, args.test, judge.VERDICT_ERROR,
+                         judge.EXIT_INFRA,
+                         f"{type(error).__name__}: {error}", out, None)
         except OSError as write_error:
             print(f"Warning: could not write {result_path}: {write_error}")
         raise
@@ -1031,7 +920,7 @@ def main():
         tail = "\n".join(outcome["output"].strip().splitlines()[-12:])
         print("no TAP results; log tail:\n", tail)
 
-    write_result(result_path, node, args.test, outcome["verdict"],
+    write_result(node, args.test, outcome["verdict"],
                  outcome["exit_code"], outcome["detail"], out,
                  outcome["summary"])
     print(f"\nverdict: {outcome['verdict'].upper()} - {outcome['detail']}")
