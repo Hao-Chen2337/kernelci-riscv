@@ -449,6 +449,10 @@ cmd_verify() {
   (cd "$PIPE" && python3 tests/validate_yaml.py) || die "validate_yaml failed"
   python3 "$ROOT/scripts/verify-lava-body.py" || die "verify-lava-body failed"
   python3 "$ROOT/scripts/verify-worker-guards.py" || die "verify-worker-guards failed"
+  # Compile the entry points and the library: the guards import the library only,
+  # so before this gate a syntax error in riscv_pull_worker.py (or in a kcilib
+  # module nobody exercises yet) reached the user as a runtime traceback.
+  python3 -m compileall -q "$ROOT/scripts" >/dev/null || die "compileall failed"
   # ruff checks our own scripts/ (upstream clones and work/ are gitignored)
   (cd "$ROOT" && ruff check .) || die "ruff failed"
   ok "verify: all gates passed"
