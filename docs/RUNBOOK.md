@@ -57,11 +57,12 @@ tuxrun --list-tests | grep -w kselftest-riscv    # must print it
 | Command | What it does |
 |---|---|
 | `./run.sh setup` | Clone core/api/pipeline + apply PR1/bullseye/nginx patches (skipped if already applied) + generate runtime config (`.env`, SSH keys, API token) + validate_yaml |
-| `./run.sh fetch [--job name] [--kvm] [--kvm-full]` | Tier A: re-run the newest production riscv build locally with tuxrun; artifacts in `work/downloads/` |
-| `./run.sh stack [--seed]` | Tier B: start the local full stack (api/db/redis/storage/ssh + artifact server + real callback + official scheduler); `--seed` dispatches (overridable via `SEED_*` env vars) |
+| `./run.sh fetch [--job name] [--kvm] [--kvm-full]` | Tier A: re-run the newest production riscv build locally with tuxrun; artifacts in `work/downloads/`. The exit status **is** the verdict (0 pass / 1 test failure / 3 infrastructure error), and every run - including one that never reached tuxrun - is recorded in `work/results/<build-id>/<test>.json` |
+| `./run.sh stack [--seed]` | Tier B: start the local full stack (api/db/redis/storage/ssh + artifact server + real callback + official scheduler); `--seed` dispatches (overridable via `SEED_*` env vars). `--seed` refuses up front when the runtime's rules would drop the seed's tree, naming the allowed trees and the `SEED_TREE` override (see Fresh deployment) |
 | `./run.sh worker [--once]` | Take jobs, execute, report back; `--once` exits after the existing queue; unposted results persist and are re-posted (never re-run) on the next start |
 | `./run.sh report` | Recent baseline/kselftest node states |
-| `./run.sh verify` | Full gate: validate_yaml + verify-lava-body + verify-worker-guards + ruff |
+| `./run.sh prune [--keep N] [--dry-run]` | Retention for `work/downloads/` (one ~45 MB directory per fetched build): keep the newest N (default 5) plus the build `work/env/build.env` records. Never touches the build this deployment serves; `--dry-run` prints the list and deletes nothing |
+| `./run.sh verify` | Full gate: validate_yaml + verify-lava-body + verify-worker-guards + compileall + ruff (any failure fails the command). The guard tests now target the shared library in `scripts/kcilib/`, and compileall also compiles the entry points so a syntax error there cannot pass the gate |
 | `./run.sh drift` / `./run.sh trend` | Config drift / regression pass-rates |
 | `./run.sh stop` | Stop the whole local stack (incl. the docker compose API stack; data stays in volumes) |
 
@@ -82,7 +83,7 @@ python3 -m pip install -r kernelci-core/requirements.txt   # deps of the cloned 
 ./run.sh report         # results
 ```
 
-Two things to know before the first run on a new machine:
+Three things to know before the first run on a new machine:
 
 - **A stale or dead proxy** makes the `git clone` above hang with no output
   before any script of ours is running: fix the proxy settings, or bypass them
@@ -96,6 +97,18 @@ Two things to know before the first run on a new machine:
   (`tuxrun-dispatcher` + `qemu-riscv64` + `gcc-14`/`clang-21`
   `riscv64-kselftest` ≈ 12.3 GB measured here). Docker Hub and ghcr.io both have
   to be reachable.
+- **The seed is checked before anything starts.** `stack --seed` asks the
+  scheduler's own rule engine whether the runtime would accept the seed's tree.
+  If it would refuse it, the command stops *before* starting the services
+  instead of waiting 90 s and ending with "no job node appeared", since the only
+  trace of the refusal is one scheduler log line. The message names the allowed
+  trees and the two ways out: relabel the seed
+  (`SEED_TREE=<allowed tree> ./run.sh stack --seed` - recorded in
+  `work/env/seed.env` when the label disagrees with the build that boots), or
+  add the build's tree to `runtimes.pull-labs-riscv.rules.tree` in
+  `kernelci-pipeline/config/pipeline-pull-labs.yaml`. If the rule engine itself
+  cannot be read (no `kernelci-core` checkout), the check says so and carries on;
+  the wait then reports the scheduler's own rejection reason.
 
 `setup` generates everything the runtime needs that must not live in git, so
 nothing has to be filled in by hand:
@@ -174,6 +187,11 @@ if upstream fixes the route.
   (`Warning: job definition carries a cpio ramdisk … using tuxrun's built-in
   disk`). Its `pass` therefore describes the boot path, not the declared
   artifact. The kselftest jobs do use the provisioned rootfs.
+- A `./run.sh fetch` run also leaves a machine-readable record at
+  `work/results/<build-id>/<test>.json` (verdict, exit code, detail, kernel
+  revision, artifacts directory, log path, TAP counts), written for every
+  outcome - including a run that stopped before tuxrun. `./run.sh prune` covers
+  `work/downloads/`, not `work/results/`.
 - Every node carries the kernel revision recorded by `./run.sh provision`
   (`work/env/build.env`); a deployment seeded without it says so loudly and
   labels its nodes with a placeholder revision instead.
@@ -189,6 +207,14 @@ export KCI_COMPOSE_PROJECT=kcirv-clean KCI_API_PORT=18001 KCI_STORAGE_PORT=18002
        KCI_API_URL=http://127.0.0.1:18001
 # then run the same sequence as above
 ```
+
+Every port in that list is probed **before** a service is started on it, and a
+conflict is refused by name - the port, the holder and the `KCI_*_PORT` variable
+that moves this deployment - instead of surfacing later as "artifact server
+failed" or as a compose bind error blamed on the API. A port published by this
+deployment's own compose project counts as ours, not as a conflict. No port is
+reserved here: the defaults all bind on a machine where nothing else holds them,
+including the artifact server's 8999.
 
 Useful for testing a deployment the way a new user meets it — a fresh clone and
 a genuinely empty database — without touching the first one's history. The two
