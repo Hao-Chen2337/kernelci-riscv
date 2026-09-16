@@ -35,21 +35,24 @@ def build_tuxrun_argv(*, tuxrun_bin, runtime, device, kernel,
     The keywords are explicit and keyword-only so both callers can pass their
     own variables straight through with no reshaping.
 
-    scripts/riscv_pull_worker.py (build_command) - device is args.platform,
-    runtime is runtime_name(args), kernel is the job's kernel artifact, tests
-    is the collection list, and the kvm subset travels as ONE
-    ``TST_CASENAME=kvm:a kvm:b`` parameter entry::
+    kcilib.jobrun.build_command() (the worker path) - device is
+    run_config.platform, runtime is runtime_name(run_config), kernel is the
+    job's kernel artifact, tests is the collection list, and the kvm subset
+    travels as ONE ``TST_CASENAME=kvm:a kvm:b`` parameter entry::
 
         build_tuxrun_argv(
-            tuxrun_bin=args.tuxrun_bin, runtime=runtime_name(args),
-            device=args.platform, kernel=kernel_url, boot_args="rw",
+            tuxrun_bin=run_config.tuxrun_bin, runtime=runtime_name(run_config),
+            device=run_config.platform, kernel=kernel_url, boot_args="rw",
             rootfs=rootfs_arg, modules=modules_url, tests=tests,
             parameters=parameters)
 
     scripts/fetch-and-run-latest.py (run_once) - the executable is the module
     constant TUXRUN, the device is fixed at qemu-riscv64, kernel and rootfs
     are URLs served by its own artifact server, and TST_CASENAME is again one
-    space-joined entry::
+    space-joined entry.  The "args" below is that script's OWN parsed command
+    line: phase 4 moved the worker onto kcilib.config.RunConfig and left the
+    one-shot fetch path on its own argparse namespace (see the config.py
+    docstring for why the two are not one object yet)::
 
         build_tuxrun_argv(
             tuxrun_bin=TUXRUN, runtime=args.runtime, device="qemu-riscv64",

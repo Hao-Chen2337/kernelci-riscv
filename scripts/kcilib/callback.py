@@ -19,6 +19,10 @@ be renamed to become module-level.  The worker keeps its own policy - the poll
 loop, the job mapping, the baked guest cache, the console archive and the
 re-post-from-state rule.
 
+lava_body() takes the two callback-metadata names off a
+kcilib.config.RunConfig instead of an argparse namespace (phase 4); the
+configuration it reads did not change, only where it comes from.
+
 Three behaviours are load-bearing and are not to be "improved":
 
 * a job definition without a callback URL raises ``CallbackMissingURLError``
@@ -35,7 +39,7 @@ Three behaviours are load-bearing and are not to be "improved":
 The judged verdicts are *inputs*, never re-derived here: ``tap`` is
 ``(label, summary, per_test)`` - the ``summary`` and ``per_test`` halves of the
 5-tuple ``kcilib.judge.judge_run()`` returns, paired with the test label exactly
-as the worker's ``run_job()`` builds it - and ``error_msg`` is the ``detail`` that
+as the worker's ``run_node()`` builds it - and ``error_msg`` is the ``detail`` that
 goes with them.  This module never runs tuxrun, never parses TAP and never
 reads a job definition.
 """
@@ -59,7 +63,7 @@ LAVA_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 
 
 def lava_body(
-    system, returncode, output, args, tap=None, infra=False, error_msg=""
+    system, returncode, output, run_config, tap=None, infra=False, error_msg=""
 ):
     """Build a LAVA-compatible callback body: the only format the pipeline's
     callback endpoint (kernelci.runtime.lava.Callback) ingests.
@@ -80,6 +84,11 @@ def lava_body(
     tap is (label, summary, per_test) from tap_summary().  infra marks an
     infrastructure error via the 'job' stage metadata (what
     Callback.is_infra_error() reads).
+
+    run_config is a kcilib.config.RunConfig, and only two of its fields are
+    read here: the api_config_name / storage_config_name the callback definition
+    metadata must carry.  The body itself is a pure function of the verdicts -
+    no HTTP, no tuxrun, no state.
     """
     status = 2 if returncode == 0 else 3
     if tap:
@@ -161,8 +170,8 @@ def lava_body(
     definition = yaml.safe_dump(
         {
             "metadata": {
-                "api_config_name": args.api_config_name,
-                "storage_config_name": args.storage_config_name,
+                "api_config_name": run_config.api_config_name,
+                "storage_config_name": run_config.storage_config_name,
             },
         }
     )

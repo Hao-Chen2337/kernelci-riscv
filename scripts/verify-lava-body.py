@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Verify lava_body() output against the REAL production parser
 (kernelci.runtime.lava.Callback) and every method lava_callback.py calls."""
-import argparse
 import json
 import os
 import sys
@@ -20,7 +19,7 @@ from kernelci.runtime.lava import Callback
 # loaded by path).  Same body, same parser, same expectations - and scripts/ is
 # on the path here, so kcilib resolves from any CWD.
 sys.path.insert(0, HERE)
-from kcilib import callback, judge
+from kcilib import callback, config, judge
 
 FIXTURES = os.path.join(HERE, "fixtures")
 PASS_LOG = os.path.join(FIXTURES, "tuxrun-pass.log")
@@ -40,16 +39,22 @@ def check(condition, message):
         sys.exit(1)
 
 
-def fake_args():
-    return argparse.Namespace(
-        api_config_name="docker-host", storage_config_name="docker-host")
+def fake_config():
+    """The two callback-metadata names lava_body() reads, off a real RunConfig.
+
+    lava_body() takes a kcilib.config.RunConfig since phase 4 instead of an
+    argparse namespace; the values - and therefore every body checked below -
+    are exactly the ones the namespace carried.
+    """
+    return config.RunConfig(api_config_name="docker-host",
+                            storage_config_name="docker-host")
 
 
 def run_case(tag, log_path, returncode, expect_status):
     print(f"\n===== {tag} =====")
     with open(log_path, encoding="utf-8") as f:
         output = f.read()
-    body = callback.lava_body("qemu-riscv64", returncode, output, fake_args())
+    body = callback.lava_body("qemu-riscv64", returncode, output, fake_config())
     with open(f"/tmp/lava-body-{tag}.json", "w") as f:
         json.dump(body, f, indent=1)
 
@@ -95,7 +100,7 @@ def run_kselftest_tap_cases():
     summary, _tests_out, per_test = judge.tap_summary(output, "kselftest-riscv")
     print("tap summary:", summary, "per_test:", per_test)
     check(summary["failed"] == 1, summary)
-    body = callback.lava_body("qemu-riscv64", 0, output, fake_args(),
+    body = callback.lava_body("qemu-riscv64", 0, output, fake_config(),
                             tap=("kselftest-riscv", summary, per_test))
     with open("/tmp/lava-body-kselftest-fail.json", "w") as f:
         json.dump(body, f, indent=1)
@@ -125,7 +130,7 @@ def run_kselftest_tap_cases():
     )
     summary, _tests_out, per_test = judge.tap_summary(output_pass, "kselftest-riscv")
     check(summary["failed"] == 0, summary)
-    body = callback.lava_body("qemu-riscv64", 0, output_pass, fake_args(),
+    body = callback.lava_body("qemu-riscv64", 0, output_pass, fake_config(),
                             tap=("kselftest-riscv", summary, per_test))
     cb = Callback(body)
     job_node = {"id": "test", "name": "kselftest-riscv-pull-labs",
@@ -151,7 +156,7 @@ def run_no_tap_case():
     print("tap summary:", summary, tests_out)
     check(summary["failed"] == 1, summary)
     check(tests_out["kselftest-kvm"]["status"] == "fail", tests_out)
-    body = callback.lava_body("qemu-riscv64", 2, output, fake_args(),
+    body = callback.lava_body("qemu-riscv64", 2, output, fake_config(),
                             tap=("kselftest-kvm", summary, per_test),
                             infra=True, error_msg=output)
     cb = Callback(body)
@@ -166,7 +171,7 @@ def run_infra_case():
     print("\n===== infra error: rc=2 -> incomplete + Infrastructure =====")
     output = ("usage: tuxrun [options]\ntuxrun: error: argument --tests: "
               "invalid choice: 'kselftest-riscv'\n")
-    body = callback.lava_body("qemu-riscv64", 2, output, fake_args(),
+    body = callback.lava_body("qemu-riscv64", 2, output, fake_config(),
                             infra=True, error_msg=output)
     cb = Callback(body)
     check(cb.get_job_status() == "incomplete", cb.get_job_status())

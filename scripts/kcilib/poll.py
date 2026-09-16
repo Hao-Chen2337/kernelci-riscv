@@ -1,24 +1,39 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-"""The poll loop: events API -> handle_event -> run_job -> post the result.
+"""The poll loop: events API -> handle_event -> run_node -> post the result.
 
 Moved VERBATIM out of scripts/riscv_pull_worker.py: ``poll_loop()`` (the flock,
 the per-event flush, the cursor rule and --once), ``handle_event()`` (the
 node-state re-check, the dedup/re-post of a cached report and the callback
-POST), ``retrieve_job_definition()``, ``pollevents()``, ``start_cursor()``,
+POST), ``retrieve_job_definition()``, ``fetch_nodes()``, ``start_cursor()``,
 ``iso_ago()`` and ``_latest_base()``.  The bodies, the comments and every
 printed line are the worker's; only the imports and three expressions that had
 to become module-level names changed (marked below).
+
+THIS IS THE ONLY LAYER THAT KNOWS THE API EXISTS (phase 4).  Where the nodes
+come from (the events API, the node-status re-check before a run) is here;
+RUNNING one is not, and it is not this module's to look up either:
+
+    poll_loop(poll_config, run_node, run_config)
+
+The loop is handed the run function and its config, so it can run a node
+without importing the run path at all - the interval, the retries and the
+cursor are poll_config's fields, and poll_config is a value, not a module
+global.  That is also what makes the run path testable on its own:
+handle_event() calls the run_node it was given, so a test injects a stub
+instead of patching an import.
 
 WHAT IT DELEGATES:
 
 * ``kcilib.state.StateFile`` owns the state file - the cursor, the seen set and
   the pending reports are one document written atomically after EVERY event
   (#9), and a corrupt file is refused loudly and replaced by an empty state;
-* ``kcilib.jobrun.run_job`` runs one job and returns the
-  ``(callback_url, token, body)`` tuple.  handle_event() qualifies it as
-  ``jobrun.run_job`` so the module attribute stays the seam a test patches;
+* the run itself is the caller's *run_node* (kcilib.jobrun.run_node), called as
+  ``run_node(node, run_config, node_id)``; it returns the
+  ``(callback_url, token, body)`` tuple and this module posts it.  Passing it in
+  keeps this module from having to know how a job is executed - and keeps the
+  run path from having to know that an events API exists;
 * ``kcilib.callback`` owns the post (``post_result``) and the pending round
   trip.  The two expressions that changed: the startup rebuild of ``reports``
   is now ``report_from_pending(pending)`` and the flush writes
@@ -36,9 +51,10 @@ after post_result() returned without raising, i.e. after a real 2xx (a 4xx, a
 and the cursor only advances once a whole batch succeeded - --since seeds a
 state file that has no cursor, --ignore-state-cursor forces it.
 
-Left in the worker (a caller owns them): main()/argparse with the CLI defaults
-(BASE_URI, LOG_DIR, ...) and load_state()/save_state() - the plain-dict form of
-this same state file that the offline guard tests seed and read.
+``poll_config`` is a kcilib.config.PollConfig: api_url, state_file, since,
+once, poll_period, max_retries, ignore_state_cursor and the platform/runtime
+filters.  The defaults and the flag they come from live in kcilib/cli.py and
+kcilib/config.py; nothing here reads a command line.
 """
 
 import signal
@@ -47,7 +63,6 @@ from datetime import datetime, timedelta
 
 import requests
 
-from kcilib import jobrun
 from kcilib.bake import stamp
 from kcilib.callback import (
     CallbackPermanentError,
@@ -70,7 +85,8 @@ def _latest_base(api_url):
     return api_url if api_url.endswith("/latest") else f"{api_url}/latest"
 
 
-def pollevents(api_url, timestamp):
+def fetch_nodes(api_url, timestamp):
+    """Fetch the available job nodes (the events API call, and nothing else)."""
     url = (
         f"{_latest_base(api_url)}{EVENTS_PATH}?state=available&kind=job&limit=1000"
         f"&recursive=true&from={timestamp}"
@@ -112,13 +128,17 @@ def retrieve_job_definition(url):
     return job
 
 
-def handle_event(event, args, reports):
+def handle_event(event, poll_config, run_config, reports, run_node):
     """Process one job event.
 
     A node whose execution already produced a report is retried by
     re-posting that report only - tuxrun is never re-run for the same
     node.  Returns True when the event is fully handled (or deliberately
-    given up on) so the caller may mark it seen."""
+    given up on) so the caller may mark it seen.
+
+    *run_node* is the run function the loop was handed (kcilib.jobrun.run_node):
+    this layer knows the API, that one knows tuxrun, and neither imports the
+    other."""
     node = event.get("node", {})
     node_id = node.get("id", "unknown")
     node_artifacts = node.get("artifacts", {})
@@ -129,7 +149,7 @@ def handle_event(event, args, reports):
     # yesterday's queue.
     try:
         response = requests.get(
-            f"{_latest_base(args.api_url)}/node/{node_id}", timeout=30
+            f"{_latest_base(poll_config.api_url)}/node/{node_id}", timeout=30
         )
         # A proxy's HTML error page is not JSON.  .json() used to be called
         # straight on the response, so a 502 page from a reverse proxy raised
@@ -163,9 +183,9 @@ def handle_event(event, args, reports):
     data = event.get("data", {}).get("data", {})
     platform = data.get("platform")
     runtime = data.get("runtime")
-    if args.platform and platform != args.platform:
+    if poll_config.platform and platform != poll_config.platform:
         return True
-    if args.runtime and runtime != args.runtime:
+    if poll_config.runtime and runtime != poll_config.runtime:
         return True
 
     stamp(
@@ -193,7 +213,7 @@ def handle_event(event, args, reports):
 
     try:
         job = retrieve_job_definition(job_definition_url)
-        report = jobrun.run_job(job, args, node_id)
+        report = run_node(job, run_config, node_id)
     except requests.exceptions.RequestException as error:
         status_code = getattr(
             getattr(error, "response", None), "status_code", None
@@ -206,12 +226,12 @@ def handle_event(event, args, reports):
             return True
         print(f"{node_id}: transient job definition fetch error: {error}")
         return False
-    except Exception as error:  # noqa: BLE001 - run_job converts its own failures; give up on the rest
+    except Exception as error:  # noqa: BLE001 - run_node converts its own failures; give up on the rest
         import traceback
 
         print(f"Unexpected failure processing {node_id}: {error}")
         traceback.print_exc()
-        return True  # run_job converts its own failures; give up on the rest
+        return True  # run_node converts its own failures; give up on the rest
 
     callback_url, callback_token, body = report
     try:
@@ -298,10 +318,18 @@ def start_cursor(state_timestamp, since, ignore_state_cursor):
     return "1970-01-01T00:00:00.000000"
 
 
-def poll_loop(args):
+def poll_loop(poll_config, run_node, run_config):
+    """Poll the API forever (or once) and run every node this worker claims.
+
+    *poll_config* is a kcilib.config.PollConfig - the interval, the retry
+    budget, the cursor and the filters are its fields, so the loop is driven by
+    a value rather than by whatever the process happens to have parsed.
+    *run_node* is the run function (kcilib.jobrun.run_node) and *run_config* its
+    config; the loop passes both through to handle_event() and never runs a job
+    itself."""
     import fcntl
 
-    state_file = args.state_file
+    state_file = poll_config.state_file
     lock_file = f"{state_file}.lock"
     lock = None
     try:
@@ -316,7 +344,8 @@ def poll_loop(args):
     # the operator needs to know whether this run scans from the persisted
     # position or from --since before reading anything else (#8).
     print(f"State file: {state_file}", flush=True)
-    timestamp = start_cursor(state.cursor, args.since, args.ignore_state_cursor)
+    timestamp = start_cursor(state.cursor, poll_config.since,
+                             poll_config.ignore_state_cursor)
     # Unposted results left over from a previous run (e.g. --once exiting on
     # a transient callback failure): re-post them without re-running tuxrun.
     # The token is re-read from the environment and never persisted - the
@@ -369,28 +398,30 @@ def poll_loop(args):
         # so re-scan a trailing window and dedup via `seen` - a cursor that
         # only ever advances would silently skip late events.
         try:
-            events = pollevents(
-                args.api_url, iso_ago(timestamp, CURSOR_OVERLAP_S)
+            events = fetch_nodes(
+                poll_config.api_url, iso_ago(timestamp, CURSOR_OVERLAP_S)
             )
             retry_count = 0
         except requests.exceptions.RequestException as error:
             retry_count += 1
             print(
                 f"Error fetching events (attempt {retry_count}/"
-                f"{args.max_retries}): {error}"
+                f"{poll_config.max_retries}): {error}"
             )
-            if retry_count >= args.max_retries:
-                print(f"Max retries ({args.max_retries}) reached. Exiting.")
+            if retry_count >= poll_config.max_retries:
+                print(f"Max retries ({poll_config.max_retries}) reached. "
+                      "Exiting.")
                 raise SystemExit(1)
-            print(f"Retrying in {args.poll_period} seconds...")
-            time.sleep(args.poll_period)
+            print(f"Retrying in {poll_config.poll_period} seconds...")
+            time.sleep(poll_config.poll_period)
             continue
         if not events:
             print(
-                f"No new events, sleeping for {args.poll_period} seconds",
+                f"No new events, sleeping for {poll_config.poll_period} "
+                "seconds",
                 flush=True,
             )
-            time.sleep(args.poll_period)
+            time.sleep(poll_config.poll_period)
             continue
 
         print(f"Got {len(events)} events", flush=True)
@@ -404,7 +435,8 @@ def poll_loop(args):
                 continue
             handled = False
             try:
-                handled = handle_event(event, args, reports)
+                handled = handle_event(event, poll_config, run_config,
+                                       reports, run_node)
                 if handled and node_id and event.get("node", {}).get(
                     "artifacts", {}
                 ).get("job_definition"):
@@ -435,12 +467,12 @@ def poll_loop(args):
             )
             # Never busy-loop on a failing batch: the API needs a breather
             # and the failure is usually environmental (404 jobdef, network).
-            time.sleep(args.poll_period)
+            time.sleep(poll_config.poll_period)
         # The cursor only moves on a fully successful batch, so this final
         # flush persists the advanced cursor; the per-event flushes above
         # already persisted the seen/pending mutations.
         flush()
-        if args.once:
+        if poll_config.once:
             print(
                 f"--once: batch processed ({processed} node(s) run); the "
                 f"cursor ({timestamp}) and any unposted result are in "

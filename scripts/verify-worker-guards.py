@@ -10,19 +10,23 @@ and the timeout clamp.  Those are the paths where a bug loses a result or
 wedges an artifact, and none of them had a test.
 
 The behaviours are the worker's; the code implementing them now lives in
-scripts/kcilib/ (the worker itself is only its command line - the flags, their
-defaults and the call into kcilib.poll.poll_loop).  Every check below therefore
-drives the module that OWNS the behaviour and patches THAT module's seam -
-kcilib.poll.pollevents/handle_event/retrieve_job_definition,
+scripts/kcilib/ (the worker itself is only the flags, the config they map to and
+the call into kcilib.poll.poll_loop).  Every check below therefore drives the
+module that OWNS the behaviour and patches THAT module's seam -
+kcilib.poll.fetch_nodes/handle_event/retrieve_job_definition,
 kcilib.jobrun.run_command/baked_rootfs_image/stamp, kcilib.callback.requests,
 kcilib.artifacts.requests, kcilib.poll.requests - instead of a re-export in the
 worker: a shim there would only test the shim.  The state file is driven
 through kcilib.state.StateFile directly, the same object the poll loop writes.
-Run from anywhere:
+
+Since phase 4 the library takes two config objects instead of an argparse
+namespace - kcilib.config.RunConfig for a run and kcilib.config.PollConfig for
+the API side - so the fixtures below build those dataclasses directly, and
+test_build_command_validation() also drives config.from_args() to check that
+the command line really lands in them.  Run from anywhere:
 
     python3 scripts/verify-worker-guards.py
 """
-import argparse as _ap
 import json
 import os
 import sys
@@ -37,7 +41,7 @@ import requests as _real_requests
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from kcilib import artifacts, callback, jobrun, judge, params, poll
+from kcilib import artifacts, callback, cli, config, jobrun, judge, params, poll
 from kcilib.state import SEEN_LIMIT, StateFile
 
 
@@ -143,11 +147,10 @@ def test_job_error():
 
 
 def test_lava_body_cap_and_boot_guard():
-    import argparse as _ap
-    args = _ap.Namespace(api_config_name="docker-host",
-                         storage_config_name="docker-host")
+    run_config = config.RunConfig(api_config_name="docker-host",
+                                  storage_config_name="docker-host")
     big = "2026-09-08T00:00:00 filler line\n" * (callback.LOG_LIMIT // 20 + 1000)
-    body = callback.lava_body("qemu-riscv64", 0, big, args)
+    body = callback.lava_body("qemu-riscv64", 0, big, run_config)
     import yaml as _yaml
     log_lines = _yaml.safe_load(body["log"])
     total = sum(len(ln.get("msg", "")) for ln in log_lines)
@@ -158,18 +161,65 @@ def test_lava_body_cap_and_boot_guard():
 
 
 def test_build_command_validation():
-    import argparse as _ap
-    args = _ap.Namespace(tuxrun_bin="tuxrun", platform="qemu-riscv64",
-                         rootfs="", cpu="rv64,v=true", container_runtime="",
-                         kvm_tests=params.KVM_TEST_SUBSET,
-                         max_download_size=artifacts.MAX_DOWNLOAD_SIZE)
+    run_config = config.RunConfig(
+        tuxrun_bin="tuxrun", platform="qemu-riscv64", rootfs="",
+        cpu="rv64,v=true", container_runtime="",
+        kvm_tests=params.KVM_TEST_SUBSET,
+        max_download_size=artifacts.MAX_DOWNLOAD_SIZE)
     job = {"artifacts": {"kernel": "http://x/Image"},
            "tests": [{"type": "kselftest-kvm; rm -rf /"}]}
     try:
-        jobrun.build_command(job, args, "/tmp/fake")
+        jobrun.build_command(job, run_config, "/tmp/fake")
         raise AssertionError("invalid test type must be rejected")
     except KeyError as e:
         check("invalid test type" in str(e), e)
+
+    # ... and the flag -> field mapping is itself a tested thing (#phase 4):
+    # config.from_args() is the ONE place a parsed command line becomes the two
+    # config objects, so a flag that quietly stops reaching the library is a
+    # broken guard, not a silent behaviour change.
+    args = cli.parse_args([
+        "--api-url", "http://api", "--platform", "qemu-x86_64",
+        "--runtime", "other-lab", "--output-dir", "/tmp/out",
+        "--log-dir", "/tmp/logs", "--state-file", "/tmp/state.json",
+        "--poll-period", "7", "--max-retries", "9", "--max-download-mb", "8",
+        "--max-timeout", "1200", "--min-timeout", "90", "--tuxrun-bin", "/bt",
+        "--container-runtime", "docker", "--rootfs", "/tmp/r.ext4",
+        "--cpu", "rv64", "--kvm-tests", "a", "b", "--api-config-name", "cfg",
+        "--storage-config-name", "store", "--once", "--kvm-full",
+        "--keep-workspace", "--ignore-state-cursor"])
+    configs = config.from_args(args)
+    for field_name, expected in (
+            ("api_url", "http://api"), ("platform", "qemu-x86_64"),
+            ("runtime", "other-lab"), ("state_file", "/tmp/state.json"),
+            ("poll_period", 7), ("max_retries", 9), ("once", True),
+            ("ignore_state_cursor", True)):
+        check(getattr(configs.poll, field_name) == expected,
+              f"--{field_name} did not reach PollConfig.{field_name}: "
+              f"{getattr(configs.poll, field_name)!r}")
+    for field_name, expected in (
+            ("output_dir", "/tmp/out"), ("log_dir", "/tmp/logs"),
+            ("tuxrun_bin", "/bt"), ("container_runtime", "docker"),
+            ("rootfs", "/tmp/r.ext4"), ("cpu", "rv64"),
+            ("api_config_name", "cfg"), ("storage_config_name", "store")):
+        check(getattr(configs.run, field_name) == expected,
+              f"--{field_name} did not reach RunConfig.{field_name}: "
+              f"{getattr(configs.run, field_name)!r}")
+    check(configs.run.max_download_size == (8 << 20),
+          f"--max-download-mb was not shifted to bytes: "
+          f"{configs.run.max_download_size!r}")
+    check(configs.run.platform == configs.poll.platform
+          and configs.run.kvm_tests == ["a", "b"] and configs.run.kvm_full,
+          "the run config lost a platform / kvm selection")
+    # The defaults are the CLI's own: one home (kcilib.config), two readers.
+    defaults = config.from_args(cli.parse_args([]))
+    check(defaults.run.log_dir == config.LOG_DIR
+          and defaults.run.max_timeout == config.DEFAULT_MAX_TIMEOUT
+          and defaults.run.min_timeout == jobrun.MIN_TIMEOUT
+          and defaults.poll.api_url == config.BASE_URI
+          and defaults.poll.state_file == config.DEFAULT_STATE_FILE
+          and defaults.run.kvm_tests == params.KVM_TEST_SUBSET,
+          f"the CLI defaults drifted from the config defaults: {defaults}")
     print("test_build_command_validation OK")
 
 
@@ -509,24 +559,26 @@ def test_archive_console_log():
 
 def test_handle_event_non_json():
     """#11: an HTML error page from the API must not kill the whole worker."""
-    args = _ap.Namespace(api_url="http://api", platform=None, runtime=None)
+    poll_config = _poll_config("unused-state.json")
     event = {"node": {"id": "node-1", "artifacts": {}}}
     html_page = _Response(502, json_error=ValueError("Expecting value: line 1"))
     with stub_requests(poll, get=lambda url, **kw: html_page):
-        handled = poll.handle_event(event, args, {})
+        handled = poll.handle_event(event, poll_config, config.RunConfig(), {},
+                                    jobrun.run_node)
     check(handled is False,
           "a non-JSON node body must be retried, not handled and marked seen")
     with stub_requests(poll,
                        get=lambda url, **kw: _Response(200, json_body=["nope"])):
-        check(poll.handle_event(event, args, {}) is False,
+        check(poll.handle_event(event, poll_config, config.RunConfig(), {},
+                                jobrun.run_node) is False,
               "a node body that is not an object must be retried too")
     print("test_handle_event_non_json OK")
 
 
-def _run_job_args(tmp):
-    """Every field run_job()/handle_event() read, for the offline job tests."""
-    return _ap.Namespace(
-        api_url="http://api", platform=None, runtime=None,
+def _run_job_config(tmp):
+    """Every field run_node()/handle_event() read off the run config."""
+    return config.RunConfig(
+        platform="qemu-riscv64",
         output_dir=os.path.join(tmp, "out"), keep_workspace=False,
         log_dir=os.path.join(tmp, "logs"), tuxrun_bin="tuxrun",
         cpu="rv64", container_runtime="", kvm_tests=params.KVM_TEST_SUBSET,
@@ -534,6 +586,17 @@ def _run_job_args(tmp):
         storage_config_name="docker-host", kvm_full=False, rootfs="",
         max_timeout=1200, min_timeout=jobrun.MIN_TIMEOUT,
     )
+
+
+def _poll_config(state_file, **over):
+    """Every field poll_loop()/handle_event() read off the poll config."""
+    fields = {
+        "api_url": "http://api", "platform": None, "runtime": None,
+        "state_file": state_file, "since": None, "once": True,
+        "poll_period": 0, "max_retries": 1, "ignore_state_cursor": False,
+    }
+    fields.update(over)
+    return config.PollConfig(**fields)
 
 
 def test_missing_callback_keeps_result_pending():
@@ -556,7 +619,8 @@ def test_missing_callback_keeps_result_pending():
 
     with tempfile.TemporaryDirectory() as tmp:
         os.makedirs(os.path.join(tmp, "out"))
-        args = _run_job_args(tmp)
+        run_config = _run_job_config(tmp)
+        poll_config = _poll_config("unused-state.json")
         reports = {}
         baked, stamped = [], []
         real_retrieve = poll.retrieve_job_definition
@@ -570,7 +634,7 @@ def test_missing_callback_keeps_result_pending():
             baked.append((bake_args, bake_kwargs))
             return "/tmp/not-baked.ext4"
 
-        # run_job() resolves both of these as kcilib.jobrun module globals, so
+        # run_node() resolves both of these as kcilib.jobrun module globals, so
         # that is where the seam is: a boot job must never bake, and the
         # progress lines must still be emitted.
         jobrun.baked_rootfs_image = no_bake
@@ -581,7 +645,8 @@ def test_missing_callback_keeps_result_pending():
                 get=lambda url, **kw: _Response(
                     200, json_body={"state": "available"})
             ):
-                handled = poll.handle_event(event, args, reports)
+                handled = poll.handle_event(event, poll_config, run_config,
+                                            reports, jobrun.run_node)
         finally:
             poll.retrieve_job_definition = real_retrieve
             jobrun.run_command = real_run_command
@@ -610,27 +675,25 @@ def test_state_flushed_before_a_crash():
     report, so the next start re-posts it instead of re-running tuxrun."""
     with tempfile.TemporaryDirectory() as tmp:
         state_file = os.path.join(tmp, "state.json")
-        args = _ap.Namespace(state_file=state_file, since=None,
-                            ignore_state_cursor=False, api_url="http://api",
-                            max_retries=1, poll_period=0, once=True)
+        poll_config = _poll_config(state_file)
         events = [{"node": {"id": "node-1"},
                    "timestamp": "2026-09-08T00:00:00.000000"}]
 
-        def fake_handle(_event, _args, reports):
+        def fake_handle(_event, _poll_config, _run_config, reports, _run_node):
             reports["node-1"] = ("http://cb", "tok", {"status": 2})
             raise RuntimeError("worker killed mid-batch")
 
-        real_pollevents, real_handle = poll.pollevents, poll.handle_event
-        poll.pollevents = lambda *_a, **_k: events
+        real_fetch, real_handle = poll.fetch_nodes, poll.handle_event
+        poll.fetch_nodes = lambda *_a, **_k: events
         poll.handle_event = fake_handle
         try:
             try:
-                poll.poll_loop(args)
+                poll.poll_loop(poll_config, jobrun.run_node, config.RunConfig())
                 check(False, "the simulated crash did not propagate")
             except RuntimeError:
                 pass
         finally:
-            poll.pollevents, poll.handle_event = real_pollevents, real_handle
+            poll.fetch_nodes, poll.handle_event = real_fetch, real_handle
         state = read_state(state_file)
         check(state["pending"].get("node-1", {}).get("body") == {"status": 2},
               f"the unposted result did not survive the crash: {state}")
@@ -644,20 +707,18 @@ def test_poll_loop_persists_cursor_and_seen():
     loop's own state transitions, persisted to the state file it writes."""
     with tempfile.TemporaryDirectory() as tmp:
         state_file = os.path.join(tmp, "state.json")
-        args = _ap.Namespace(state_file=state_file, since=None,
-                            ignore_state_cursor=False, api_url="http://api",
-                            max_retries=1, poll_period=0, once=True)
+        poll_config = _poll_config(state_file)
         node_id = "a" * 24
         events = [{"node": {"id": node_id,
                             "artifacts": {"job_definition": "http://x/job"}},
                    "timestamp": "2026-09-08T00:00:00.000000"}]
-        real_pollevents, real_handle = poll.pollevents, poll.handle_event
-        poll.pollevents = lambda *_a, **_k: events
+        real_fetch, real_handle = poll.fetch_nodes, poll.handle_event
+        poll.fetch_nodes = lambda *_a, **_k: events
         poll.handle_event = lambda *_a, **_k: True
         try:
-            poll.poll_loop(args)
+            poll.poll_loop(poll_config, jobrun.run_node, config.RunConfig())
         finally:
-            poll.pollevents, poll.handle_event = real_pollevents, real_handle
+            poll.fetch_nodes, poll.handle_event = real_fetch, real_handle
         state = read_state(state_file)
         check(state["seen"] == [node_id], f"the handled node was not marked "
                                           f"seen: {state}")
@@ -680,11 +741,9 @@ def test_worker_lock():
         holder = open(state_file + ".lock", "w")  # noqa: SIM115
         fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
-            args = _ap.Namespace(state_file=state_file, since=None,
-                                ignore_state_cursor=False, api_url="http://api",
-                                max_retries=1, poll_period=0, once=True)
+            poll_config = _poll_config(state_file)
             try:
-                poll.poll_loop(args)
+                poll.poll_loop(poll_config, jobrun.run_node, config.RunConfig())
                 check(False, "a second worker was allowed to start while the "
                              "lock was held")
             except SystemExit as exit_error:
@@ -705,19 +764,17 @@ def test_seen_eviction():
         check(new_id not in old, "the test's new node id collides with an old one")
         write_state(state_file, {"timestamp": "2026-09-08T00:00:00.000000",
                                  "seen": old, "pending": {}})
-        args = _ap.Namespace(state_file=state_file, since=None,
-                            ignore_state_cursor=False, api_url="http://api",
-                            max_retries=1, poll_period=0, once=True)
+        poll_config = _poll_config(state_file)
         events = [{"node": {"id": new_id,
                             "artifacts": {"job_definition": "http://x/job"}},
                    "timestamp": "2026-09-08T00:00:00.000000"}]
-        real_pollevents, real_handle = poll.pollevents, poll.handle_event
-        poll.pollevents = lambda *_a, **_k: events
+        real_fetch, real_handle = poll.fetch_nodes, poll.handle_event
+        poll.fetch_nodes = lambda *_a, **_k: events
         poll.handle_event = lambda *_a, **_k: True
         try:
-            poll.poll_loop(args)
+            poll.poll_loop(poll_config, jobrun.run_node, config.RunConfig())
         finally:
-            poll.pollevents, poll.handle_event = real_pollevents, real_handle
+            poll.fetch_nodes, poll.handle_event = real_fetch, real_handle
         state = read_state(state_file)
         check(len(state["seen"]) == limit, len(state["seen"]))
         check(state["seen"][-1] == new_id, state["seen"][-1])

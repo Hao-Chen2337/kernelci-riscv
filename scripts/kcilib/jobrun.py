@@ -8,11 +8,19 @@ scripts/riscv_pull_worker.py: the bodies, the comments and every printed line
 are the worker's own - only the imports are new.  ``build_command()`` maps a
 job definition onto a tuxrun argv (baking a disk rootfs out of a tarball
 artifact when the job carries one), ``run_command()`` runs it and captures the
-console into the workspace, ``run_job()`` drives the two and turns the outcome
+console into the workspace, ``run_node()`` drives the two and turns the outcome
 into a LAVA callback body.  The console archive (``archive_console_log()`` and
-``prune_console_logs()``) travels with them because run_job's ``finally`` is
+``prune_console_logs()``) travels with them because run_node's ``finally`` is
 what keeps a real run's evidence alive past the per-job workspace that held it
 (#6).
+
+THIS MODULE DOES NOT KNOW THE API EXISTS.  ``run_node(node, run_config)`` takes
+the job definition the events API served plus a kcilib.config.RunConfig and
+returns the report tuple; fetching nodes, the cursor and the flock are
+kcilib.poll's business, and the poll loop hands this function its config rather
+than this module reaching for anything global.  A caller that has never polled
+anything (a replay of a saved job definition, an offline test) can run a node
+with a RunConfig it built by hand.
 
 WHAT IT DELEGATES - and why each seam has to stay exactly where it is:
 
@@ -36,7 +44,7 @@ WHAT IT DELEGATES - and why each seam has to stay exactly where it is:
   re-binds ``kcilib.bake.stamp`` - or this module's ``stamp`` - moves every
   line of this module with it, exactly as the offline guard tests re-bind
   module attributes;
-* ``run_job()`` does NOT post the result: it returns the
+* ``run_node()`` does NOT post the result: it returns the
   ``(callback_url, token, body)`` tuple and the poll loop posts it.  The token
   is read from the environment here and is never persisted (kcilib.callback).
 
@@ -44,10 +52,9 @@ Nothing was "tidied": the archived consoles under work/logs, the printed
 lines and the state file are test fixtures.  Every string, comment and
 f-string below is the worker's, character for character.
 
-Left in the worker (a caller owns them): main()/argparse with the CLI
-constants (BASE_URI, LOG_DIR, DEFAULT_MAX_TIMEOUT, ...), load_state()/
-save_state(), and the worker-local copies of what kcilib already owns
-(download, lava_body, post_result, bake_rootfs_image, stamp).
+The worker's CLI (kcilib/cli.py) and the flag -> field mapping
+(kcilib/config.py) are the only things above this module; nothing here reads a
+command line, and no field is named after a flag.
 """
 
 import os
@@ -70,7 +77,7 @@ from kcilib.runner import build_tuxrun_argv, run_tuxrun
 
 DEFAULT_TIMEOUT = 1800  # seconds, when the job def carries no timeout
 # Bounds applied to whatever the job definition asked for.  The clamp used to
-# be a silent max(60, min(timeout_s, args.max_timeout)): a definition asking
+# be a silent max(60, min(timeout_s, config.max_timeout)): a definition asking
 # for 1800s was cut to the 1200s the shell entry points pass, the job was
 # killed at 20 minutes and reported as Infrastructure, and nothing in the log
 # said the timeout had been reduced.  Both bounds now have a name, a CLI flag
@@ -91,33 +98,33 @@ TAR_SUFFIXES = (".tar", ".tar.gz", ".tar.xz", ".tgz")
 TEST_TYPE_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 
-def runtime_name(args):
+def runtime_name(run_config):
     """Pick a container runtime tuxrun can drive (podman preferred)."""
-    if args.container_runtime:
-        return args.container_runtime
+    if run_config.container_runtime:
+        return run_config.container_runtime
     return "podman" if shutil.which("podman") else "docker"
 
 
-def build_command(job, args, workspace):
+def build_command(node, run_config, workspace):
     """Map a job definition onto a tuxrun argv; bakes a disk rootfs if the
     artifact is a tarball.  Returns (argv, label) or raises KeyError."""
-    job_artifacts = job.get("artifacts", {})
-    tests = job.get("tests", []) or [{}]
+    node_artifacts = node.get("artifacts", {})
+    tests = node.get("tests", []) or [{}]
     test = tests[0]
     test_type = test.get("type") or "boot"
     if not TEST_TYPE_RE.fullmatch(test_type):
         raise KeyError(f"invalid test type in job definition: {test_type!r}")
-    kernel_url = job_artifacts.get("kernel")
+    kernel_url = node_artifacts.get("kernel")
     if not kernel_url:
         raise KeyError("job definition has no kernel artifact")
 
-    parameters = [f"cpu={cpu_for(args.cpu, test_type)}"]
+    parameters = [f"cpu={cpu_for(run_config.cpu, test_type)}"]
 
     # An explicit --rootfs overrides whatever the job definition carries:
     # the lab owns its guest images (e.g. point at a local mirror when
     # storage.kernelci.org is throttled).
-    rootfs_url = args.rootfs or job_artifacts.get("rootfs")
-    if not rootfs_url and job_artifacts.get("ramdisk"):
+    rootfs_url = run_config.rootfs or node_artifacts.get("rootfs")
+    if not rootfs_url and node_artifacts.get("ramdisk"):
         print(
             "Warning: job definition carries a cpio ramdisk; the qemu "
             "device cannot boot it - using tuxrun's built-in disk "
@@ -125,7 +132,7 @@ def build_command(job, args, workspace):
         )
     boot_modules = ["kvm"] if test_type == "kselftest-kvm" else None
     modules_url = (
-        job_artifacts.get("modules") if test_type == "kselftest-kvm" else None
+        node_artifacts.get("modules") if test_type == "kselftest-kvm" else None
     )
     rootfs_arg = None
     if rootfs_url and rootfs_url.endswith(TAR_SUFFIXES):
@@ -135,7 +142,7 @@ def build_command(job, args, workspace):
             test_type,
             boot_modules=boot_modules,
             modules_url=modules_url,
-            max_size=args.max_download_size,
+            max_size=run_config.max_download_size,
         )
         rootfs_arg = f"file://{image}"
         # Modules are already inside the baked image; the --modules LAVA
@@ -149,7 +156,7 @@ def build_command(job, args, workspace):
     label = test_type
     test_args = None
     if test_type != "boot":
-        kselftest_url = job_artifacts.get("kselftest")
+        kselftest_url = node_artifacts.get("kselftest")
         if not kselftest_url:
             raise KeyError("job definition has no kselftest artifact")
         parameters.append(f"KSELFTEST={kselftest_url}")
@@ -163,11 +170,11 @@ def build_command(job, args, workspace):
             # The LKFT "modules" test is a load/unload round-trip and must
             # NOT be used here (verified: it unloads kvm again before
             # kselftest runs).
-            if args.kvm_full:
+            if run_config.kvm_full:
                 # whole collection: no allow-list; LKFT runs every kvm test.
                 pass
             else:
-                subset = list(args.kvm_tests or KVM_TEST_SUBSET)
+                subset = list(run_config.kvm_tests or KVM_TEST_SUBSET)
                 parameters.append(
                     "TST_CASENAME=" + (
                         # the curated list itself is kcilib.params' business
@@ -179,9 +186,9 @@ def build_command(job, args, workspace):
     # without it) and the omission rules for --rootfs/--modules/--tests all
     # live in kcilib.runner.build_tuxrun_argv.
     argv = build_tuxrun_argv(
-        tuxrun_bin=args.tuxrun_bin,
-        runtime=runtime_name(args),
-        device=args.platform,
+        tuxrun_bin=run_config.tuxrun_bin,
+        runtime=runtime_name(run_config),
+        device=run_config.platform,
         kernel=kernel_url,
         boot_args="rw",
         rootfs=rootfs_arg,
@@ -301,17 +308,19 @@ def clamp_timeout(timeout_s, max_timeout, min_timeout=MIN_TIMEOUT):
     )
 
 
-def run_job(job, args, node_id=None):
+def run_node(node, run_config, node_id=None):
     """Execute one job definition in a per-job workspace and return the
     report tuple (callback_url, token, body); the caller posts it.  Every
     failure inside is converted into an infra-error LAVA body, so a report
     is always produced (unless the workspace itself cannot be created).
 
-    *node_id* labels the progress lines and names the archived console log
-    (see archive_console_log)."""
-    environment = job.get("environment", {})
-    system = environment.get("platform", args.platform)
-    callback = job.get("callback", {})
+    *node* is a job definition exactly as the events API served it and
+    *run_config* is a kcilib.config.RunConfig - the two things a run needs, and
+    the API is not one of them.  *node_id* labels the progress lines and names
+    the archived console log (see archive_console_log)."""
+    environment = node.get("environment", {})
+    system = environment.get("platform", run_config.platform)
+    callback = node.get("callback", {})
     callback_url = callback.get("url")
     # The callback token is a "remote token" name shared with the pipeline
     # admins; the worker holds the secret in an env var.
@@ -319,13 +328,13 @@ def run_job(job, args, node_id=None):
     timeout_s = next(
         (
             t.get("timeout_s")
-            for t in job.get("tests", [])
+            for t in node.get("tests", [])
             if t.get("timeout_s")
         ),
         DEFAULT_TIMEOUT,
     )
     timeout_s, clamp_note = clamp_timeout(
-        timeout_s, args.max_timeout, args.min_timeout
+        timeout_s, run_config.max_timeout, run_config.min_timeout
     )
     if clamp_note:
         # Announced once per job, before anything runs: the effective timeout
@@ -333,8 +342,8 @@ def run_job(job, args, node_id=None):
         # after a kill (#15).
         stamp(f"{node_id or 'job'}: {clamp_note}")
 
-    own_base = not args.output_dir
-    base = args.output_dir or tempfile.mkdtemp(prefix="riscv-pull-")
+    own_base = not run_config.output_dir
+    base = run_config.output_dir or tempfile.mkdtemp(prefix="riscv-pull-")
     workspace = os.path.join(base, f"job-{time.time_ns()}")
     os.makedirs(workspace, exist_ok=True)
     returncode, output = 3, ""
@@ -343,7 +352,7 @@ def run_job(job, args, node_id=None):
     error_msg = ""
     try:
         started = time.time()
-        cmd, label = build_command(job, args, workspace)
+        cmd, label = build_command(node, run_config, workspace)
         stamp(f"{label}: guest prepared in {time.time() - started:.1f}s "
               "(artifact download + ext4 bake)")
         started = time.time()
@@ -377,9 +386,10 @@ def run_job(job, args, node_id=None):
         infra = True
         error_msg = str(error)
     finally:
-        keep_workspace = args.keep_workspace
+        keep_workspace = run_config.keep_workspace
         try:
-            archived = archive_console_log(workspace, args.log_dir, node_id)
+            archived = archive_console_log(workspace, run_config.log_dir,
+                                           node_id)
         except OSError as error:
             # Keep the workspace when its console could not be archived: it is
             # the only surviving copy of the run, and deleting it is exactly
@@ -387,7 +397,7 @@ def run_job(job, args, node_id=None):
             keep_workspace = True
             print(
                 f"Warning: could not archive the console log to "
-                f"{args.log_dir} ({error}); keeping the workspace at "
+                f"{run_config.log_dir} ({error}); keeping the workspace at "
                 f"{workspace}"
             )
         else:
@@ -402,7 +412,7 @@ def run_job(job, args, node_id=None):
         system,
         returncode,
         output,
-        args,
+        run_config,
         tap=tap,
         infra=infra,
         error_msg=error_msg,
