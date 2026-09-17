@@ -295,6 +295,9 @@ def cmd_watch(args):
                     f"{time.strftime('%H:%M:%S')} recorded "
                     f"{created} regression(s)"
                 )
+        except KeyboardInterrupt:
+            print()  # Ctrl-C is how watch is meant to end: no traceback
+            return
         except Exception as error:  # noqa: BLE001 - watch must survive any error and keep polling
             print(f"{time.strftime('%H:%M:%S')} watch error: {error}")
         time.sleep(args.interval)

@@ -35,11 +35,32 @@ STORAGE_BASE = os.environ.get("KCI_STORAGE_URL") or (
 )
 
 
+PRODUCTION_API_URLS = {
+    "https://api.kernelci.org",
+    "https://api.kernelci.org/latest",
+}
+
+
+def is_production():
+    """True when this run targets the production API."""
+    return API_URL in PRODUCTION_API_URLS
+
+
+def _non_negative(value):
+    """argparse type for a count: a negative cap used to be accepted and then
+    silently dropped the last row (lines[:-1]) while still counting it."""
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return number
+
+
 def api_headers():
     """Optional Authorization header: every request here is a public GET, so a
-    token is only attached when one is configured."""
+    token is only attached when one is configured - and never to production,
+    where a local admin JWT means nothing (regression_tracker.py's rule)."""
     token = os.environ.get("KCI_API_TOKEN")
-    if not token:
+    if not token or is_production():
         return {}
     return {"Authorization": f"Bearer {token}"}
 
@@ -50,7 +71,8 @@ def _client():
     This module used to carry its own api_get/fetch_all_nodes, near enough a
     copy of regression_tracker.py's; there is one client now.
     """
-    return KernelCI(API_URL, token=os.environ.get("KCI_API_TOKEN"))
+    token = None if is_production() else os.environ.get("KCI_API_TOKEN")
+    return KernelCI(API_URL, token=token)
 
 
 def api_get(path, params=None, retries=3):
@@ -272,7 +294,7 @@ def main():
     )
     p.add_argument(
         "--max-lines",
-        type=int,
+        type=_non_negative,
         default=0,
         help="cap per-category listing at N lines (0 = unlimited)",
     )
