@@ -14,17 +14,14 @@ table only answers what exists and what has run.
 """
 
 import argparse
-import json
 import os
 import sys
 import time
-import urllib.error
-import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from kcilib import sink
+from kcilib import api, sink
 from kcilib.core import ledger
 from kcilib.source import get_source
 from kcilib.table import localrun
@@ -179,17 +176,15 @@ def cmd_summary(args):
 
     if args.no_api:
         return 0
-    stats = _api_stats(args.api_url)
+    stats = api.node_counts(args.api_url)
     if stats is None:
         print("local API: not reachable (start it with ./run.sh stack); "
               "the rest of this report does not need it")
         return 0
     print(f"local API ({args.api_url}):")
     for kind, counts in stats.items():
-        total = sum(counts.values())
-        detail = ", ".join(
-            f"{name} {count}" for name, count in
-            sorted(counts.items(), key=lambda item: -item[1])[:4])
+        total = sum(count for _name, count in counts)
+        detail = ", ".join(f"{name} {count}" for name, count in counts[:4])
         print(f"  {kind:9s} {total:4d}  {detail}")
     return 0
 
@@ -203,25 +198,6 @@ def _last_runs(ran, count):
             rows.append(((build_id, test), records.get(test) or {}))
     rows.sort(key=lambda row: row[1].get("timestamp") or "", reverse=True)
     return rows[:count]
-
-
-def _api_stats(api_url):
-    """Node counts grouped by kind. Returns None (not a raise) if the API is down."""
-    stats = {}
-    for kind in ("checkout", "kbuild", "job"):
-        try:
-            with urllib.request.urlopen(
-                    f"{api_url.rstrip('/')}/latest/nodes?kind={kind}&limit=1000",
-                    timeout=15) as resp:
-                items = json.loads(resp.read()).get("items", [])
-        except (urllib.error.URLError, ValueError, OSError):
-            return None
-        counts = {}
-        for node in items:
-            name = node.get("name") or "?"
-            counts[name] = counts.get(name, 0) + 1
-        stats[kind] = counts
-    return stats
 
 
 def cmd_run(args):

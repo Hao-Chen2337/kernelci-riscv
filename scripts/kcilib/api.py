@@ -18,6 +18,8 @@ LOCAL_API = "http://127.0.0.1:8001"
 REQUEST_TIMEOUT = 60
 # /nodes page size when the caller does not say.
 PAGE_LIMIT = 200
+# The node kinds the local table's two readers count.
+COUNTED_KINDS = ("checkout", "kbuild", "job")
 
 
 class APIError(RuntimeError):
@@ -180,3 +182,25 @@ def client(api_url=None, token=None, **kwargs):
     import os
     base = api_url or os.environ.get("KCI_API_URL") or LOCAL_API
     return KernelCI(base, token=token, **kwargs)
+
+
+def node_counts(api_url=None, kinds=COUNTED_KINDS, limit=1000, timeout=10,
+                retries=1):
+    """Node counts per kind, biggest first: {kind: [(name, count), ...]}.
+
+    The one reader for ./run.sh summary and the dashboard.  None - not a raise -
+    means the API is not answering, so both callers render without it.
+    """
+    kc = client(api_url, timeout=timeout, retries=retries)
+    stats = {}
+    for kind in kinds:
+        try:
+            nodes = kc.all_nodes(kind=kind, limit=limit)
+        except Exception:  # noqa: BLE001 - a summary must live without the API
+            return None
+        counts = {}
+        for node in nodes:
+            name = node.get("name") or "?"
+            counts[name] = counts.get(name, 0) + 1
+        stats[kind] = sorted(counts.items(), key=lambda item: -item[1])
+    return stats

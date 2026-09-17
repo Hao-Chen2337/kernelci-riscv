@@ -115,21 +115,40 @@ def get_node(node_id):
     return api_get(f"/node/{node_id}")
 
 
+def _drop_inline_comment(value):
+    """Cut a .config value at the first '#' that is outside double quotes, so a
+    quoted path or cmdline keeps its '#'; escaped quotes stay inside the string."""
+    kept = []
+    quoted = False
+    escaped = False
+    for char in value:
+        if escaped:
+            escaped = False
+        elif char == "\\" and quoted:
+            escaped = True
+        elif char == '"':
+            quoted = not quoted
+        elif char == "#" and not quoted:
+            break
+        kept.append(char)
+    return "".join(kept).strip()
+
+
 def parse_config(text):
     """Parse a kernel .config into {CONFIG_OPT: value}.
 
-    `CONFIG_X=y` maps to the value after '=', `# CONFIG_X is not set` to 'n';
-    comments and blanks are ignored, inline comments are stripped.
+    `CONFIG_X=y` maps to the value after '=', `# CONFIG_X is not set` to 'n'
+    even with trailing text; comments and blanks are ignored, inline comments are
+    dropped unless '#' sits inside quotes.
     """
     config = {}
     for line in text.splitlines():
         line = line.strip()
         if line.startswith("CONFIG_") and "=" in line:
             key, value = line.split("=", 1)
-            value = value.split("#", 1)[0].strip()  # drop inline comments
-            config[key] = value
-        elif line.startswith("# CONFIG_") and line.endswith(" is not set"):
-            key = line[2:].rsplit(" is not set", 1)[0].strip()
+            config[key] = _drop_inline_comment(value)
+        elif line.startswith("# CONFIG_") and " is not set" in line:
+            key = line[2:].split(" is not set", 1)[0].strip()
             config[key] = "n"
     return config
 

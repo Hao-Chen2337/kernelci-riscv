@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+from kcilib import api
 from kcilib.core import ledger
 from kcilib.table import localrun
 from kcilib.table.buildindex import BuildIndex
@@ -84,30 +85,8 @@ def collect(db, api_url=None):
                        "describe": getattr(s.build, "describe", None)}
                       for s in specs[:ROW_LIMIT]],
         },
-        "api": _api_stats(api_url) if api_url else None,
+        "api": api.node_counts(api_url) if api_url else None,
     }
-
-
-def _api_stats(api_url):
-    """Node counts per kind, or None when the API is not answering.
-
-    Goes through kcilib.api like every other reader, not its own urllib call.
-    """
-    from kcilib.api import KernelCI
-
-    api = KernelCI(api_url, timeout=10, retries=1)
-    stats = {}
-    for kind in ("checkout", "kbuild", "job"):
-        try:
-            items = api.nodes(kind=kind, limit=1000)
-        except Exception:  # noqa: BLE001 - the page must render without an API
-            return None
-        counts = {}
-        for node in items:
-            name = node.get("name") or "?"
-            counts[name] = counts.get(name, 0) + 1
-        stats[kind] = sorted(counts.items(), key=lambda item: -item[1])
-    return stats
 
 
 CSS = """body{font:14px/1.5 system-ui,sans-serif;margin:0;background:#f6f7f9;color:#222}
