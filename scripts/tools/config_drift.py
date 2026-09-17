@@ -6,7 +6,7 @@
 # Diffs the effective kernel `.config` of two kbuild nodes and reports the
 # CONFIG_* options added, removed or changed (a kconfig change silently alters
 # which selftests get built). Read-only, no token; exit 1 means "drift", so it
-# can gate CI. Rationale: code-notes/W2d-tools.md.
+# can gate CI. Rationale: docs/docs/code-notes/W2d-tools.md.
 
 import argparse
 import json

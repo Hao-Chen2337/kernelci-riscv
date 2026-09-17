@@ -6,7 +6,7 @@ A sink is a name + a switch (wants) + one delivery (deliver); sinks_for() is the
 only place that decides, and it decides from the job definition.  The ledger is
 unconditional, the callback only when the definition carries callback.url.
 
-Rationale: code-notes/A-sink-source-dashboard.md.
+Rationale: docs/docs/code-notes/A-sink-source-dashboard.md.
 """
 
 from kcilib.run import callback

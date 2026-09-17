@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # kernelci-riscv one-command entry: deploy -> run -> inspect.
 # Usage: ./run.sh <subcommand> [args]; ./run.sh help lists them.
-# Details: docs/RUNBOOK.md, docs/INTERNAL-NOTES.md; rationale: code-notes/W2b-entrypoints.md.
+# Details: docs/RUNBOOK.md, docs/INTERNAL-NOTES.md; rationale: docs/docs/code-notes/W2b-entrypoints.md.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"

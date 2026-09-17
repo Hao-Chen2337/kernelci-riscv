@@ -18,7 +18,7 @@ reports; the command line and its execution are kcilib.run.runner's (flag order,
 the timeout+180 grace, stream_separator="\n"); the guest image is
 kcilib.run.bake.baked_rootfs_image's, cache included; the progress printer is
 kcilib.run.bake.stamp, which a caller may re-bind.  Nothing here reads a command
-line.  Rationale: code-notes/W2c-kcilib.md.
+line.  Rationale: docs/docs/code-notes/W2c-kcilib.md.
 """
 
 import os

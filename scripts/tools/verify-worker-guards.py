@@ -11,7 +11,7 @@ seam (poll, jobrun, callback, artifacts, api, source) - never a re-export in the
 worker, which would only test the shim.  The state file is driven through
 kcilib.core.state.StateFile, the object the poll loop writes.
 
-Rationale: code-notes/W2d-tools.md.
+Rationale: docs/docs/code-notes/W2d-tools.md.
 
     python3 scripts/tools/verify-worker-guards.py
 """

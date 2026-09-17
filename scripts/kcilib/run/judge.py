@@ -8,7 +8,7 @@ produced, no selftest failed, or the guest booted), 1 at least one selftest
 failed, 3 infrastructure (tuxrun never started, the console self-reports
 error_type Infrastructure, a timeout, no boot, or no TAP lines at all).
 tuxrun exits 0 even when every selftest fails, so the TAP - never tuxrun's exit
-code - carries the verdict.  Rationale: code-notes/W2c-kcilib.md.
+code - carries the verdict.  Rationale: docs/docs/code-notes/W2c-kcilib.md.
 """
 
 import re

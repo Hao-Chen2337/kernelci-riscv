@@ -7,7 +7,7 @@ usable production build).  The events worker is not a source - it is a state
 machine, not a jobs() iterator.  The layers share the boundary instead: every
 source yields job definitions for the same run_node.
 
-Rationale: code-notes/A-sink-source-dashboard.md.
+Rationale: docs/docs/code-notes/A-sink-source-dashboard.md.
 """
 
 from kcilib.api import PRODUCTION_API
