@@ -16,7 +16,7 @@ the riscv regression history is just starting to accumulate.
 |---|---|
 | PR1 test profile (4 YAMLs, 49 insertions, one commit) | ready — validate_yaml green; the official scheduler renders 3 job definitions from it, and the config was run end-to-end on the local stack |
 | Local full-stack loop (seed → scheduler → worker → real callback) | baseline **pass** · kselftest-kvm **pass** (8-test subset: 14 pass / 2 skip) · kselftest-riscv **fail** (98 pass / 7 skip / 17 fail, reported honestly); every run is recorded in `work/results/` and read back with `./run.sh results` |
-| Config drift + regression trend tooling | drift: two builds of one commit, 5412 options, 0 drift; trend proven on production arm64 data (2303 entries) |
+| Config drift + regression trend tooling | drift: two builds of one commit, 5412 options, 0 drift (re-checked 2026-09-17); trend reads the production history back correctly — `baseline-arm64-pull-labs-demo` 5673 pass / 429 fail (281 regressions), `kselftest-arm64-pull-labs` 2075 pass / 175 fail, both measured 2026-09-17 |
 
 ## Repository
 
