@@ -11,7 +11,7 @@ baked_rootfs_image() puts a cache in front of it, keyed on the exact bake inputs
 Two seams are reached for by name and are re-bindable module attributes, as the
 guard tests expect: ``stamp()`` (the [HH:MM:SS] progress printer) and
 ``download()`` (kcilib.run.artifacts.download).  Importing this module has no
-side effects.  Rationale: docs/docs/code-notes/W2c-kcilib.md.
+side effects.  Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
 import hashlib

@@ -11,7 +11,7 @@ Path layout and key set are the contract, not an implementation detail::
 Every outcome is recorded (a failed run most of all), through a temporary file
 and a rename, so a reader may trust any file it finds.  Keys are written sorted
 and indented by one space, so identical outcomes diff cleanly.
-Rationale: docs/docs/code-notes/W2c-kcilib.md.
+Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
 import json

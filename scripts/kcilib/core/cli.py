@@ -5,7 +5,7 @@
 Defaults come from kcilib/core/config.py, so the parser cannot drift from the
 config a programmatic caller gets.  Flag order, help strings and the fact that
 --min-timeout/--max-timeout is refused by parser.error() (usage on stderr, exit
-2) are frozen.  Rationale: docs/docs/code-notes/W2c-kcilib.md.
+2) are frozen.  Rationale: docs/code-notes/W2c-kcilib.md.
 """
 import argparse
 

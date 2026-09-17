@@ -6,7 +6,7 @@
 Binding is the only honest test: a listener that answers nothing still owns the
 port.  run-local-stack.sh probes through this module's command line, so there is
 one implementation of "is this port free" and not two that can differ.
-Rationale: docs/docs/code-notes/W2c-kcilib.md.
+Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
 import argparse

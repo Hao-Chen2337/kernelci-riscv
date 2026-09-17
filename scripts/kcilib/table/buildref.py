@@ -5,7 +5,7 @@
 Everything downstream needs a stable build identity, and a node id is not
 it: ids are per-database, so local and production disagree. Stable instead
 are the id in the artifact URLs and tree/commit; BuildRef keeps only what
-the executor needs. Rationale: docs/docs/code-notes/B-delivery-buildref.md.
+the executor needs. Rationale: docs/code-notes/B-delivery-buildref.md.
 """
 
 import json

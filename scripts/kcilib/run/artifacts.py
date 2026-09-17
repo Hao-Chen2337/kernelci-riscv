@@ -8,7 +8,7 @@ Two rules, both of which were bugs once: a partial transfer lands in
 Range request instead of starting a 144MB rootfs over; and a file is reused only
 once PROVEN complete - os.path.exists() once adopted a truncated Image as a
 kernel, and a .part already at its own recorded total drew 416 forever.
-Nothing here swallows a failure.  Rationale: docs/docs/code-notes/W2c-kcilib.md.
+Nothing here swallows a failure.  Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
 import json

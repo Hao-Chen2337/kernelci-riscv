@@ -6,7 +6,7 @@
 # `trend` renders the pass/fail history per commit (read-only, no token);
 # `track` turns pass -> fail transitions into kind=regression nodes and `watch`
 # loops it (both POST, local API only, KCI_API_TOKEN required; `track` is
-# idempotent). Rationale: docs/docs/code-notes/W2d-tools.md.
+# idempotent). Rationale: docs/code-notes/W2d-tools.md.
 
 import argparse
 import os

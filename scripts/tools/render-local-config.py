@@ -6,7 +6,7 @@ settings file has to carry absolute values.  Placeholders are ``@NAME@``,
 filled from ``--var NAME=VALUE`` plus ``KCI_ROOT`` - never from the ambient
 environment, and a name with no value is an error, not something left in place.
 
-Rationale: docs/docs/code-notes/W2d-tools.md.
+Rationale: docs/code-notes/W2d-tools.md.
 
     python3 scripts/tools/render-local-config.py --template config/local-callback.toml \\
         --output work/local-callback.toml --var KCI_ROOT=/srv/kernelci-riscv

@@ -8,7 +8,7 @@ this worker claims.  from_args() is the only place an argparse Namespace is
 read, so "which flag lands in which field" is one screen a reviewer and the
 guard tests can check.  The defaults below ARE the CLI defaults; the
 environment-derived ones are default_factory functions.
-Rationale: docs/docs/code-notes/W2c-kcilib.md.
+Rationale: docs/code-notes/W2c-kcilib.md.
 """
 import os
 from dataclasses import dataclass, field

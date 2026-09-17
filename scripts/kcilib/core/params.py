@@ -5,7 +5,7 @@
 Both entry points run the same tuxrun invocations on the same build, so what
 decides *what* is run - the curated KVM allow-list and the QEMU cpu property
 string - lives here instead of in each script; --kvm-tests / --kvm-full are the
-overrides.  Rationale: docs/docs/code-notes/W2c-kcilib.md.
+overrides.  Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
 # The KVM selftests that behave under TCG; passed to LKFT as a TST_CASENAME

@@ -17,7 +17,7 @@ older worker reads what a newer one wrote::
 The callback token is deliberately not in it (read from the environment when
 the body is posted), and the file is written through a temp file and a rename,
 so a worker killed while saving leaves the previous state behind.
-Rationale: docs/docs/code-notes/W2c-kcilib.md.
+Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
 import json

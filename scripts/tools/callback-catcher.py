@@ -6,7 +6,7 @@ DEBUG TOOL, not the stack's callback: a running stack delivers its results to
 `lava_callback` on KCI_CB_PORT (8003 by default), and nothing is wired here.
 One JSON Lines record per request, rotated to <log>.1 above --max-bytes.
 
-Rationale: docs/docs/code-notes/W2d-tools.md.
+Rationale: docs/code-notes/W2d-tools.md.
 
     python3 scripts/tools/callback-catcher.py --port 9998 --log /tmp/cb.jsonl
 """
