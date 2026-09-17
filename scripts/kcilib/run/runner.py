@@ -35,7 +35,7 @@ def build_tuxrun_argv(*, tuxrun_bin, runtime, device, kernel,
     The keywords are explicit and keyword-only so both callers can pass their
     own variables straight through with no reshaping.
 
-    kcilib.jobrun.build_command() (the worker path) - device is
+    kcilib.run.jobrun.build_command() (the worker path) - device is
     run_config.platform, runtime is runtime_name(run_config), kernel is the
     job's kernel artifact, tests is the collection list, and the kvm subset
     travels as ONE ``TST_CASENAME=kvm:a kvm:b`` parameter entry::
@@ -50,7 +50,7 @@ def build_tuxrun_argv(*, tuxrun_bin, runtime, device, kernel,
     constant TUXRUN, the device is fixed at qemu-riscv64, kernel and rootfs
     are URLs served by its own artifact server, and TST_CASENAME is again one
     space-joined entry.  The "args" below is that script's OWN parsed command
-    line: phase 4 moved the worker onto kcilib.config.RunConfig and left the
+    line: phase 4 moved the worker onto kcilib.core.config.RunConfig and left the
     one-shot fetch path on its own argparse namespace (see the config.py
     docstring for why the two are not one object yet)::
 

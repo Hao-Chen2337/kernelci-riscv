@@ -19,11 +19,11 @@ from the CWD, never from a hardcoded absolute path - exactly as ledger.py takes
 ``__file__``.  That is the ONE expression that had to change when the code
 moved: the worker sits at ``scripts/riscv_pull_worker.py`` and needed two
 ``dirname()``s to reach the repository root, while this file sits one directory
-deeper at ``scripts/kcilib/bake.py`` and needs three.  Both spellings resolve to
+deeper at ``scripts/kcilib/run/bake.py`` and needs three.  Both spellings resolve to
 the same directory::
 
     worker: dirname(dirname(realpath(scripts/riscv_pull_worker.py)))
-    here:   dirname(dirname(dirname(realpath(scripts/kcilib/bake.py))))
+    here:   dirname(dirname(dirname(realpath(scripts/kcilib/run/bake.py))))
 
 ``realpath`` rather than abspath is kept on purpose (see bake_cache_dir): a
 symlinked launcher must not place the multi-GB cache next to the symlink,
@@ -35,7 +35,7 @@ can re-bind them exactly as the worker's guard tests re-bind
 
   * ``stamp()`` - the ``[HH:MM:SS] `` progress printer, byte-identical to the
     worker's own stamp(); every line a bake prints goes through it;
-  * ``download()`` - ``kcilib.artifacts.download``, the transfer the worker's
+  * ``download()`` - ``kcilib.run.artifacts.download``, the transfer the worker's
     own ``download()`` wrapper delegates to (that wrapper only re-binds
     ``artifacts.requests`` first, so it is the same transfer and the same
     printed lines).
@@ -53,7 +53,8 @@ import tarfile
 import time
 from datetime import datetime, timezone
 
-from kcilib.artifacts import MAX_DOWNLOAD_SIZE, download
+from kcilib import repo_root
+from kcilib.run.artifacts import MAX_DOWNLOAD_SIZE, download
 
 
 def stamp(message):
@@ -69,7 +70,7 @@ def stamp(message):
     Moved here with the bake machinery - same f-string, same flush=True - so
     every line a bake prints stays byte-identical to the worker's.  The worker
     keeps its own stamp() for its non-bake lines, and a caller may re-bind
-    ``kcilib.bake.stamp`` just as it re-binds this module's ``download``.
+    ``kcilib.run.bake.stamp`` just as it re-binds this module's ``download``.
     """
     print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
 
@@ -229,12 +230,11 @@ def bake_cache_dir():
     # symlink in ~/bin) would otherwise place the multi-GB cache next to the
     # symlink - outside the gitignored work/ - and silently stop reusing it
     # whenever the two entry points are invoked differently.
-    # THREE dirname()s, where the worker (scripts/riscv_pull_worker.py) needed
-    # two: this file lives one level deeper, in scripts/kcilib/.  Both spellings
-    # resolve to the repository root, so both reach the same work/env/baked.
-    root = os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.realpath(__file__))))
-    return os.path.join(root, "work", "env", "baked")
+    # kcilib.repo_root() walks up to run.sh.  The three dirname()s that used to
+    # be here counted from scripts/kcilib/run/bake.py; after the package move this
+    # file sits one level deeper, so the cache would have landed in
+    # scripts/work/env/baked - a multi-GB directory nobody would ever clean.
+    return os.path.join(repo_root(), "work", "env", "baked")
 
 
 def cache_dir_writable(cachedir):

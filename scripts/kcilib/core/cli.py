@@ -5,7 +5,7 @@
 Moved VERBATIM out of scripts/riscv_pull_worker.py (phase 4): the same
 add_argument calls, in the same order, with the same help strings, so
 "riscv_pull_worker.py --help" and every argparse error are byte for byte what
-they were.  Only the default VALUES now come from kcilib/config.py - the two
+they were.  Only the default VALUES now come from kcilib/core/config.py - the two
 config dataclasses are where "what the worker defaults to" lives, and a parser
 that hard-coded its own copies could drift away from the config a programmatic
 caller gets.
@@ -17,8 +17,8 @@ the config layer would have changed those bytes.
 """
 import argparse
 
-from kcilib import config
-from kcilib.params import KVM_TEST_SUBSET
+from kcilib.core import config
+from kcilib.core.params import KVM_TEST_SUBSET
 
 
 def build_parser():

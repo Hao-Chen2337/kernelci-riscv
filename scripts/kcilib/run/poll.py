@@ -11,9 +11,12 @@ POST), ``retrieve_job_definition()``, ``fetch_nodes()``, ``start_cursor()``,
 printed line are the worker's; only the imports and three expressions that had
 to become module-level names changed (marked below).
 
-THIS IS THE ONLY LAYER THAT KNOWS THE API EXISTS (phase 4).  Where the nodes
-come from (the events API, the node-status re-check before a run) is here;
-RUNNING one is not, and it is not this module's to look up either:
+THIS IS THE ONLY LAYER ON THE RUN PATH THAT TALKS TO THE EVENTS API.  Where the
+nodes come from (the events API, the node-status re-check before a run) is here;
+RUNNING one is not, and it is not this module's to look up either.  (It is no
+longer the only module in the repository that knows an API exists: kcilib/api.py
+is the one HTTP client, and the local job table's reads go through it too - see
+docs/ARCHITECTURE.md, "three lines".)
 
     poll_loop(poll_config, run_node, run_config)
 
@@ -26,15 +29,15 @@ instead of patching an import.
 
 WHAT IT DELEGATES:
 
-* ``kcilib.state.StateFile`` owns the state file - the cursor, the seen set and
+* ``kcilib.core.state.StateFile`` owns the state file - the cursor, the seen set and
   the pending reports are one document written atomically after EVERY event
   (#9), and a corrupt file is refused loudly and replaced by an empty state;
-* the run itself is the caller's *run_node* (kcilib.jobrun.run_node), called as
+* the run itself is the caller's *run_node* (kcilib.run.jobrun.run_node), called as
   ``run_node(node, run_config, node_id)``; it returns the
   ``(callback_url, token, body)`` tuple and this module posts it.  Passing it in
   keeps this module from having to know how a job is executed - and keeps the
   run path from having to know that an events API exists;
-* ``kcilib.callback`` owns the post (``post_result``) and the pending round
+* ``kcilib.run.callback`` owns the post (``post_result``) and the pending round
   trip.  The two expressions that changed: the startup rebuild of ``reports``
   is now ``report_from_pending(pending)`` and the flush writes
   ``pending_entry(report)`` - the same ``{"callback", "body"}`` dict in the
@@ -42,7 +45,7 @@ WHAT IT DELEGATES:
   never persisted: the state file holds the callback URL and the body only,
   and the token is re-read from ``PULL_LABS_CALLBACK_TOKEN`` whenever a body is
   posted;
-* the progress printer is ``kcilib.bake.stamp`` (the shared implementation),
+* the progress printer is ``kcilib.run.bake.stamp`` (the shared implementation),
   byte-identical to the worker's own stamp(); this module keeps no copy.
 
 Two behaviours are load-bearing and unchanged: "result posted" is printed only
@@ -51,10 +54,10 @@ after post_result() returned without raising, i.e. after a real 2xx (a 4xx, a
 and the cursor only advances once a whole batch succeeded - --since seeds a
 state file that has no cursor, --ignore-state-cursor forces it.
 
-``poll_config`` is a kcilib.config.PollConfig: api_url, state_file, since,
+``poll_config`` is a kcilib.core.config.PollConfig: api_url, state_file, since,
 once, poll_period, max_retries, ignore_state_cursor and the platform/runtime
-filters.  The defaults and the flag they come from live in kcilib/cli.py and
-kcilib/config.py; nothing here reads a command line.
+filters.  The defaults and the flag they come from live in kcilib/core/cli.py and
+kcilib/core/config.py; nothing here reads a command line.
 """
 
 import signal
@@ -63,15 +66,15 @@ from datetime import datetime, timedelta
 
 import requests
 
-from kcilib.bake import stamp
-from kcilib.callback import (
+from kcilib.core.state import StateFile
+from kcilib.run.bake import stamp
+from kcilib.run.callback import (
     CallbackPermanentError,
     CallbackTransientError,
     pending_entry,
     post_result,
     report_from_pending,
 )
-from kcilib.state import StateFile
 
 EVENTS_PATH = "/events"
 REQUEST_TIMEOUT = 60
@@ -136,7 +139,7 @@ def handle_event(event, poll_config, run_config, reports, run_node):
     node.  Returns True when the event is fully handled (or deliberately
     given up on) so the caller may mark it seen.
 
-    *run_node* is the run function the loop was handed (kcilib.jobrun.run_node):
+    *run_node* is the run function the loop was handed (kcilib.run.jobrun.run_node):
     this layer knows the API, that one knows tuxrun, and neither imports the
     other."""
     node = event.get("node", {})
@@ -321,10 +324,10 @@ def start_cursor(state_timestamp, since, ignore_state_cursor):
 def poll_loop(poll_config, run_node, run_config):
     """Poll the API forever (or once) and run every node this worker claims.
 
-    *poll_config* is a kcilib.config.PollConfig - the interval, the retry
+    *poll_config* is a kcilib.core.config.PollConfig - the interval, the retry
     budget, the cursor and the filters are its fields, so the loop is driven by
     a value rather than by whatever the process happens to have parsed.
-    *run_node* is the run function (kcilib.jobrun.run_node) and *run_config* its
+    *run_node* is the run function (kcilib.run.jobrun.run_node) and *run_config* its
     config; the loop passes both through to handle_event() and never runs a job
     itself."""
     import fcntl
@@ -353,7 +356,7 @@ def poll_loop(poll_config, run_node, run_config):
     reports = {}
     for node_id, pending in state.pending.items():
         if isinstance(pending, dict) and pending.get("callback") and pending.get("body"):
-            # kcilib.callback owns this round trip: the stored entry holds the
+            # kcilib.run.callback owns this round trip: the stored entry holds the
             # callback URL and the body but never the token, so the token is
             # re-read from the environment here - the same expression the
             # inlined tuple used to be.
@@ -376,7 +379,7 @@ def poll_loop(poll_config, run_node, run_config):
         rewrite a file that can carry SEEN_LIMIT node ids a thousand times."""
         state.cursor = timestamp
         # pending_entry() is the persistable half of a report tuple - the
-        # callback URL and the body, never the token (kcilib.callback).
+        # callback URL and the body, never the token (kcilib.run.callback).
         state.pending = {
             node_id: pending_entry(report)
             for node_id, report in reports.items()

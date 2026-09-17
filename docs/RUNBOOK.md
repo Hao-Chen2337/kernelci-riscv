@@ -61,6 +61,7 @@ tuxrun --list-tests | grep -w kselftest-riscv    # must print it
 | `./run.sh stack [--seed]` | Tier B: start the local full stack (api/db/redis/storage/ssh + artifact server + real callback + official scheduler); `--seed` dispatches (overridable via `SEED_*` env vars). `--seed` refuses up front when the runtime's rules would drop the seed's tree, naming the allowed trees and the `SEED_TREE` override (see Fresh deployment) |
 | `./run.sh worker [--once]` | Take jobs, execute, report back; `--once` exits after the existing queue; unposted results persist and are re-posted (never re-run) on the next start |
 | `./run.sh report` | Recent baseline/kselftest node states |
+| `./run.sh results [--build ID] [--json] [--list]` | Read the local result ledger (`work/results/<build-id>/<test>.json`), written by both `fetch` and the worker. Needs no API, so it still answers "what did this machine run" with the stack stopped |
 | `./run.sh prune [--keep N] [--dry-run]` | Retention for `work/downloads/` (one ~45 MB directory per fetched build): keep the newest N (default 5) plus the build `work/env/build.env` records. Never touches the build this deployment serves; `--dry-run` prints the list and deletes nothing |
 | `./run.sh verify` | Full gate: validate_yaml + verify-lava-body + verify-worker-guards + compileall + ruff (any failure fails the command). The guard tests now target the shared library in `scripts/kcilib/`, and compileall also compiles the entry points so a syntax error there cannot pass the gate |
 | `./run.sh drift` / `./run.sh trend` | Config drift / regression pass-rates |
@@ -187,14 +188,44 @@ if upstream fixes the route.
   (`Warning: job definition carries a cpio ramdisk … using tuxrun's built-in
   disk`). Its `pass` therefore describes the boot path, not the declared
   artifact. The kselftest jobs do use the provisioned rootfs.
-- A `./run.sh fetch` run also leaves a machine-readable record at
+- Every run leaves a machine-readable record at
   `work/results/<build-id>/<test>.json` (verdict, exit code, detail, kernel
-  revision, artifacts directory, log path, TAP counts), written for every
-  outcome - including a run that stopped before tuxrun. `./run.sh prune` covers
+  revision, artifacts directory, log path, TAP counts, and which writer filed
+  it), written for every outcome - including a run that stopped before tuxrun.
+  Both writers share the layout: `./run.sh fetch` (`source: fetch`, one
+  production build re-run locally) and the worker taking dispatched jobs
+  (`source: worker`). Read them with `./run.sh results` (add `--build <id>`,
+  `--json` or `--list`); it needs no API, so it also answers "what did this
+  machine run" with the stack stopped. `./run.sh prune` covers
   `work/downloads/`, not `work/results/`.
 - Every node carries the kernel revision recorded by `./run.sh provision`
   (`work/env/build.env`); a deployment seeded without it says so loudly and
   labels its nodes with a placeholder revision instead.
+
+### What `stack --seed` actually creates (and what it does not)
+
+Seeding is a **shortcut around the build**, not a build. Three nodes appear, and
+only the last row is produced by something that really ran:
+
+| Node | Who creates it | Where its bytes come from | What it does NOT mean |
+|---|---|---|---|
+| `checkout` | `run-local-stack.sh` POSTs it (`state=done`, `result=pass`) when the database has none | `data.kernel_revision` is taken from `work/env/build.env` (or the `SEED_*` variables) | no repository was cloned and no checkout ran - the `pass` says "the seed declared one", nothing more |
+| `kbuild-gcc-14-riscv` | `run-local-stack.sh` POSTs it as `state=available` | `artifacts.kernel` = `http://172.17.0.1:<KCI_SERVE_PORT>/Image`, i.e. the file this deployment serves from `work/serve/Image`; `modules`/`kselftest`/`_config` are the production build recorded in `work/env/build.env` | nothing was compiled. The node is a declaration carrying pre-existing artifacts, so the tree it claims (`SEED_TREE`, from `work/env/build.env`'s `KCI_BUILD_TREE` unless overridden) can disagree with the build the artifacts came from - `work/env/seed.env` records both |
+| `baseline-riscv-pull-labs`, `kselftest-riscv-pull-labs`, `kselftest-kvm-pull-labs` | the **official scheduler**, from `kernelci-pipeline/config/jobs-pull-labs.yaml` | real job definitions, rendered per node | nothing: these are the real thing. The worker fetches each definition and runs tuxrun. `kselftest-kvm-pull-labs` is the **shared** kvm job: `kernelci-pipeline#1600` added it for sasha-lab, and this lab reuses it instead of carrying its own copy (the scheduler entry is what restricts it to `qemu-riscv64`) |
+
+Two consequences worth knowing before reading a result:
+
+- **The seeded kernel URL names the deployment that seeded it**
+  (`http://172.17.0.1:<port>/Image`, the docker gateway address of that port).
+  If that deployment is gone, the job cannot download its kernel and comes back
+  `Incomplete` / `Infrastructure` for that reason alone - the node is not
+  wrong, the server behind its URL is. Re-seed from the running deployment
+  (`./run.sh stack --seed`) instead of running an old queue.
+- **`./run.sh drift` needs two real kbuild `.config` files.** On a database
+  that only ever saw one seed there is exactly one kbuild node, so drift has
+  nothing to compare and says so. It compares whatever done/pass kbuild nodes
+  the database holds, which on a long-lived deployment includes builds from
+  earlier sessions.
 
 ### A second, isolated deployment on the same machine
 

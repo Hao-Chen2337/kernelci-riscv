@@ -19,8 +19,13 @@ that namespace:
 
 from_args() is the only place an argparse Namespace is read, so "which flag
 lands in which field" is one screen of code a reviewer (and the guard tests) can
-check in one look.  Programmatic callers - a future fetch-and-run share of
-run_node, a test - build the dataclasses directly.
+check in one look.  Programmatic callers - a test, or the one-shot runner - build
+the dataclasses directly: scripts/fetch-and-run-latest.py now builds a RunConfig
+in its main() and reads the run-scoped fields (tuxrun_bin, cpu, kvm_full,
+container_runtime, rootfs, output_dir) from it, instead of reaching into its own
+argparse namespace at the point of use.  What it keeps in that namespace is its
+deployment business (which build to fetch, which port to serve it on, whether to
+provision only), which is not part of "one run".
 
 DELIBERATELY NOT A FIELD: RunConfig.runtime.  --runtime is the *lab* filter (the
 events API's data.runtime, "pull-labs-riscv"), which is the poll layer's
@@ -30,7 +35,7 @@ be worse than the missing field, so the container runtime keeps its own name
 (and jobrun.runtime_name() still auto-detects podman, then docker, when it is
 empty - exactly as before).
 
-The defaults below ARE the CLI defaults: kcilib/cli.py builds its parser from
+The defaults below ARE the CLI defaults: kcilib/core/cli.py builds its parser from
 them, so the flags, their help text and their values cannot drift away from the
 config a programmatic caller gets.  The environment-derived ones (QEMU_CPU,
 KCI_API_CONFIG_NAME, KCI_STORAGE_CONFIG_NAME) are default_factory functions,
@@ -41,8 +46,9 @@ import os
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
-from kcilib.jobrun import LOG_ARCHIVE_KEEP, MIN_TIMEOUT
-from kcilib.params import KVM_TEST_SUBSET
+from kcilib import repo_root
+from kcilib.core.params import KVM_TEST_SUBSET
+from kcilib.run.jobrun import LOG_ARCHIVE_KEEP, MIN_TIMEOUT
 
 __all__ = [
     "BASE_URI", "DEFAULT_MAX_TIMEOUT", "DEFAULT_PLATFORM", "DEFAULT_RUNTIME",
@@ -52,9 +58,9 @@ __all__ = [
 
 # The repository root, not the CWD: work/ is the durable tree this repo already
 # has, and "the logs are in work/logs" must hold whatever directory the worker
-# was started from.
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))))
+# was started from.  kcilib.repo_root() walks up to run.sh; counting dirname()
+# levels pointed at scripts/ as soon as this module moved into core/.
+REPO_ROOT = repo_root()
 LOG_DIR = os.path.join(REPO_ROOT, "work", "logs")
 
 BASE_URI = "https://api.kernelci.org"
@@ -63,7 +69,7 @@ DEFAULT_RUNTIME = "pull-labs-riscv"
 DEFAULT_TUXRUN = "tuxrun"
 DEFAULT_STATE_FILE = "riscv-pull-worker-state.json"
 # Ceiling for a job definition's timeout_s, matching the pull-labs runtime's own
-# timeout; its floor is kcilib.jobrun.MIN_TIMEOUT, which below cannot even boot
+# timeout; its floor is kcilib.run.jobrun.MIN_TIMEOUT, which below cannot even boot
 # a guest.  The CLI refuses --min-timeout above --max-timeout
 # (cli.parse_args), so both bounds keep meaning something.
 DEFAULT_MAX_TIMEOUT = 7200
@@ -98,7 +104,7 @@ def default_storage_config_name():
 class RunConfig:
     """Everything one run of a node needs; nothing about the API.
 
-    max_download_size is in BYTES (the unit kcilib.artifacts and kcilib.bake
+    max_download_size is in BYTES (the unit kcilib.run.artifacts and kcilib.run.bake
     take); the CLI flag is --max-download-mb and from_args() does the shift.
     """
 
@@ -151,12 +157,12 @@ def from_args(args):
 
     THE one place CLI -> config.  Every field is listed explicitly, so a flag
     that quietly stops reaching the library is visible here instead of being
-    swallowed by a namespace; scripts/verify-worker-guards.py drives this
+    swallowed by a namespace; scripts/tools/verify-worker-guards.py drives this
     function too, so the mapping is a tested thing and not a claim.
 
     The --max-download-mb -> bytes shift lives here (it used to be the worker's
     main()), and the --min-timeout/--max-timeout sanity check stays in
-    kcilib.cli.parse_args() so it keeps printing argparse's usage and exiting 2.
+    kcilib.core.cli.parse_args() so it keeps printing argparse's usage and exiting 2.
     """
     return Configs(
         run=RunConfig(

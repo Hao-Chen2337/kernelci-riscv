@@ -5,23 +5,30 @@ import json
 import os
 import sys
 
+# This tool lives in scripts/tools/, so the repository root is WALKED UP to
+# (kcilib.repo_root finds run.sh) instead of counted: three tools kept a counted
+# root when they moved here and silently pointed one level too deep.
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.dirname(HERE))  # scripts/ holds kcilib
+
+from kcilib import repo_root
+
+ROOT = repo_root()
 # Import kernelci-core from THIS checkout, never from some other deployment
 # that happened to be hardcoded here: a hardcoded path made a fresh clone's
 # verify results silently depend on the machine it was run from.
 sys.path.insert(0, os.path.join(ROOT, "kernelci-core"))
-from kernelci.runtime.lava import Callback
-
-# The body under test is kcilib.callback.lava_body and the verdicts it is fed
-# are kcilib.judge's: the worker imports them from the library instead of
+# The body under test is kcilib.run.callback.lava_body and the verdicts it is fed
+# are kcilib.run.judge's: the worker imports them from the library instead of
 # defining them (they used to live in riscv_pull_worker.py, which this script
 # loaded by path).  Same body, same parser, same expectations - and scripts/ is
 # on the path here, so kcilib resolves from any CWD.
-sys.path.insert(0, HERE)
-from kcilib import callback, config, judge
+from kcilib.core import config
+from kcilib.run import callback, judge
+from kernelci.runtime.lava import Callback
 
-FIXTURES = os.path.join(HERE, "fixtures")
+# The recorded consoles stay in scripts/fixtures/, next to kcilib.
+FIXTURES = os.path.join(os.path.dirname(HERE), "fixtures")
 PASS_LOG = os.path.join(FIXTURES, "tuxrun-pass.log")
 FAIL_LOG = os.path.join(FIXTURES, "tuxrun-fail.log")
 
@@ -42,7 +49,7 @@ def check(condition, message):
 def fake_config():
     """The two callback-metadata names lava_body() reads, off a real RunConfig.
 
-    lava_body() takes a kcilib.config.RunConfig since phase 4 instead of an
+    lava_body() takes a kcilib.core.config.RunConfig since phase 4 instead of an
     argparse namespace; the values - and therefore every body checked below -
     are exactly the ones the namespace carried.
     """

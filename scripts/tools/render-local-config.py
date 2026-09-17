@@ -15,7 +15,7 @@ substituted from the environment during testing - which is exactly the kind of
 invisible wrong value this script exists to prevent.  A name with no value is
 an error, never something left in place.
 
-    python3 scripts/render-local-config.py \\
+    python3 scripts/tools/render-local-config.py \\
         --template config/local-callback.toml \\
         --output work/local-callback.toml \\
         --var KCI_ROOT=/srv/kernelci-riscv
@@ -26,7 +26,15 @@ import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.dirname(HERE))  # scripts/ holds kcilib
+
+from kcilib import repo_root
+
+# Walked up to run.sh, never counted: this file moved into scripts/tools/, and
+# `ROOT = os.path.dirname(HERE)` then rendered every @KCI_ROOT@ as .../scripts -
+# so the stack's settings pointed at scripts/kernelci-pipeline/data/ssh/... and
+# every job node came back submit_error.  See kcilib.repo_root().
+ROOT = repo_root()
 TOKEN_RE = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 
 

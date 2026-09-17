@@ -13,8 +13,8 @@ Each request is appended as ONE JSON object per line (JSON Lines), so the file
 can be read directly with jq / `tail -f ... | jq .`; it used to be named
 callback-received.json while its content was JSON Lines.
 
-    python3 scripts/callback-catcher.py                     # 127.0.0.1:9999
-    python3 scripts/callback-catcher.py --port 9998 --log /tmp/cb.jsonl
+    python3 scripts/tools/callback-catcher.py                     # 127.0.0.1:9999
+    python3 scripts/tools/callback-catcher.py --port 9998 --log /tmp/cb.jsonl
 
 The port is a flag (and KCI_CB_CATCH_PORT) instead of a hardcoded 9999: 9999
 was not overridable, and a port that is somebody else's on this machine failed
@@ -30,8 +30,15 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # Derived from this file's location: a hardcoded absolute path pointed every
-# clone at one machine's checkout.
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# clone at one machine's checkout.  WALKED UP to run.sh (kcilib.repo_root), not
+# counted: this file moved into scripts/tools/, and the old two-dirname version
+# quietly defaulted the log to scripts/work/logs/ instead of work/logs/.
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))  # scripts/ holds kcilib
+
+from kcilib import repo_root
+
+ROOT = repo_root()
 DEFAULT_LOG = os.path.join(ROOT, "work", "logs", "callback-received.jsonl")
 DEFAULT_PORT = 9999
 DEFAULT_MAX_BYTES = 8 * 1024 * 1024

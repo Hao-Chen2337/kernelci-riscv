@@ -15,45 +15,45 @@ what keeps a real run's evidence alive past the per-job workspace that held it
 (#6).
 
 THIS MODULE DOES NOT KNOW THE API EXISTS.  ``run_node(node, run_config)`` takes
-the job definition the events API served plus a kcilib.config.RunConfig and
+the job definition the events API served plus a kcilib.core.config.RunConfig and
 returns the report tuple; fetching nodes, the cursor and the flock are
-kcilib.poll's business, and the poll loop hands this function its config rather
+kcilib.run.poll's business, and the poll loop hands this function its config rather
 than this module reaching for anything global.  A caller that has never polled
 anything (a replay of a saved job definition, an offline test) can run a node
 with a RunConfig it built by hand.
 
 WHAT IT DELEGATES - and why each seam has to stay exactly where it is:
 
-* the judging is kcilib.judge's, and specifically the three predicates
+* the judging is kcilib.run.judge's, and specifically the three predicates
   (``tuxrun_invocation_error`` / ``tuxrun_job_error`` / ``tuxrun_infra_error``)
   plus ``tap_summary`` and ``tuxrun_error_message``.  NOT ``judge_run``: its
   timeout wording differs, and swapping it in would change the ``error_msg``
   that reaches the callback for a timed-out job;
-* the command line is ``kcilib.runner.build_tuxrun_argv`` (flag order, the rw
+* the command line is ``kcilib.run.runner.build_tuxrun_argv`` (flag order, the rw
   boot-args rationale and the --rootfs/--modules/--tests omission rules live
-  there) and the execution is ``kcilib.runner.run_tuxrun`` - the worker's
+  there) and the execution is ``kcilib.run.runner.run_tuxrun`` - the worker's
   ``timeout_s + 180`` grace, the workspace as cwd, and
   ``stream_separator="\n"`` so the console keeps its blank line where stdout
   and stderr meet;
-* the guest image is ``kcilib.bake.baked_rootfs_image``: the same bake and the
+* the guest image is ``kcilib.run.bake.baked_rootfs_image``: the same bake and the
   same cache the worker used to own, so "guest prepared in Ns" and the bake
   cache lines are unchanged;
-* the progress printer is imported from ``kcilib.bake.stamp`` (the shared
+* the progress printer is imported from ``kcilib.run.bake.stamp`` (the shared
   implementation) instead of being copied a third time.  Its ``[HH:MM:SS] ``
   line is byte-identical to the worker's own stamp(), and a caller that
-  re-binds ``kcilib.bake.stamp`` - or this module's ``stamp`` - moves every
+  re-binds ``kcilib.run.bake.stamp`` - or this module's ``stamp`` - moves every
   line of this module with it, exactly as the offline guard tests re-bind
   module attributes;
 * ``run_node()`` does NOT post the result: it returns the
   ``(callback_url, token, body)`` tuple and the poll loop posts it.  The token
-  is read from the environment here and is never persisted (kcilib.callback).
+  is read from the environment here and is never persisted (kcilib.run.callback).
 
 Nothing was "tidied": the archived consoles under work/logs, the printed
 lines and the state file are test fixtures.  Every string, comment and
 f-string below is the worker's, character for character.
 
-The worker's CLI (kcilib/cli.py) and the flag -> field mapping
-(kcilib/config.py) are the only things above this module; nothing here reads a
+The worker's CLI (kcilib/core/cli.py) and the flag -> field mapping
+(kcilib/core/config.py) are the only things above this module; nothing here reads a
 command line, and no field is named after a flag.
 """
 
@@ -63,17 +63,19 @@ import shutil
 import tempfile
 import time
 
-from kcilib.bake import baked_rootfs_image, stamp
-from kcilib.callback import lava_body
-from kcilib.judge import (
+from kcilib.core import ledger
+from kcilib.core.params import KVM_TEST_SUBSET, cpu_for, kvm_allow_list
+from kcilib.run.artifacts import build_id_from_artifacts
+from kcilib.run.bake import baked_rootfs_image, stamp
+from kcilib.run.callback import lava_body, verdict_from_body
+from kcilib.run.judge import (
     tap_summary,
     tuxrun_error_message,
     tuxrun_infra_error,
     tuxrun_invocation_error,
     tuxrun_job_error,
 )
-from kcilib.params import KVM_TEST_SUBSET, cpu_for, kvm_allow_list
-from kcilib.runner import build_tuxrun_argv, run_tuxrun
+from kcilib.run.runner import build_tuxrun_argv, run_tuxrun
 
 DEFAULT_TIMEOUT = 1800  # seconds, when the job def carries no timeout
 # Bounds applied to whatever the job definition asked for.  The clamp used to
@@ -177,14 +179,14 @@ def build_command(node, run_config, workspace):
                 subset = list(run_config.kvm_tests or KVM_TEST_SUBSET)
                 parameters.append(
                     "TST_CASENAME=" + (
-                        # the curated list itself is kcilib.params' business
+                        # the curated list itself is kcilib.core.params' business
                         kvm_allow_list() if subset == KVM_TEST_SUBSET
                         else " ".join(f"kvm:{name}" for name in subset)
                     )
                 )
     # Flag order, the rw boot-args rationale (Debian images mount / read-only
     # without it) and the omission rules for --rootfs/--modules/--tests all
-    # live in kcilib.runner.build_tuxrun_argv.
+    # live in kcilib.run.runner.build_tuxrun_argv.
     argv = build_tuxrun_argv(
         tuxrun_bin=run_config.tuxrun_bin,
         runtime=runtime_name(run_config),
@@ -308,14 +310,85 @@ def clamp_timeout(timeout_s, max_timeout, min_timeout=MIN_TIMEOUT):
     )
 
 
-def run_node(node, run_config, node_id=None):
+# Who filed the record.  The ledger's field is documented as "which writer
+# produced this row", and it was hardcoded to "worker" here - so a run started by
+# ./run.sh run --source table (the local job table, which never touches the events
+# API) was filed as if the resident worker had taken it.  The field is only worth
+# having if it is true.
+SOURCE_WORKER = "worker"
+SOURCE_TABLE = "table"
+
+
+def record_result(node, node_id, body, tap, log_path, source=SOURCE_WORKER):
+    """File this run in the durable ledger and return the path written.
+
+    kcilib.core.ledger owns the layout (work/results/<build-id>/<test>.json) and the
+    key set; this function is the worker's NAMING of the run, and it is written
+    for every outcome - a failed run is exactly the one worth having a record
+    of.  Until the worker wrote records, work/results/ held only the one-shot
+    runner's rows, so a resident lab that had taken a hundred dispatched jobs
+    had no history of its own.
+
+    The build is taken from the job's artifact URLs (a pull-lab job definition
+    carries no build id, only URLs - see artifacts.build_id_from_artifacts).
+    When no URL names one, the job node id stands in, and the record says so by
+    naming the node in *job*: a record filed under a made-up id would be worse
+    than one filed under a real node id.
+
+    The verdict comes from the callback BODY that was just built, not from a
+    second look at the console (callback.verdict_from_body): the record and the
+    pipeline must not be able to disagree about the same run.
+
+    Failure to write is reported and returned as "", never raised: the run
+    already happened and its result still has to reach the callback.
+    """
+    tests = node.get("tests") or [{}]
+    test = tests[0].get("type") or tests[0].get("id") or "boot"
+    build_id = build_id_from_artifacts(node.get("artifacts")) or node_id or ""
+    if not build_id:
+        print("Warning: no build id in the job's artifacts and no node id; "
+              "the run is NOT recorded in work/results")
+        return ""
+    verdict, exit_code, detail = verdict_from_body(body)
+    summary = tap[1] if tap else None
+    try:
+        return ledger.write_result(build_id, test, {
+            "job": node.get("name") or node_id or "",
+            "source": source,
+            "verdict": verdict,
+            "exit_code": exit_code,
+            "detail": detail,
+            "log": _relative_to_repo(log_path),
+            "results": summary,
+        })
+    except (OSError, ValueError) as error:
+        print(f"Warning: could not record this run in the result ledger "
+              f"({error}); the callback is unaffected")
+        return ""
+
+
+def _relative_to_repo(path):
+    """*path* relative to the repository root, or as given when it is outside.
+
+    The one-shot runner stores repository-relative paths in the same field, and
+    a reader lining the two writers' rows up must not have to guess which is
+    which.
+    """
+    if not path:
+        return None
+    try:
+        return os.path.relpath(path, ledger.ROOT)
+    except ValueError:  # different drive on Windows; keep the path as given
+        return path
+
+def run_node(node, run_config, node_id=None, source=SOURCE_WORKER):
     """Execute one job definition in a per-job workspace and return the
     report tuple (callback_url, token, body); the caller posts it.  Every
     failure inside is converted into an infra-error LAVA body, so a report
     is always produced (unless the workspace itself cannot be created).
 
     *node* is a job definition exactly as the events API served it and
-    *run_config* is a kcilib.config.RunConfig - the two things a run needs, and
+    *run_config* is a kcilib.core.config.RunConfig - the two things a run needs, and
     the API is not one of them.  *node_id* labels the progress lines and names
     the archived console log (see archive_console_log)."""
     environment = node.get("environment", {})
@@ -350,6 +423,9 @@ def run_node(node, run_config, node_id=None):
     tap = None
     infra = False
     error_msg = ""
+    # The archived console path, set by the finally block below; the ledger
+    # record names it, so a reader reaches the evidence from the record.
+    archived = None
     try:
         started = time.time()
         cmd, label = build_command(node, run_config, workspace)
@@ -417,4 +493,11 @@ def run_node(node, run_config, node_id=None):
         infra=infra,
         error_msg=error_msg,
     )
+    # The durable record of this run, filed next to the one-shot runner's rows
+    # (work/results/<build-id>/<test>.json).  Written before the caller posts, so
+    # a callback that never lands still leaves a record of what ran; a failure to
+    # write is reported inside and never stops the report.
+    record = record_result(node, node_id, body, tap, archived, source=source)
+    if record:
+        stamp(f"{node_id or 'job'}: recorded in {_relative_to_repo(record)}")
     return callback_url, callback_token, body

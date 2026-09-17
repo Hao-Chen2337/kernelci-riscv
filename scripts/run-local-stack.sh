@@ -64,56 +64,23 @@ ok()  { echo "OK $*"; }
 # server failed" - with the real EADDRINUSE only inside /tmp/fs8999.log - or as
 # a compose bind failure that blamed the API.  docs/HANDOVER.md used to tell
 # people to move the artifact server off 8999 "because the port is reserved";
-# that note is stale (8999 binds here), and the check below is what answers the
+# that note is stale (8999 binds here), and this check is what answers the
 # question where it matters instead of by folklore.
-kci_port_is_free() {   # port
-  python3 - "$1" <<'PY'
-import socket, sys
-sock = socket.socket()
-sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-try:
-    sock.bind(("0.0.0.0", int(sys.argv[1])))
-except OSError:
-    sys.exit(1)
-finally:
-    sock.close()
-PY
-}
-
-kci_port_holder() {    # port -> best-effort description of the listener
-  local port="$1" info
-  if command -v ss >/dev/null 2>&1; then
-    info="$(ss -ltnpH "sport = :$port" 2>/dev/null | head -2)"
-    if [ -n "$info" ]; then echo "$info"; return 0; fi
-  fi
-  if command -v lsof >/dev/null 2>&1; then
-    info="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | tail -n +2 | head -2)"
-    if [ -n "$info" ]; then echo "$info"; return 0; fi
-  fi
-  echo "(listener could not be identified; install iproute2 for 'ss')"
-}
-
-# A port published by OUR compose project is not a conflict: the stack is
-# partly up and compose reconciles it.  Anything else is somebody else's.
-kci_port_compose_project() {   # port
-  command -v docker >/dev/null 2>&1 || return 0
-  docker ps --filter "publish=$1" \
-    --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | head -1
-}
-
+#
+# The probe itself lives in kcilib/core/ports.py and is reached through its command
+# line: the bind test, the holder lookup and the refusal text are ONE
+# implementation, shared with scripts/fetch-and-run-latest.py (which imports
+# it).  They used to exist twice - here and there - and the two copies already
+# disagreed about the address to bind: this one probed 0.0.0.0 because the
+# stack binds 0.0.0.0, while the library's default is 127.0.0.1, so "the same
+# check" answered two different questions.  --host 0.0.0.0 keeps the meaning
+# this script had; --project keeps the "our own compose project is not a
+# conflict" rule, and kcilib.core.ports states it more strictly than the shell did
+# (an empty owner never counts as ours).
 require_port_free() {   # port label override-var
-  local port="$1" label="$2" override="$3" owner
-  kci_port_is_free "$port" && return 0
-  owner="$(kci_port_compose_project "$port")"
-  [ "$owner" = "$PROJECT" ] && return 0
-  {
-    echo "X port $port for the $label is already in use${owner:+ (compose project '$owner')}"
-    echo "  holder: $(kci_port_holder "$port")"
-    echo "  Name the conflict instead of letting the service fail on it later:"
-    echo "    stop that listener, or move this deployment with $override=<free port>"
-    echo "  (the KCI_*_PORT list is at the top of scripts/run-local-stack.sh)"
-  } >&2
-  exit 1
+  PYTHONPATH="$ROOT/scripts" python3 -m kcilib.core.ports \
+    --require "$1" --label "$2" --override "$3" \
+    --host 0.0.0.0 --project "$PROJECT" || exit 1
 }
 
 # --- service ownership ------------------------------------------------------
@@ -148,10 +115,10 @@ case "$TOKEN" in
 esac
 
 # Render the settings templates for THIS deployment before anything reads them.
-python3 "$ROOT/scripts/render-local-config.py" \
+python3 "$ROOT/scripts/tools/render-local-config.py" \
   --template "$ROOT/config/local-callback.toml" --output "$SETTINGS" >/dev/null \
   || die "could not render $SETTINGS from config/local-callback.toml"
-python3 "$ROOT/scripts/render-local-config.py" \
+python3 "$ROOT/scripts/tools/render-local-config.py" \
   --template "$ROOT/config/cb-config/pipeline.yaml" --output "$CB_CONFIG" \
   --var API_PORT="$API_PORT" --var STORAGE_PORT="$STORAGE_PORT" \
   --var SSH_PORT="$SSH_PORT" >/dev/null \

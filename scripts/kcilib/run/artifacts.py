@@ -21,12 +21,44 @@ or keeps its partial data on purpose.
 
 import json
 import os
+import re
 import time
 
 import requests
 
 # 4 GiB per download; rootfs tarballs fit easily.
 MAX_DOWNLOAD_SIZE = 4 << 30
+
+# A KernelCI artifact URL names the build it belongs to in the first path
+# segment after the host: /<job-name>-<build-id>/<file>, where the id is a
+# 24-character kcidb node id (kbuild-gcc-14-riscv-6aa3689720239ade90209d50).
+# A pull-lab job definition carries no build id of its own - only artifact
+# URLs - so this is where the worker's ledger takes "which build did this run
+# test" from, instead of inventing a parallel identity.
+BUILD_ID_RE = re.compile(r"/([^/?\s]+?)-([0-9a-f]{24})(?:[/?]|$)")
+
+# Read in this order so the answer never depends on dict order: the kernel
+# first (the artifact that decides what was booted), then the test and module
+# tarballs, then the config.
+BUILD_ID_ARTIFACT_KEYS = (
+    "kernel", "kselftest_tar_xz", "kselftest", "modules", "_config",
+)
+
+
+def build_id_from_artifacts(artifacts):
+    """The kbuild node id a job definition's artifacts came from, or "".
+
+    Returns "" when no artifact URL names a build: a job whose kernel is
+    served from a local mirror (the local stack seeds exactly that) has no id
+    to take, and a caller must decide what to file the run under rather than
+    getting a fabricated one from here.
+    """
+    for key in BUILD_ID_ARTIFACT_KEYS:
+        url = (artifacts or {}).get(key) or ""
+        match = BUILD_ID_RE.search(str(url))
+        if match:
+            return match.group(2)
+    return ""
 # Per-read gap, not a total budget: artifact hosts (storage.kernelci.org,
 # files.kernelci.org) go quiet mid-transfer often enough that the old 300s
 # meant "hang for five minutes, then retry".  60s of silence is a stalled

@@ -48,8 +48,8 @@ starting the worker (run.sh worker, the local stack and a human all do it), and
 what is left here is the four lines that read the command line and hand it to
 the library:
 
-    flags + defaults + the --min-timeout/--max-timeout check -> kcilib/cli.py
-    flag -> field mapping (one place)                       -> kcilib/config.py
+    flags + defaults + the --min-timeout/--max-timeout check -> kcilib/core/cli.py
+    flag -> field mapping (one place)                       -> kcilib/core/config.py
     run one node (no API knowledge)                         -> kcilib/jobrun.run_node
     fetch nodes from the API + the cursor + the flock       -> kcilib/poll.poll_loop
 
@@ -73,21 +73,21 @@ import sys
 
 # scripts/kcilib/ is resolved through THIS file's own directory: the worker
 # runs from any CWD, and an offline test that loads it by path (as
-# scripts/verify-worker-guards.py used to) still finds the library.
+# scripts/tools/verify-worker-guards.py used to) still finds the library.
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _SCRIPT_DIR)
 
-from kcilib import cli, config
-from kcilib.jobrun import run_node
-from kcilib.poll import poll_loop
+from kcilib.core import cli, config
+from kcilib.run.jobrun import run_node
+from kcilib.run.poll import poll_loop
 
 
 def main():
     """Parse the CLI, build the two configs, and drive the poll loop.
 
     The loop is handed the run function and its config instead of reaching for
-    them, so kcilib.poll is the only layer that knows the events API exists and
-    kcilib.jobrun.run_node never learns that it was called by a poller.
+    them, so kcilib.run.poll is the only layer that knows the events API exists and
+    kcilib.run.jobrun.run_node never learns that it was called by a poller.
     """
     args = cli.parse_args()
     configs = config.from_args(args)

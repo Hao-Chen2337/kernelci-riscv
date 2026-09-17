@@ -1,8 +1,8 @@
 diff --git a/config/jobs-pull-labs.yaml b/config/jobs-pull-labs.yaml
-index 006782f..389d13f 100644
+index 2b2c318..141037f 100644
 --- a/config/jobs-pull-labs.yaml
 +++ b/config/jobs-pull-labs.yaml
-@@ -224,6 +224,24 @@ jobs:
+@@ -224,6 +224,16 @@ jobs:
        collection: breakpoints
      kcidb_test_suite: kselftest.breakpoints
  
@@ -16,25 +16,17 @@ index 006782f..389d13f 100644
 +      collection: riscv
 +    kcidb_test_suite: kselftest.riscv
 +
-+  kselftest-kvm-riscv-pull-labs:
-+    template: kselftest-pull-labs.jinja2
-+    kind: job
-+    params:
-+      <<: *kselftest-params-pull-labs
-+      collection: kvm
-+    kcidb_test_suite: kselftest.kvm
-+
-   baseline-x86-aws-ec2:
-     template: baseline.jinja2
+   kselftest-cgroup-pull-labs:
+     template: kselftest-pull-labs.jinja2
      kind: job
 diff --git a/config/pipeline-pull-labs.yaml b/config/pipeline-pull-labs.yaml
-index aa9f8ac..eea922e 100644
+index 1ace72e..063b1ca 100644
 --- a/config/pipeline-pull-labs.yaml
 +++ b/config/pipeline-pull-labs.yaml
-@@ -32,3 +32,16 @@ runtimes:
-     lab_type: pull_labs
-     poll_interval: 60
-     timeout: 7200
+@@ -36,3 +36,16 @@ runtimes:
+       tree:
+         - mainline
+         - next
 +
 +  pull-labs-riscv:
 +    lab_type: pull_labs
@@ -49,10 +41,10 @@ index aa9f8ac..eea922e 100644
 +      callback:
 +        token: kernelci-pull-labs-riscv
 diff --git a/config/platforms.yaml b/config/platforms.yaml
-index b60aa01..cb11d31 100644
+index 1352a14..0138340 100644
 --- a/config/platforms.yaml
 +++ b/config/platforms.yaml
-@@ -573,6 +573,10 @@ platforms:
+@@ -581,6 +581,10 @@ platforms:
        guestfs_interface: virtio
        memory: 4G
  
@@ -64,7 +56,7 @@ index b60aa01..cb11d31 100644
      base_name: fvp
      arch: arm64
 diff --git a/config/scheduler-pull-labs.yaml b/config/scheduler-pull-labs.yaml
-index 2dd04b5..6b3864a 100644
+index df28602..a2ef25f 100644
 --- a/config/scheduler-pull-labs.yaml
 +++ b/config/scheduler-pull-labs.yaml
 @@ -224,6 +224,28 @@ scheduler:
@@ -87,7 +79,7 @@ index 2dd04b5..6b3864a 100644
 +    platforms:
 +      - qemu-riscv64
 +
-+  - job: kselftest-kvm-riscv-pull-labs
++  - job: kselftest-kvm-pull-labs
 +    event: *kbuild-gcc-14-riscv-node-event
 +    runtime: *pull-labs-riscv-runtime
 +    platforms:

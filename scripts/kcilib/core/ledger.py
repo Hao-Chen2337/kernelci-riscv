@@ -17,8 +17,8 @@ importing this module)::
 
     work/results/<build-id>/<test>.json
 
-      build_id, build_created, job, test, timestamp, verdict, exit_code,
-      detail, revision, artifacts_dir, log, results
+      build_id, build_created, job, test, source, timestamp, verdict,
+      exit_code, detail, revision, artifacts_dir, log, results
 
 Keys are written sorted and indented by one space, so two records of the same
 outcome are byte-identical and diff cleanly.
@@ -28,12 +28,29 @@ import json
 import os
 import time
 
+from kcilib import repo_root
+
 # Repository layout derived from this file's own location (never a hardcoded
 # absolute path): work/ is gitignored and holds regenerable runtime artifacts.
-ROOT = os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-)
+# kcilib.repo_root() WALKS UP to the directory holding run.sh instead of counting
+# dirname() levels: a fixed count pointed one short (at scripts/) after the last
+# package move, so every record was quietly written under scripts/work/ and the
+# ledger read back empty - no error, just the wrong place.
+ROOT = repo_root()
 RESULTS_DIR = os.path.join(ROOT, "work", "results")
+
+# The root is overridable, and the reason is testing, not deployment: the guard
+# suite drives a REAL run_node() (scripts/tools/verify-worker-guards.py,
+# test_missing_callback_keeps_result_pending), so once the worker writes records
+# too, an unredirectable root means `./run.sh verify` leaves records in the
+# repository's work/ tree.  The LAYOUT below is still the contract - only the
+# root moves.
+RESULTS_DIR_ENV = "KCI_RESULTS_DIR"
+
+
+def results_dir():
+    """The directory records live in: work/results, or $KCI_RESULTS_DIR."""
+    return os.environ.get(RESULTS_DIR_ENV) or RESULTS_DIR
 
 # The one place the record's key set is defined: `write_result()` fills the
 # fields a caller leaves out and refuses fields that are not here, so a typo
@@ -43,6 +60,11 @@ RESULT_FIELDS = (
     "build_created",
     "job",
     "test",
+    # Which writer filed the record: "fetch" (the one-shot runner re-running one
+    # production build) or "worker" (the resident poller taking lab jobs).  Two
+    # writers with one layout is the point; a reader that cannot tell which one
+    # produced a row cannot tell a re-run from a dispatched job either.
+    "source",
     "timestamp",
     "verdict",
     "exit_code",
@@ -58,6 +80,7 @@ RESULT_FIELDS = (
 _FIELD_DEFAULTS = {
     "build_created": None,
     "job": "",
+    "source": "",
     "timestamp": None,  # replaced by the write time below
     "verdict": None,
     "exit_code": None,
@@ -71,7 +94,7 @@ _FIELD_DEFAULTS = {
 
 def result_path(build_id, test):
     """The record path for one (build, test): the only place the layout lives."""
-    return os.path.join(RESULTS_DIR, build_id, f"{test}.json")
+    return os.path.join(results_dir(), build_id, f"{test}.json")
 
 
 def write_result(build_id, test, payload):
@@ -125,7 +148,7 @@ def read_results(build_id):
     A test that was never run is simply absent ({} for a build nothing is
     recorded for), and a record that cannot be parsed raises rather than being
     skipped: a ledger that quietly loses rows is worse than no ledger."""
-    directory = os.path.join(RESULTS_DIR, build_id)
+    directory = os.path.join(results_dir(), build_id)
     records = {}
     if not os.path.isdir(directory):
         return records
@@ -141,3 +164,30 @@ def read_results(build_id):
                 f"result record {path} is unreadable: {error}"
             ) from error
     return records
+
+def list_builds():
+    """Every build id the ledger holds a record for, newest record first.
+
+    Ordered by the newest timestamp IN the records, not by directory mtime:
+    a build whose directory was touched by a copy or a restore would
+    otherwise sort as if it had just run.  An unreadable record raises here
+    for the same reason read_results() does - a listing that silently skips
+    rows is worse than no listing."""
+    root = results_dir()
+    if not os.path.isdir(root):
+        return []
+    builds = []
+    for name in sorted(os.listdir(root)):
+        if not os.path.isdir(os.path.join(root, name)):
+            continue
+        records = read_results(name)
+        if not records:
+            continue
+        newest = max(
+            (record.get("timestamp") or "") for record in records.values()
+        )
+        builds.append((newest, name))
+    # Descending by newest timestamp; the name breaks a tie so two builds
+    # recorded in the same second still come back in a stable order.
+    builds.sort(reverse=True)
+    return [name for _newest, name in builds]

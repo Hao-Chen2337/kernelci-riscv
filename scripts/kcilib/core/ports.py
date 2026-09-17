@@ -17,8 +17,16 @@ scripts/fetch-and-run-latest.py probes its artifact server port by binding: a
 listener that answers nothing still owns the port, and "something is there, but
 it did not answer me, so carry on" is how a stale server ends up serving an
 older build to a run that names a newer one.
+
+scripts/run-local-stack.sh is the third caller and it probes through THIS file's
+command line (python3 -m kcilib.core.ports --require PORT ...), because the shell used
+to carry its own copy of the bind test, the holder lookup and the refusal text.
+Two implementations of "is this port free" is one implementation too many: the
+shell's copy bound 0.0.0.0 and this module's default is 127.0.0.1, so the same
+question had two different answers waiting to happen.
 """
 
+import argparse
 import os
 import shutil
 import socket
@@ -117,7 +125,8 @@ def _compose_project(port):
     return info.splitlines()[0] if info else ""
 
 
-def require_port_free(port, who, override_var, project=None):
+def require_port_free(port, who, override_var, project=None,
+                      host=DEFAULT_HOST):
     """Refuse to start *who* on *port* when somebody else already holds it.
 
     Raises SystemExit (exit status 1, the code the shell's exit 1 produced) with
@@ -129,8 +138,16 @@ def require_port_free(port, who, override_var, project=None):
 
     *project* names the compose project this deployment owns; the default is the
     same value run-local-stack.sh uses for its PROJECT variable.
+
+    *host* is the address the probe binds, and it is NOT decoration: the stack
+    binds 0.0.0.0 (so a listener on any interface owns the port), while the
+    default 127.0.0.1 only answers "is it taken for a local client".  Probing
+    127.0.0.1 for a service that binds 0.0.0.0 would let a foreign listener on
+    another interface through, which is why run-local-stack.sh passes
+    host="0.0.0.0" - the same value fetch-and-run-latest.py already passes to
+    port_is_free().
     """
-    if port_is_free(port):
+    if port_is_free(port, host=host):
         return
     if project is None:
         project = os.environ.get(COMPOSE_PROJECT_ENV) or DEFAULT_COMPOSE_PROJECT
@@ -150,3 +167,44 @@ def require_port_free(port, who, override_var, project=None):
         f"    stop that listener, or move this deployment with {override_var}=<free port>\n"
         "  (the KCI_*_PORT list is at the top of scripts/run-local-stack.sh)"
     )
+
+
+def main(argv=None):
+    """The probe as a command line, for scripts/run-local-stack.sh.
+
+    The shell entry point used to carry its own copy of the bind test, the
+    holder lookup and the refusal text (three functions, ~49 lines, and the
+    stale note in docs/HANDOVER.md quoted them by line number).  That copy is
+    gone and the shell calls this instead, so the check the stack makes and the
+    check fetch-and-run-latest.py makes cannot answer differently.
+
+    A taken port exits 1 with the refusal on stderr (require_port_free raises
+    SystemExit); a free port, or one published by this deployment's own compose
+    project, exits 0 and prints nothing.
+    """
+    parser = argparse.ArgumentParser(
+        prog="python3 -m kcilib.core.ports",
+        description="Check that a host port is free before a service binds it.",
+    )
+    parser.add_argument("--require", type=int, required=True, metavar="PORT",
+                        help="the port that must be free")
+    parser.add_argument("--label", required=True,
+                        help="what wants the port (named in the refusal)")
+    parser.add_argument("--override", required=True, metavar="VAR",
+                        help="the KCI_*_PORT variable that moves this "
+                             "deployment")
+    parser.add_argument("--host", default=DEFAULT_HOST,
+                        help=f"address to probe (default {DEFAULT_HOST}; the "
+                             "stack passes 0.0.0.0 because it binds 0.0.0.0)")
+    parser.add_argument("--project", default=None,
+                        help="compose project this deployment owns (default "
+                             f"${COMPOSE_PROJECT_ENV} or "
+                             f"{DEFAULT_COMPOSE_PROJECT!r})")
+    args = parser.parse_args(argv)
+    require_port_free(args.require, args.label, args.override,
+                      project=args.project, host=args.host)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

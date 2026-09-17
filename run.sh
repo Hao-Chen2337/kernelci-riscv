@@ -74,6 +74,29 @@ Subcommands:
                     Other worker flags (--kvm-full/--kvm-tests/...) pass through.
   report            Latest baseline/kselftest node states (incl. the job's
                     data.error_type, which docs/RUNBOOK.md says to read first)
+  results [--build ID] [--json] [--list]
+                    What this machine has recorded: read the local result
+                    ledger work/results/<build-id>/<test>.json (no API needed)
+  build index [--days N] [--tree T]...
+                    Pull the build index (work/builds.db) from the production
+                    API: which kbuild-gcc-14-riscv builds exist and are usable.
+                    Read-only, no token, no local stack.
+  jobs [--build ID] [--test T]...
+                    List the jobs a build would produce (default: the three the
+                    pull-labs-riscv config claims). Runs nothing.
+  todo [--build ID]
+                    What is in the index but not in the result ledger yet.
+  summary [--no-api]
+                    The whole local job table at a glance: the build index, the
+                    ledger's runs and verdicts, what is pending, and the local
+                    API's node counts (skipped with --no-api).
+  dashboard [--port N]
+                    Serve the local job table as a read-only page
+                    (http://127.0.0.1:8079/) - index, runs, pending, API counts
+  run [--build ID] [--test T]... [--limit N] [--callback-url URL]
+                    Run the pending jobs one at a time, recording each in the
+                    ledger as it finishes. Without --callback-url nothing is
+                    posted anywhere - the ledger is the only sink.
   prune [--keep N] [--dry-run]
                     Retention for work/downloads (one ~45 MB directory per
                     fetched build): keep the newest N (default 5) plus the
@@ -277,7 +300,10 @@ cmd_worker() {
 
 cmd_report() {
   local name
-  for name in baseline-riscv-pull-labs kselftest-riscv-pull-labs kselftest-kvm-riscv-pull-labs; do
+  # The kvm entry is the shared kselftest-kvm-pull-labs job definition that
+  # kernelci-pipeline#1600 added for sasha-lab and #1599 reuses; the node name
+  # is the job name, so it is not riscv-specific any more.
+  for name in baseline-riscv-pull-labs kselftest-riscv-pull-labs kselftest-kvm-pull-labs; do
     echo "--- $name (newest 3) ---"
     # Robust against an unreachable API, an empty result and a node without an
     # id: this used to traceback (json.load on an empty body, n["id"][:16] on
@@ -322,6 +348,32 @@ if len(items) > 3:
     # that failure became the report's exit status (7) even though the message
     # above is exactly what the reader needs (adversarial review, N6).
   done
+}
+
+cmd_dashboard() {
+  # A read-only page over the local job table (build index + ledger + local API).
+  # Not the upstream kernelci-frontend: that one is a 2024 Flask app with its
+  # config in another repo and its own MongoDB connection, so it shows its data,
+  # not this lab's table. This serves what ./run.sh summary prints.
+  python3 "$ROOT/scripts/dashboard.py" "$@"
+}
+
+cmd_local_jobs() {
+  # The local job table (build index + ledger view). Deliberately separate from
+  # 'worker': the worker is the resident claimer, this is the table you look at.
+  # Everything here works without the local stack and without the upstream
+  # config being merged.
+  python3 "$ROOT/scripts/local-jobs.py" "$@"
+}
+
+cmd_results() {
+  # The durable record this machine produced, read back: work/results/<build>/
+  # <test>.json, written by ./run.sh fetch and - since the worker was given the
+  # same ledger - by the resident worker too.  Deliberately NOT the API report
+  # above: this answers "what did this repo actually run and how did it end"
+  # from local files, so it still works with the stack stopped, and it is the
+  # reader the ledger never had (it was write-only until now).
+  python3 "$ROOT/scripts/results.py" "$@"
 }
 
 cmd_prune() {
@@ -447,8 +499,8 @@ cmd_verify() {
   [ "${#missing[@]}" -eq 0 ] || die \
     "verify needs: ${missing[*]} - install with: python3 -m pip install -r requirements.txt"
   (cd "$PIPE" && python3 tests/validate_yaml.py) || die "validate_yaml failed"
-  python3 "$ROOT/scripts/verify-lava-body.py" || die "verify-lava-body failed"
-  python3 "$ROOT/scripts/verify-worker-guards.py" || die "verify-worker-guards failed"
+  python3 "$ROOT/scripts/tools/verify-lava-body.py" || die "verify-lava-body failed"
+  python3 "$ROOT/scripts/tools/verify-worker-guards.py" || die "verify-worker-guards failed"
   # Compile the entry points and the library: the guards import the library only,
   # so before this gate a syntax error in riscv_pull_worker.py (or in a kcilib
   # module nobody exercises yet) reached the user as a runtime traceback.
@@ -467,14 +519,14 @@ cmd_drift() {
   # KCI_STORAGE_URL: config_drift's fallback for a node without a _config
   # artifact must point at THIS deployment's storage, not at its built-in 8002.
   KCI_API_URL="$API_URL" KCI_STORAGE_URL="$STORAGE_URL" \
-    kci_run python3 "$ROOT/scripts/config_drift.py" --json --job kbuild-gcc-14-riscv
+    kci_run python3 "$ROOT/scripts/tools/config_drift.py" --json --job kbuild-gcc-14-riscv
 }
 
 cmd_trend() {
   if ! kci_preflight "regression trend" "$API_URL/latest/"; then
     echo "    !! continuing anyway: trend reports its own API errors"
   fi
-  KCI_API_URL="$API_URL" kci_run python3 "$ROOT/scripts/regression_tracker.py" trend
+  KCI_API_URL="$API_URL" kci_run python3 "$ROOT/scripts/tools/regression_tracker.py" trend
 }
 
 # Stop the host services of ONE deployment from the records
@@ -561,6 +613,11 @@ case "${1:-help}" in
   stack)     shift; cmd_stack "$@" ;;
   worker)    shift; cmd_worker "$@" ;;
   report)    cmd_report ;;
+  results)   shift; cmd_results "$@" ;;
+  build)     shift; cmd_local_jobs "$@" ;;
+  jobs|todo|summary) cmd_local_jobs "$@" ;;
+  run)       cmd_local_jobs "$@" ;;
+  dashboard) shift; cmd_dashboard "$@" ;;
   prune)     shift; cmd_prune "$@" ;;
   verify)    cmd_verify ;;
   drift)     cmd_drift ;;

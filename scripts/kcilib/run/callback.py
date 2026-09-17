@@ -20,7 +20,7 @@ loop, the job mapping, the baked guest cache, the console archive and the
 re-post-from-state rule.
 
 lava_body() takes the two callback-metadata names off a
-kcilib.config.RunConfig instead of an argparse namespace (phase 4); the
+kcilib.core.config.RunConfig instead of an argparse namespace (phase 4); the
 configuration it reads did not change, only where it comes from.
 
 Three behaviours are load-bearing and are not to be "improved":
@@ -34,11 +34,11 @@ Three behaviours are load-bearing and are not to be "improved":
 * the callback token comes from the environment at post time.  It is never a
   parameter of ``lava_body()``, never a field of the body, and never written to
   the state file - ``pending_entry()``/``report_from_pending()`` below are the
-  round trip that keeps it that way (see kcilib.state.StateFile).
+  round trip that keeps it that way (see kcilib.core.state.StateFile).
 
 The judged verdicts are *inputs*, never re-derived here: ``tap`` is
 ``(label, summary, per_test)`` - the ``summary`` and ``per_test`` halves of the
-5-tuple ``kcilib.judge.judge_run()`` returns, paired with the test label exactly
+5-tuple ``kcilib.run.judge.judge_run()`` returns, paired with the test label exactly
 as the worker's ``run_node()`` builds it - and ``error_msg`` is the ``detail`` that
 goes with them.  This module never runs tuxrun, never parses TAP and never
 reads a job definition.
@@ -51,7 +51,16 @@ import time
 import requests
 import yaml
 
-from kcilib.judge import LAVA_CASE_RE, strip_ansi
+from kcilib.run.judge import (
+    EXIT_INFRA,
+    EXIT_PASS,
+    EXIT_TEST_FAIL,
+    LAVA_CASE_RE,
+    VERDICT_FAIL,
+    VERDICT_INFRA,
+    VERDICT_PASS,
+    strip_ansi,
+)
 
 # HTTP timeout for the callback POST; the same value the worker polls its APIs
 # with.
@@ -60,6 +69,14 @@ LOG_LIMIT = 2 << 20  # cap of log text embedded in a result body
 
 
 LAVA_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+
+# The suite case lava_body() files a kselftest run under ("0_kselftest.<suite>");
+# the prefix is what marks a case as the selftest verdict rather than a boot
+# case.
+SUITE_CASE_PREFIX = "0_kselftest."
+# LAVA's status for a job whose result could not be produced; 2 is Complete.
+LAVA_STATUS_INCOMPLETE = 3
+LAVA_STATUS_COMPLETE = 2
 
 
 def lava_body(
@@ -85,7 +102,7 @@ def lava_body(
     infrastructure error via the 'job' stage metadata (what
     Callback.is_infra_error() reads).
 
-    run_config is a kcilib.config.RunConfig, and only two of its fields are
+    run_config is a kcilib.core.config.RunConfig, and only two of its fields are
     read here: the api_config_name / storage_config_name the callback definition
     metadata must carry.  The body itself is a pure function of the verdicts -
     no HTTP, no tuxrun, no state.
@@ -192,6 +209,85 @@ def lava_body(
 # persisted.
 CALLBACK_TOKEN_ENV = "PULL_LABS_CALLBACK_TOKEN"
 
+
+def _lava_cases(body):
+    """The (name, result) pairs of a body's lava case list, never raising.
+
+    The list is a YAML string inside the body (that is the format the
+    pipeline's callback parses), so it is read back the same way.  A body that
+    cannot be read yields no cases rather than an exception: a caller reading
+    a verdict must not be able to break a run that already finished.
+    """
+    raw = (body.get("results") or {}).get("lava") or ""
+    try:
+        cases = yaml.safe_load(raw)
+    except yaml.YAMLError:
+        return []
+    if not isinstance(cases, list):
+        return []
+    return [
+        (str(case.get("name") or ""), str(case.get("result") or ""))
+        for case in cases
+        if isinstance(case, dict)
+    ]
+
+
+def verdict_from_body(body):
+    """The ledger's (verdict, exit_code, detail) for a body lava_body() built.
+
+    Read back OUT OF the body on purpose: a record must agree with what was
+    actually reported upstream, and the body is what upstream received.
+    Computing the verdict a second time from the console - judge_run(), which
+    is the one-shot path's route - would be a second opinion about the same
+    run, and the two are free to disagree; "the ledger says pass and the
+    pipeline says fail" is precisely the confusion a durable record exists to
+    remove.
+
+    status 3 is LAVA's Incomplete (no usable result: infrastructure), 2 is
+    Complete.  A Complete job is not automatically a pass: tuxrun exits 0 even
+    when every selftest fails, so the suite case carries the verdict.
+    """
+    status = body.get("status")
+    error = _job_case_metadata(body)
+    if status != LAVA_STATUS_COMPLETE:
+        detail = error.get("error_msg") or ""
+        if not detail:
+            detail = f"lava status {status} (incomplete)"
+        return VERDICT_INFRA, EXIT_INFRA, detail
+    for name, result in _lava_cases(body):
+        if result != "fail":
+            continue
+        if name.startswith(SUITE_CASE_PREFIX) or name in (
+            "login-action",
+            "kernel-messages",
+        ):
+            return VERDICT_FAIL, EXIT_TEST_FAIL, f"{name}: fail"
+    return VERDICT_PASS, EXIT_PASS, error.get("error_msg") or ""
+
+
+def _job_case_metadata(body):
+    """The metadata of the body's 'job' case, or {} when it has none.
+
+    This is where an infrastructure failure names itself (error_type
+    Infrastructure and the message the callback's is_infra_error() reads).
+    """
+    for case in _lava_case_dicts(body):
+        if case.get("name") == "job":
+            metadata = case.get("metadata")
+            return metadata if isinstance(metadata, dict) else {}
+    return {}
+
+
+def _lava_case_dicts(body):
+    """The body's lava cases as dicts (the shape _lava_cases() flattens)."""
+    raw = (body.get("results") or {}).get("lava") or ""
+    try:
+        cases = yaml.safe_load(raw)
+    except yaml.YAMLError:
+        return []
+    if not isinstance(cases, list):
+        return []
+    return [case for case in cases if isinstance(case, dict)]
 
 def callback_url(job):
     """The callback URL a pull-labs job definition records, or None."""

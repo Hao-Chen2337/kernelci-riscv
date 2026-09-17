@@ -22,13 +22,13 @@
 #
 # Examples:
 #   # newest two passing builds of the default job, drift summary only
-#   python3 scripts/config_drift.py
+#   python3 scripts/tools/config_drift.py
 #
 #   # two specific builds, full listing capped at 20 lines per category
-#   python3 scripts/config_drift.py --older 6a96... --newer 6a9d... --max-lines 20
+#   python3 scripts/tools/config_drift.py --older 6a96... --newer 6a9d... --max-lines 20
 #
 #   # machine-readable report (and CI gate: exit 1 when drift > 0)
-#   python3 scripts/config_drift.py --json
+#   python3 scripts/tools/config_drift.py --json
 #
 # Exit code: 0 = no drift, 1 = drift found (usable as a CI gate).
 
@@ -36,9 +36,17 @@ import argparse
 import json
 import os
 import sys
-import time
 
+# requests is imported for its exception types: kcilib.api re-raises
+# requests.exceptions.RequestException, and this tool's error handling catches
+# exactly that.  The HTTP itself goes through the shared client now.
 import requests
+
+# scripts/kcilib/ is resolved through this file's own directory (the tool runs
+# from any CWD), and the API client lives in exactly one place now.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from kcilib.api import KernelCI
 
 API_URL = os.environ.get("KCI_API_URL", "http://localhost:8001").rstrip("/")
 # KernelCI exposes its API under the /latest prefix on api.kernelci.org; the
@@ -69,24 +77,20 @@ def api_headers():
     return {"Authorization": f"Bearer {token}"}
 
 
+def _client():
+    """The shared API client for this deployment.
+
+    This module used to carry its own api_get/fetch_all_nodes - near enough
+    byte-for-byte what regression_tracker.py had, plus a third variant in
+    fetch-and-run-latest.py.  There is one client now (kcilib/api.py), so an API
+    change is made once instead of five times.
+    """
+    return KernelCI(API_URL, token=os.environ.get("KCI_API_TOKEN"))
+
+
 def api_get(path, params=None, retries=3):
     """GET with a few retries for the local API's idle-connection resets."""
-    last_error = None
-    for attempt in range(retries):
-        try:
-            response = requests.get(
-                f"{API_LATEST}{path}",
-                params=params,
-                headers=api_headers(),
-                timeout=60,
-            )
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.ConnectionError as error:
-            last_error = error
-            if attempt < retries - 1:
-                time.sleep(attempt + 1)
-    raise last_error
+    return _client().get(path, params, retries=retries)
 
 
 def fetch_all_nodes(params):
