@@ -17,7 +17,7 @@ after post_result() returned without raising, i.e. after a real 2xx, and the
 cursor advances only once a whole batch succeeded - --since seeds a state file
 that has no cursor, --ignore-state-cursor forces it.  The token is never
 persisted.  Nothing here reads a command line.
-Rationale: docs/code-notes/W2c-kcilib.md.
+Rationale: code-notes/W2c-kcilib.md.
 """
 
 import signal

@@ -2,7 +2,7 @@
 """Verify lava_body() output against the REAL production parser
 (kernelci.runtime.lava.Callback) and every method lava_callback.py calls.
 
-Rationale: docs/code-notes/W2d-tools.md.
+Rationale: code-notes/W2d-tools.md.
 """
 import json
 import os

@@ -7,7 +7,7 @@ and the execution live here instead of twice.  Preserved verbatim, do not
 value may contain spaces), --modules only for the kvm case, and stdout/stderr
 captured separately and concatenated, never interleaved.  Nothing here prints -
 the two callers log the command line with different wording.
-Rationale: docs/code-notes/W2c-kcilib.md.
+Rationale: code-notes/W2c-kcilib.md.
 """
 import subprocess
 
@@ -23,7 +23,7 @@ def build_tuxrun_argv(*, tuxrun_bin, runtime, device, kernel,
     Omission rules, exactly as in the callers: --rootfs, --modules and --tests
     are each omitted when falsy, while --parameters is omitted only when it is
     None - an empty list still reaches tuxrun, which rejects it loudly, instead
-    of the flag disappearing silently.  Rationale: docs/code-notes/W2c-kcilib.md.
+    of the flag disappearing silently.  Rationale: code-notes/W2c-kcilib.md.
     """
     argv = [
         tuxrun_bin,
@@ -77,7 +77,7 @@ def run_tuxrun(argv, timeout=None, log_path=None, *, cwd=None,
 
     ``returncode`` is None on a timeout (TimeoutExpired is swallowed: it is an
     infrastructure failure, not a test failure), ``stdout`` is the merged
-    console and ``stderr`` is empty.  Rationale: docs/code-notes/W2c-kcilib.md.
+    console and ``stderr`` is empty.  Rationale: code-notes/W2c-kcilib.md.
     """
     try:
         proc = subprocess.run(

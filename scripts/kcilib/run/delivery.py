@@ -7,7 +7,7 @@ in_container hands artifact URLs straight to tuxrun, which downloads them
 in the container; local_server downloads and verifies them locally first,
 then serves them to the container over a local HTTP server. This module
 offers the capabilities and never picks a mode for the caller.
-Long-form rationale: docs/code-notes/B-delivery-buildref.md.
+Long-form rationale: code-notes/B-delivery-buildref.md.
 """
 
 import gzip

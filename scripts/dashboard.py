@@ -8,7 +8,7 @@ dependencies, unlike the upstream frontend.  Binds 127.0.0.1, writes nothing.
 
     ./run.sh dashboard [--port 8079]
 
-Notes: docs/code-notes/A-sink-source-dashboard.md
+Notes: code-notes/A-sink-source-dashboard.md
 """
 
 import argparse

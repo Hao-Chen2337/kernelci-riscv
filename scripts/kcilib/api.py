@@ -5,7 +5,7 @@
 It keeps upstream's conventions - the /latest prefix, {items,total,offset}
 pagination, JSON-or-error - without upstream's client, because these scripts
 must stay standalone (./run.sh fetch needs "no stack, no node, no token").
-Rationale: docs/code-notes/W2c-kcilib.md.
+Rationale: code-notes/W2c-kcilib.md.
 """
 
 import time

@@ -5,7 +5,7 @@ No local stack, node or token needed: the build comes from the production API an
 kcilib.run.delivery owns how its artifacts reach tuxrun.
 Exit status IS the verdict (0 pass, 1 test failure, 3 infrastructure error) and
 every outcome is recorded in work/results/<build-id>/<test>.json.
-Rationale: docs/code-notes/W2b-entrypoints.md.
+Rationale: code-notes/W2b-entrypoints.md.
 """
 
 import argparse

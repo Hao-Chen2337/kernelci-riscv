@@ -5,7 +5,7 @@ sys.path, e.g. ``from kcilib.run import judge``).
 
 core/ is plumbing both run paths share, run/ is the run path, table/ the local
 job table, api.py the one KernelCI API client, sink.py where a result goes.
-Rationale: docs/code-notes/W2c-kcilib.md (layout: docs/ARCHITECTURE.md).
+Rationale: code-notes/W2c-kcilib.md (layout: docs/ARCHITECTURE.md).
 """
 
 import os

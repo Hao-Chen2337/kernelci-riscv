@@ -18,7 +18,7 @@ body, never in the state file.
 The verdicts are inputs, never re-derived here: *tap* is
 (label, summary, per_test) and *error_msg* is the matching detail.  This module
 never runs tuxrun, never parses TAP and never reads a job definition.
-Rationale: docs/code-notes/W2c-kcilib.md.
+Rationale: code-notes/W2c-kcilib.md.
 """
 
 import os
