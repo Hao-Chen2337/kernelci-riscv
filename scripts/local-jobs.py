@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-"""本地任务表:把"有哪些构建可跑 / 我要跑什么 / 跑过什么"变成一张能看的表。
+"""The local job table: which builds exist, what to run, what has been run.
 
-    ./run.sh build index [--days N] [--tree T]...   # 从生产 API 搬构建索引
-    ./run.sh jobs  --build <id>                     # 只列出会生成哪些 job,不跑
-    ./run.sh todo  [--build <id>]                   # 还没跑的清单
-    ./run.sh summary                                # 台账
+    ./run.sh build index [--days N] [--tree T]...   # pull the build index
+    ./run.sh jobs  --build <id>                     # list the jobs, run none
+    ./run.sh todo  [--build <id>]                   # what is still pending
+    ./run.sh summary                                # the ledger at a glance
 
-这四件事都**不依赖上游配置合没合**:index 只读生产 API,其余全在本地算。
-所以 1599 还没合的时候,这张表就已经能用了 —— 而它正是"接单模式"的对照组。
-
-为什么单独一个入口,而不是塞进 worker:worker 是**常驻的接单者**,它的问题域是
-"轮询、游标、去重、重投";这张表的问题域是"我知道有哪些构建、我跑过哪些"。
-两者的共同部分(执行一个 job)已经在 kcilib 里了,这里只做表的事。
+None of these need upstream configuration merged. It is separate from the worker
+because the worker is a standing claimer (polling, cursors, dedup) while this
+table only answers what exists and what has run.
 """
 
 import argparse
@@ -54,7 +51,7 @@ def _iso_days_ago(days):
 
 
 def cmd_index(args):
-    """从生产 API 搬构建索引。只读,不需要 token。"""
+    """Pull the build index from the production API. Read-only, no token needed."""
     query = BuildQuery(
         job=args.job,
         trees=tuple(args.tree or ()),
@@ -67,8 +64,8 @@ def cmd_index(args):
           f"trees {list(query.trees) or 'any'})")
     refs, dropped = builds_from_production_api(query)
     print(f"   {len(refs)} build(s) usable, {len(dropped)} dropped")
-    # Say WHY the drops happened: "0 builds" is the answer people chase for hours,
-    # and the reason is nearly always one of these four lines.
+    # Name the drop reasons: "0 builds" is what people chase for hours, and the
+    # cause is nearly always one of these.
     reasons = {}
     for _build_id, reason in dropped:
         key = reason.split(":")[0]
@@ -76,8 +73,8 @@ def cmd_index(args):
     for key, count in sorted(reasons.items()):
         print(f"     dropped {count}: {key}")
     if not refs:
-        # Printing nothing and exiting 0 would look like "no builds exist"; the
-        # filter is what found nothing, so name it.
+        # Exiting 0 with no output looks like "no builds exist"; the filter is what
+        # found nothing, so say so.
         print("   nothing to add; widen --days/--tree or drop --pass-only")
         return 0
     index = BuildIndex(args.db)
@@ -91,7 +88,7 @@ def cmd_index(args):
 
 
 def cmd_jobs(args):
-    """列出某个构建会生成哪些 job。不跑任何东西。"""
+    """List the jobs a build would produce. Runs nothing."""
     index = BuildIndex(args.db)
     build = index.get(args.build) if args.build else None
     if build is None and args.build:
@@ -115,7 +112,7 @@ def cmd_jobs(args):
 
 
 def cmd_todo(args):
-    """还没跑过的 (构建, 测试)。纯减法:索引 − 账本。"""
+    """(build, test) pairs not run yet. Pure subtraction: index minus ledger."""
     index = BuildIndex(args.db)
     ran = localrun.ran_tests()
     tests = tuple(args.test) if args.test else DEFAULT_TESTS
@@ -139,7 +136,7 @@ def cmd_todo(args):
 
 
 def cmd_summary(args):
-    """台账:索引 + 账本 + 本地 API,一次打全。只读,不需要 token。"""
+    """The whole table at a glance: index, ledger and local API. Read-only."""
     index = BuildIndex(args.db)
     ran = localrun.ran_tests()
     print(f"build index: {index.count()} build(s) in "
@@ -209,7 +206,7 @@ def _last_runs(ran, count):
 
 
 def _api_stats(api_url):
-    """节点统计,按 kind 分组。API 不可达时返回 None(而不是抛)。"""
+    """Node counts grouped by kind. Returns None (not a raise) if the API is down."""
     stats = {}
     for kind in ("checkout", "kbuild", "job"):
         try:
@@ -228,17 +225,12 @@ def _api_stats(api_url):
 
 
 def cmd_run(args):
-    """跑起来 —— 来源决定跑什么,执行层永远是同一个 run_node。
+    """Run: the source decides what runs; the executor is always the same run_node.
 
-    --source table  : 索引 − 账本(默认;本地表驱动)
-    --source newest : 生产上最新的可用构建(./run.sh fetch 的能力,现在只是
-                      一个来源,不再是另一条执行路径)
-
-    --build 只在 source=table 时有意义:newest 本来就只有那一个构建。
-
-    结果去哪不在这里判断:出口由 **job 定义** 决定(kcilib/sink.py),账本无条件、
-    回传只在定义里带了 callback.url 时才有 —— 原来这里看的是 --callback-url 这个
-    argparse 值。
+    --source table is the index minus the ledger (default), newest is the newest
+    usable production build, and --build only makes sense with source=table. Where
+    results go comes from the job definition (kcilib/sink.py), not from argparse:
+    the ledger always, plus a callback only when callback.url is set.
     """
     tests = tuple(args.test) if args.test else None
     if args.build and args.source != "table":
@@ -266,9 +258,8 @@ def cmd_run(args):
         print("nothing to run")
         return 0
     print(f"-> running {len(planned)} job(s), one at a time")
-    # 定义先全部建好,出口从**定义**算(kcilib/sink.py):"--callback-url 给没给"
-    # 是 argparse 的事,"结果去哪"是 job 定义的事。一趟里所有 job 的出口相同,
-    # 因为唯一的输入是同一个 --callback-url。
+    # Build the definitions first: the sink comes from the definition, not from
+    # argparse. Every job in a trip shares one sink (the same --callback-url).
     definitions = [(spec, job_definition(spec, callback_url=args.callback_url))
                    for spec in planned]
     sinks = sink.sinks_for(definitions[0][1])
@@ -287,10 +278,9 @@ def cmd_run(args):
         results.append((spec, outcome))
         print(f"  verdict: {outcome['verdict']} "
               f"(exit {outcome['exit_code']}) {outcome['detail'][:60]}")
-        # 结果去哪由出口说了算。账本出口的"送达"就是执行层刚写好的那条记录
-        # (kcilib/run/jobrun.py:491 record_result),取回来打印;回传出口要的是
-        # run_node 的报告三元组,run_job 现在把它放在 outcome["report"] 里
-        # (kcilib/table/localrun.py)—— 没有 callback 段时为 None,出口自己不会要。
+        # The sink decides delivery: for the ledger sink it is the record the executor
+        # just wrote (kcilib.run.jobrun.record_result), for the callback sink the report
+        # triple run_job puts in outcome["report"] (None without a callback section).
         delivered = sink.deliver(sinks, definition, outcome=outcome,
                                  report=outcome.get("report"))
         record = delivered.get(sink.LEDGER)

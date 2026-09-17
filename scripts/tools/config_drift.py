@@ -3,74 +3,41 @@
 #
 # Config-drift detector for the KernelCI riscv pipeline.
 #
-# Compares the effective kernel `.config` of two kbuild nodes of the same
-# job and reports option-level drift: CONFIG_* options that were added,
-# removed, or had their value changed between the two builds.  A kconfig
-# change (upstream default change, fragment change, defconfig change) can
-# silently alter which selftests are built and run, so drift is reported
-# next to the test results.
-#
-# Where the .config comes from, in order of preference:
-#   1. node artifact `_config` / `.config` (a URL in the node's artifacts)
-#   2. the local storage convention used by the docker-compose deployment:
-#      {storage_base}/{job}-{node_id}/.config
-#   3. --older-config / --newer-config: explicit URLs or local file paths
-#
-# Read-only command: it talks to the API with GET requests only, so it works
-# against the public production API (https://api.kernelci.org) without a
-# token, as well as against the local API.  No KCI_API_TOKEN is required.
-#
-# Examples:
-#   # newest two passing builds of the default job, drift summary only
-#   python3 scripts/tools/config_drift.py
-#
-#   # two specific builds, full listing capped at 20 lines per category
-#   python3 scripts/tools/config_drift.py --older 6a96... --newer 6a9d... --max-lines 20
-#
-#   # machine-readable report (and CI gate: exit 1 when drift > 0)
-#   python3 scripts/tools/config_drift.py --json
-#
-# Exit code: 0 = no drift, 1 = drift found (usable as a CI gate).
+# Diffs the effective kernel `.config` of two kbuild nodes and reports the
+# CONFIG_* options added, removed or changed (a kconfig change silently alters
+# which selftests get built). Read-only, no token; exit 1 means "drift", so it
+# can gate CI. Rationale: docs/code-notes/W2d-tools.md.
 
 import argparse
 import json
 import os
 import sys
 
-# requests is imported for its exception types: kcilib.api re-raises
-# requests.exceptions.RequestException, and this tool's error handling catches
-# exactly that.  The HTTP itself goes through the shared client now.
+# For its exception types: kcilib.api re-raises RequestException, and that is
+# what this tool catches.  The HTTP itself goes through the shared client.
 import requests
 
-# scripts/kcilib/ is resolved through this file's own directory (the tool runs
-# from any CWD), and the API client lives in exactly one place now.
+# scripts/kcilib/ resolved through this file's own directory (any CWD).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from kcilib.api import KernelCI
 
 API_URL = os.environ.get("KCI_API_URL", "http://localhost:8001").rstrip("/")
-# KernelCI exposes its API under the /latest prefix on api.kernelci.org; the
-# local API accepts both, so always target the canonical /latest base.
+# api.kernelci.org serves under /latest and the local API accepts both, so
+# always target the canonical /latest base.
 API_LATEST = API_URL if API_URL.endswith("/latest") else f"{API_URL}/latest"
 # Storage convention of the docker-compose deployment:
-# {STORAGE_BASE}/{job}-{node_id}/.config
-# KCI_STORAGE_URL wins; otherwise the port comes from the deployment, which
-# moves the stack off the defaults with KCI_STORAGE_PORT (run-local-stack.sh
-# exports it for the compose file, and ./run.sh drift forwards it).  Hardcoding
-# 8002 here meant a deployment on e.g. 18002 fetched from the wrong host - and
-# only in the one case this fallback exists for, a node without a _config
-# artifact in its own artifacts.
+# {STORAGE_BASE}/{job}-{node_id}/.config.  KCI_STORAGE_URL wins, else the port
+# KCI_STORAGE_PORT names (run-local-stack.sh exports it): hardcoding 8002
+# fetched from the wrong host on a deployment that moved off the default.
 STORAGE_BASE = os.environ.get("KCI_STORAGE_URL") or (
     "http://localhost:{}".format(os.environ.get("KCI_STORAGE_PORT", "8002"))
 )
 
 
 def api_headers():
-    """Optional Authorization header.
-
-    Every request this tool makes is a GET, and the KernelCI API serves
-    those publicly, so a token is only attached when one is configured.
-    """
+    """Optional Authorization header: every request here is a public GET, so a
+    token is only attached when one is configured."""
     token = os.environ.get("KCI_API_TOKEN")
     if not token:
         return {}
@@ -78,12 +45,10 @@ def api_headers():
 
 
 def _client():
-    """The shared API client for this deployment.
+    """The shared API client (kcilib/api.py) for this deployment.
 
-    This module used to carry its own api_get/fetch_all_nodes - near enough
-    byte-for-byte what regression_tracker.py had, plus a third variant in
-    fetch-and-run-latest.py.  There is one client now (kcilib/api.py), so an API
-    change is made once instead of five times.
+    This module used to carry its own api_get/fetch_all_nodes, near enough a
+    copy of regression_tracker.py's; there is one client now.
     """
     return KernelCI(API_URL, token=os.environ.get("KCI_API_TOKEN"))
 
@@ -96,10 +61,9 @@ def api_get(path, params=None, retries=3):
 def fetch_all_nodes(params):
     """Page through /nodes until every matching node has been fetched.
 
-    /nodes returns its results in creation order and truncates each
-    response to the page limit, so a single request would silently miss the
-    newest nodes of a large job.  The response carries {items,total,offset},
-    which lets us walk every page before sorting client-side.
+    /nodes truncates each response to the page limit, so one request would
+    silently miss the newest nodes of a large job; the {items,total,offset}
+    response lets us walk every page before sorting client-side.
     """
     items = []
     offset = 0
@@ -132,9 +96,8 @@ def get_node(node_id):
 def parse_config(text):
     """Parse a kernel .config into {CONFIG_OPT: value}.
 
-    `CONFIG_X=y` / `CONFIG_X=123` / `CONFIG_X="str"` map to the value after
-    '='; `# CONFIG_X is not set` maps to 'n'.  Comments and blanks are
-    ignored; inline comments after a value are stripped.
+    `CONFIG_X=y` maps to the value after '=', `# CONFIG_X is not set` to 'n';
+    comments and blanks are ignored, inline comments are stripped.
     """
     config = {}
     for line in text.splitlines():
@@ -159,10 +122,10 @@ def fetch_text(url):
 
 
 def config_url_of(node, job):
-    """Return the .config URL for a kbuild node, or None.
+    """Return the .config URL for a kbuild node (never None).
 
-    Prefers the node's own artifacts; falls back to the storage layout the
-    docker-compose deployment uses ({STORAGE_BASE}/{job}-{node_id}/.config).
+    The node's own artifacts win, the deployment's storage layout is the
+    fallback.
     """
     artifacts = node.get("artifacts") or {}
     url = artifacts.get("_config") or artifacts.get(".config")
@@ -174,10 +137,8 @@ def config_url_of(node, job):
 def pick_nodes(job, older_id, newer_id):
     """Resolve the two kbuild nodes to compare.
 
-    Explicit ids take precedence; otherwise the newest two done/pass nodes
-    of the job are used, in chronological order: (older, newer).  The API
-    filters (state=done, result=pass) are pushed down so pagination stays
-    cheap even on the busy production job.
+    Explicit ids win; otherwise the newest two done/pass nodes, in
+    chronological order, as (older, newer).
     """
     if older_id and newer_id:
         return get_node(older_id), get_node(newer_id)
@@ -329,8 +290,8 @@ def main():
     except (OSError, UnicodeDecodeError) as error:
         sys.exit(f"Could not read .config: {error}")
 
-    # A 200 response that is not a .config (HTML index/auth page, truncated
-    # download) parses to {}: reporting drift on that would be nonsense.
+    # A 200 that is not a .config (HTML index/auth page) parses to {}; drift
+    # reported from that would be nonsense.
     if not prev_cfg or not curr_cfg:
         sys.exit(
             f"Empty .config parsed (older: {len(prev_cfg)} options, "

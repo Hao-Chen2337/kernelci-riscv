@@ -3,34 +3,10 @@
 #
 # Regression trend recorder for the KernelCI riscv pipeline.
 #
-# The pipeline already records every test run as a node in the API, so the
-# result history (the "trend") is inherently persisted.  This tool layers two
-# things on top of that history:
-#
-#   * `trend`  - render the pass/fail history of the tracked test jobs as a
-#                time series (commit -> result), so drift over builds is
-#                visible at a glance.
-#   * `track`  - scan that history for pass -> fail transitions and create
-#                `kind=regression` nodes in the API, turning a one-off failure
-#                into a persistent, queryable regression record (with the
-#                first-failing and last-passing nodes linked).
-#   * `watch`  - loop `track` so regressions are recorded automatically.
-#
-# Read/write split:
-#   * `trend` is read-only: GET requests only, no KCI_API_TOKEN required, and
-#     it works against both the local API and the public production API
-#     (https://api.kernelci.org).
-#   * `track` / `watch` create nodes (POST).  They require KCI_API_TOKEN and
-#     must run against the local API: the production API is read-only from
-#     this tooling's point of view, and local JWTs are not accepted there.
-#
-# Idempotent: re-running `track` never creates a duplicate regression node
-# for the same failing run.
-#
-# Examples:
-#   python3 scripts/tools/regression_tracker.py trend --jobs kselftest-riscv-pull-labs
-#   python3 scripts/tools/regression_tracker.py track --dry-run
-#   python3 scripts/tools/regression_tracker.py watch --interval 60
+# `trend` renders the pass/fail history per commit (read-only, no token);
+# `track` turns pass -> fail transitions into kind=regression nodes and `watch`
+# loops it (both POST, local API only, KCI_API_TOKEN required; `track` is
+# idempotent). Rationale: docs/code-notes/W2d-tools.md.
 
 import argparse
 import os
@@ -39,15 +15,14 @@ import time
 
 import requests
 
-# scripts/kcilib/ is resolved through this file's own directory, so the tool
-# runs from any CWD and the API client lives in exactly one place.
+# scripts/kcilib/ resolved through this file's own directory (any CWD).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from kcilib.api import KernelCI
 
 API_URL = os.environ.get("KCI_API_URL", "http://localhost:8001").rstrip("/")
-# KernelCI exposes its API under the /latest prefix on api.kernelci.org; the
-# local API accepts both, so always target the canonical /latest base.
+# api.kernelci.org serves under /latest and the local API accepts both, so
+# always target the canonical /latest base.
 API_LATEST = API_URL if API_URL.endswith("/latest") else f"{API_URL}/latest"
 PRODUCTION_API_URLS = {
     "https://api.kernelci.org",
@@ -58,11 +33,8 @@ PROD_READ_ONLY = (
     "(KCI_API_URL=http://127.0.0.1:8001)"
 )
 
-# Test nodes whose pass/fail transitions are tracked.  These names must
-# match the node `name` field in the API exactly; run `trend` with an empty
-# --jobs list to see what names exist (it will show "(no runs)" per job).
-# These are the PR1 pull-labs job names; the locally created demo nodes use
-# a numeric suffix (-2/-3/...) and can be tracked via --jobs.
+# Tracked test jobs.  Names must match the node `name` field exactly; the
+# locally created demo nodes carry a -2/-3 suffix and need an explicit --jobs.
 DEFAULT_JOBS = [
     "baseline-riscv-pull-labs",
     "kselftest-riscv-pull-labs",
@@ -77,9 +49,8 @@ def is_production():
 def api_headers():
     """Optional Authorization header.
 
-    GET endpoints of the KernelCI API are public.  A local admin JWT is
-    only meaningful against the local API, so it is never attached when
-    KCI_API_URL points at the production API.
+    GET endpoints are public, and a local admin JWT means nothing against the
+    production API, so it is never attached there.
     """
     token = os.environ.get("KCI_API_TOKEN")
     if not token or is_production():
@@ -88,11 +59,9 @@ def api_headers():
 
 
 def _client():
-    """The shared API client for this deployment (kcilib/api.py).
+    """The shared API client (kcilib/api.py) for this deployment.
 
-    This module had its own api_get/fetch_all_nodes - the same code as
-    config_drift.py and a third variant in fetch-and-run-latest.py.  Reads go
-    through the one client now; writes below still use requests directly,
+    Reads go through the one client; writes below still use requests directly,
     because creating nodes is this tool's own decision.
     """
     return KernelCI(API_URL, token=os.environ.get("KCI_API_TOKEN"))
@@ -106,11 +75,9 @@ def api_get(path, params=None, retries=3):
 def fetch_all_nodes(params):
     """Page through /nodes until every matching node has been fetched.
 
-    /nodes returns its results in creation order and truncates each
-    response to the page limit, so a single request would silently miss the
-    newest runs of a busy production job.  The response carries
-    {items,total,offset}, which lets us walk every page before sorting
-    client-side.
+    /nodes truncates each response to the page limit, so one request would
+    silently miss the newest runs of a busy job; the {items,total,offset}
+    response lets us walk every page before sorting client-side.
     """
     items = []
     offset = 0
@@ -144,9 +111,8 @@ def list_nodes(name=None, kind=None, limit=200, **filters):
 def require_write_access(action):
     """Guard for every command that POSTs nodes.
 
-    POSTing is only supported against the local API: production
-    (https://api.kernelci.org) is read-only from this tooling, and without
-    KCI_API_TOKEN there is no identity to create nodes with at all.
+    POSTing only works against the local API, and only with a KCI_API_TOKEN to
+    create nodes as.
     """
     if is_production():
         sys.exit(
@@ -189,13 +155,9 @@ def existing_regressions():
 def done_runs(job):
     """Chronological list of done runs of a job.
 
-    kind="job" is not decoration: `track` creates kind=regression nodes that
-    copy the job's own name/group/path (build_regression below), so without
-    the filter this function also returned the regression records describing
-    those very runs.  `trend` then printed one extra row per regression -
-    with commit "?" (a regression node carries failed_kernel_revision, not
-    kernel_revision) - counted it in the "N pass / M fail" line, and
-    `track` rescanned its own output as if it were history.
+    kind="job" is not decoration: regression nodes copy the job's own
+    name/group/path, so without the filter they come back as runs - commit "?",
+    counted in the pass/fail line, and tracked again as if they were history.
     """
     runs = list_nodes(name=job, kind="job", state="done")
     runs.sort(key=lambda n: (n.get("created") or "", n.get("id", "")))
@@ -205,9 +167,8 @@ def done_runs(job):
 def transitions_in(runs):
     """Return (fail_node, pass_node) pairs, one per pass->fail transition.
 
-    Consecutive failures belong to the same regression: only the first
-    failing run after a pass starts a new transition, and the counter only
-    re-arms after a fresh pass.
+    Consecutive failures are one regression: only the first failure after a
+    pass starts a transition, and the counter re-arms only on a fresh pass.
     """
     transitions = []
     last_pass = None
@@ -227,9 +188,10 @@ def find_transitions(job):
 
 
 def build_regression(fail_node, pass_node):
-    """Construct a kind=regression node linking a first failure to its last
-    pass.  Supports cross-commit regressions (the normal case), so unlike
-    Regression.create_regression it does not require identical revisions."""
+    """Build a kind=regression node linking a first failure to its last pass.
+
+    Cross-commit regressions are the normal case, so unlike
+    Regression.create_regression the revisions need not be identical."""
     data = fail_node.get("data") or {}
     return {
         "kind": "regression",

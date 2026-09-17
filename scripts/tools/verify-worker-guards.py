@@ -1,37 +1,17 @@
 #!/usr/bin/env python3
 """Adversarial guard tests for the RISC-V pull-lab worker's behaviour.
 
-Covers the review findings that are testable offline: ANSI stripping,
-TAP edge cases, infra detection, log capping, test-type validation, and -
-since round 3 - the state machine the worker runs on: the state file and the
-cursor it stores, how a result is classified when the callback is missing,
-unreachable or refusing, the resume/416 download path, the console-log archive
-and the timeout clamp.  Those are the paths where a bug loses a result or
-wedges an artifact, and none of them had a test.
+Offline checks for the paths where a bug loses a result or wedges an artifact:
+ANSI and TAP edge cases, infra detection, log capping, the state file and its
+cursor, callback classification, the resume/416 download path, the console
+archive, the timeout clamp, and round B's kcilib/api.py and kcilib/source.py.
 
-The behaviours are the worker's; the code implementing them now lives in
-scripts/kcilib/ (the worker itself is only the flags, the config they map to and
-the call into kcilib.run.poll.poll_loop).  Every check below therefore drives the
-module that OWNS the behaviour and patches THAT module's seam -
-kcilib.run.poll.fetch_nodes/handle_event/retrieve_job_definition,
-kcilib.run.jobrun.run_command/baked_rootfs_image/stamp, kcilib.run.callback.requests,
-kcilib.run.artifacts.requests, kcilib.run.poll.requests - instead of a re-export in the
-worker: a shim there would only test the shim.  The state file is driven
-through kcilib.core.state.StateFile directly, the same object the poll loop writes.
+Every check drives the module that OWNS the behaviour and patches THAT module's
+seam (poll, jobrun, callback, artifacts, api, source) - never a re-export in the
+worker, which would only test the shim.  The state file is driven through
+kcilib.core.state.StateFile, the object the poll loop writes.
 
-Since phase 4 the library takes two config objects instead of an argparse
-namespace - kcilib.core.config.RunConfig for a run and kcilib.core.config.PollConfig for
-the API side - so the fixtures below build those dataclasses directly, and
-test_build_command_validation() also drives config.from_args() to check that
-the command line really lands in them.  Round B's own abstractions get the
-same treatment: kcilib/api.py (the one API client every reader of the API now
-goes through) is driven with an injected session, so the /latest prefix, the
-{items,total,offset} paging walk, its two ways of stopping and its refusal to
-hand back something that is not JSON are all checked without a request leaving
-the machine; kcilib/source.py's TableSource (the index minus the ledger, and a
-skip that names the artifact it is missing) and NewestSource (the 3 -> 7 -> 30
--> 180 day widening, and the reason it gives when it finds nothing) are driven
-offline by patching that module's own production-API seam.  Run from anywhere:
+Rationale: docs/code-notes/W2d-tools.md.
 
     python3 scripts/tools/verify-worker-guards.py
 """
@@ -44,8 +24,7 @@ from contextlib import contextmanager
 
 import requests as _real_requests
 
-# kcilib sits next to this file; resolved through the file's own directory, so
-# the guards run from any CWD.
+# kcilib sits next to this file; resolved through this file's own directory.
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))  # scripts/ holds kcilib
 
@@ -57,10 +36,8 @@ from kcilib.run import artifacts, callback, jobrun, judge, poll
 def check(condition, message):
     """A guard that also holds under `python3 -O` / PYTHONOPTIMIZE=1.
 
-    These checks used to be `assert` statements.  run.sh fails the `verify`
-    gate on a non-zero exit, but -O strips every assert, so a broken check
-    printed "ALL GUARD CHECKS PASSED" and exited 0: the gate reported success
-    precisely when it had verified nothing.
+    These used to be `assert`s, and -O strips those: a broken check exited 0,
+    so the gate reported success precisely when it had verified nothing.
     """
     if not condition:
         print(f"FAIL: {message}", file=sys.stderr)
@@ -114,8 +91,7 @@ def test_tap_summary():
     check(summary4 == {"total": 1, "failed": 0, "skipped": 1}, summary4)
     check(per4 == {"s1": "skip"}, per4)
 
-    # malformed/glued/uppercase failures must still be detected
-    # (round 2: these used to be false greens)
+    # malformed/glued/uppercase failures must still be detected (round 2)
     weird = ("  not  ok 1 selftests: kvm: a\n"
              "NOT OK 2 selftests: kvm: b\n"
              "not\tok 3 selftests: kvm: c\n"
@@ -185,8 +161,7 @@ def test_build_command_validation():
 
     # ... and the flag -> field mapping is itself a tested thing (#phase 4):
     # config.from_args() is the ONE place a parsed command line becomes the two
-    # config objects, so a flag that quietly stops reaching the library is a
-    # broken guard, not a silent behaviour change.
+    # config objects.
     args = cli.parse_args([
         "--api-url", "http://api", "--platform", "qemu-x86_64",
         "--runtime", "other-lab", "--output-dir", "/tmp/out",
@@ -274,8 +249,8 @@ class _Response:
 
 
 class _RequestsStub:
-    """Replaces a module's requests: get/post are stubbed, the exception
-    classes stay the real ones so the module's except clauses still match."""
+    """Replaces a module's requests: get/post stubbed, exception classes real
+    so the module's except clauses still match."""
 
     def __init__(self, get=None, post=None):
         self.exceptions = _real_requests.exceptions
@@ -297,11 +272,9 @@ class _RequestsStub:
 def stub_requests(module, get=None, post=None):
     """Replace the `requests` of the module that OWNS the call.
 
-    The module is the one whose code performs the request now - kcilib.run.callback
-    for the result POST, kcilib.run.artifacts for an artifact transfer, kcilib.run.poll
-    for the node-state GET - because that is the module-level name the code
-    actually resolves.  Stubbing the worker's would no longer be seen by any of
-    them, which is exactly why the worker keeps no re-export for it.
+    That module-level name is what the code resolves - kcilib.run.callback for
+    the result POST, kcilib.run.artifacts for a transfer, kcilib.run.poll for
+    the node-state GET - so stubbing the worker's would not be seen at all.
     """
     real = module.requests
     module.requests = _RequestsStub(get, post)
@@ -325,9 +298,8 @@ def no_sleep():
 def read_state(path):
     """The state file's three documented fields, as the operators read them.
 
-    kcilib.core.state.StateFile owns the file (the worker's load_state()/save_state()
-    shims are gone); this is the guards' own view of the document it writes -
-    the same {timestamp, seen, pending} shape the worker has always persisted.
+    kcilib.core.state.StateFile owns the file; this is the guards' own view of
+    the {timestamp, seen, pending} document it writes.
     """
     state = StateFile(path).load()
     return {
@@ -404,7 +376,7 @@ def test_download_complete_part_and_416():
         check(not os.path.exists(meta), "sidecar left behind after publishing")
 
         # (b) a 416 whose Content-Range total equals the offset: the server
-        # itself confirms the partial file was the whole artifact
+        # itself confirms the partial was the whole artifact
         os.unlink(dest)
         with open(part, "wb") as handle:
             handle.write(b"y" * 500)
@@ -421,8 +393,8 @@ def test_download_complete_part_and_416():
         check(os.path.getsize(dest) == 500, "a 416 = complete was not published")
         check(ranges == ["bytes=500-"], ranges)
 
-        # (c) a 416 that does not match: the partial is dropped and the
-        # transfer restarts from zero instead of wedging the artifact
+        # (c) a mismatched 416 drops the partial, so the transfer restarts
+        # from zero instead of wedging the artifact
         os.unlink(dest)
         with open(part, "wb") as handle:
             handle.write(b"z" * 10)
@@ -609,9 +581,8 @@ def _poll_config(state_file, **over):
 
 
 def test_missing_callback_keeps_result_pending():
-    """#3 end to end: a job whose definition has no callback URL must not be
-    reported as posted, and must not be marked seen - the result it just
-    produced is the only copy."""
+    """#3 end to end: no callback URL -> not posted and not marked seen, because
+    the result it just produced is the only copy."""
     node_id = "6aa387ecba3aeacda180ff12"
     job_def = {"callback": {}, "environment": {"platform": "qemu-riscv64"},
                "artifacts": {"kernel": "http://x/Image"},
@@ -632,10 +603,9 @@ def test_missing_callback_keeps_result_pending():
         poll_config = _poll_config("unused-state.json")
         reports = {}
         # The ledger root is redirected for the duration: this test drives a
-        # REAL run_node(), so without it the record the worker now files would
-        # land in the repository's work/results/ and `./run.sh verify` would
-        # dirty the tree it is verifying.  The redirection is the seam; the
-        # assertions below read the same root back through kcilib.core.ledger.
+        # REAL run_node(), and the record it files must not land in the
+        # repository's work/results/ - `./run.sh verify` would dirty the tree it
+        # is verifying.
         results_dir = os.path.join(tmp, "results")
         real_results_env = os.environ.get(ledger.RESULTS_DIR_ENV)
         os.environ[ledger.RESULTS_DIR_ENV] = results_dir
@@ -651,9 +621,8 @@ def test_missing_callback_keeps_result_pending():
             baked.append((bake_args, bake_kwargs))
             return "/tmp/not-baked.ext4"
 
-        # run_node() resolves both of these as kcilib.run.jobrun module globals, so
-        # that is where the seam is: a boot job must never bake, and the
-        # progress lines must still be emitted.
+        # run_node() resolves both as kcilib.run.jobrun module globals, which is
+        # where the seam is: a boot job must never bake.
         jobrun.baked_rootfs_image = no_bake
         jobrun.stamp = stamped.append
         try:
@@ -682,10 +651,8 @@ def test_missing_callback_keeps_result_pending():
               f"the report must be the run's real body: {reports}")
 
         # The same run must also be in the ledger: the worker used to file
-        # nothing, so work/results/ held only the one-shot runner's rows and a
-        # resident lab had no history of its own.  The build id falls back to
-        # the job node id here because the only artifact URL of this job names
-        # no build.
+        # nothing, so work/results/ held only the one-shot runner's rows.  The
+        # build id falls back to the job node id, as this job names no build.
         record_path = ledger.result_path(node_id, "boot")
         check(os.path.isfile(record_path),
               f"the run must be recorded at {record_path}")
@@ -713,10 +680,9 @@ def test_missing_callback_keeps_result_pending():
 def test_state_flushed_before_a_crash():
     """#9: a kill mid-batch must not lose a collected result.
 
-    handle_event() is replaced by a stub that queues a report and then raises,
-    which is what a crash (or a SIGKILL) after a transient callback failure
-    looks like from poll_loop's side: the state file must already contain the
-    report, so the next start re-posts it instead of re-running tuxrun."""
+    handle_event() queues a report and then raises, which is what a crash looks
+    like from poll_loop's side: the state file must already hold the report, so
+    the next start re-posts it instead of re-running tuxrun."""
     with tempfile.TemporaryDirectory() as tmp:
         state_file = os.path.join(tmp, "state.json")
         poll_config = _poll_config(state_file)
@@ -747,8 +713,7 @@ def test_state_flushed_before_a_crash():
 
 
 def test_poll_loop_persists_cursor_and_seen():
-    """#25: a handled node is marked seen and the cursor advances - the poll
-    loop's own state transitions, persisted to the state file it writes."""
+    """#25: a handled node is marked seen and the cursor advances, persisted."""
     with tempfile.TemporaryDirectory() as tmp:
         state_file = os.path.join(tmp, "state.json")
         poll_config = _poll_config(state_file)
@@ -774,28 +739,19 @@ def test_poll_loop_persists_cursor_and_seen():
 def test_port_probe():
     """#4: the port check the stack makes is kcilib.core.ports', not a second copy.
 
-    scripts/run-local-stack.sh carried its own bind test, holder lookup and
-    refusal text (~49 lines) next to the library's, and the two copies already
-    disagreed about the address to probe: the shell bound 0.0.0.0 because the
-    stack binds 0.0.0.0, while kcilib.core.ports defaults to 127.0.0.1.  The shell now
-    calls `python3 -m kcilib.core.ports --host 0.0.0.0`, so what has to hold is the
-    contract that call depends on: a free port passes, a foreign listener
-    raises SystemExit(1) with the refusal naming the port, the holder and the
-    KCI_*_PORT variable, our own compose project is not a conflict, an EMPTY
-    owner never counts as ours, and the host really is forwarded instead of
-    silently taking the 127.0.0.1 default.
+    scripts/run-local-stack.sh calls `python3 -m kcilib.core.ports --host 0.0.0.0`,
+    so that contract is what is checked: a free port passes, a foreign listener
+    exits 1 naming port, holder and KCI_*_PORT, our own compose project is no
+    conflict, and an EMPTY owner is never ours.
     """
     import socket
 
     from kcilib.core import ports
 
-    # Explicit ports, NOT port 0.  Asking the kernel for an ephemeral port makes
-    # this test depend on the machine's ephemeral pool, and a box whose pool is
-    # exhausted (4096 ports in range 56905-61000 here, and 4113 sockets open at
-    # the time) fails bind(0) with EADDRINUSE - which reads as "the port probe is
-    # broken" when nothing is wrong with it.  The stack's own ports are all
-    # 8001-8999, comfortably outside the ephemeral range, so probing outside it
-    # is also the more faithful test.
+    # Explicit ports, NOT port 0: an ephemeral port makes this test depend on
+    # the machine's ephemeral pool, and a box whose pool is exhausted fails
+    # bind(0) with EADDRINUSE, which reads as "the port probe is broken".  The
+    # stack's own ports (8001-8999) sit outside that range anyway.
     def _bind(host, wanted):
         for offset in range(32):
             sock = socket.socket()
@@ -821,17 +777,14 @@ def test_port_probe():
         ports.require_port_free(free, "artifact server", "KCI_SERVE_PORT",
                                 host="0.0.0.0")
 
-        # Somebody else holds it: exit 1, and the message must carry the three
-        # things the reader needs (the port, the holder, the way out).
+        # Somebody else holds it: exit 1 naming port, holder and the way out.
         try:
             ports.require_port_free(taken, "artifact server", "KCI_SERVE_PORT",
                                     host="0.0.0.0")
         except SystemExit as refusal:
-            # The refusal is a message SystemExit: python prints it to stderr and
-            # exits 1, which is the status the shell's own \`exit 1\` produced.
-            # `refusal.code` is therefore the MESSAGE, not 1 - the exit status is
-            # checked below through the real command line, which is what
-            # run-local-stack.sh calls.
+            # The refusal is a message SystemExit: python prints it to stderr
+            # and exits 1, so `refusal.code` is the MESSAGE, not 1.  The exit
+            # status is checked below through the real command line.
             message = str(refusal)
             check(isinstance(refusal.code, str) and "already in use" in message,
                   f"a taken port must refuse with a message: {refusal.code!r}")
@@ -846,8 +799,8 @@ def test_port_probe():
         ports.require_port_free(taken, "artifact server", "KCI_SERVE_PORT",
                                project="kcirv", host="0.0.0.0")
 
-        # An empty owner is NOT ours: one deployment with no project name must
-        # not wave a foreign listener through in silence.
+        # An empty owner is NOT ours: an unnamed deployment must not wave a
+        # foreign listener through in silence.
         ports._compose_project = lambda _port: ""
         try:
             ports.require_port_free(taken, "artifact server", "KCI_SERVE_PORT",
@@ -858,7 +811,7 @@ def test_port_probe():
             check(False, "an empty owner must not be read as our own project")
 
         # The host is forwarded, not defaulted away: probing 127.0.0.1 for a
-        # service that binds 0.0.0.0 is the weaker check the shell never made.
+        # 0.0.0.0 service is the weaker check.
         seen = []
 
         def recording_probe(port, host=ports.DEFAULT_HOST):
@@ -872,11 +825,9 @@ def test_port_probe():
               f"the probe host must be forwarded, got {seen}")
 
         # The command line run-local-stack.sh calls, end to end: exit 1 on a
-        # taken port (with the refusal on stderr), exit 0 on a free one.  This
-        # is the half of the contract the library API cannot show.
+        # taken port with the refusal on stderr, exit 0 on a free one.
         import subprocess
-        # PYTHONPATH is scripts/ (where kcilib lives), not this file's own
-        # directory: this tool moved one level down into scripts/tools/.
+        # PYTHONPATH is scripts/ (where kcilib lives), not this file's directory.
         env = dict(os.environ, PYTHONPATH=os.path.dirname(HERE))
 
         def probe(port):
@@ -907,12 +858,9 @@ def test_port_probe():
 def test_build_ref_and_jobspec():
     """The local job table's two pure layers: node -> BuildRef -> JobSpec.
 
-    These are the functions 'build index / jobs / todo' stand on, and they are
-    pure - so they are testable without a network, an API or a run.  The two
-    things worth pinning down are the ones that bit us while designing: a node
-    whose artifacts name no build must fall back to the node id (never to
-    something invented), and a build that lacks a collection's tarball must SKIP
-    that test loudly instead of producing a job that dies 20 minutes in."""
+    Both are pure, so they need no network, API or run.  Pinned down: a node
+    whose artifacts name no build falls back to the node id, and a build lacking
+    a collection's tarball SKIPs loudly instead of dying 20 minutes into a job."""
     from kcilib.table import buildref, jobspec
 
     node = {
@@ -991,13 +939,13 @@ def test_worker_lock():
     """#25: a second worker on the same state file must refuse to start.
 
     Two workers on one state file would each see half the queue and fight over
-    the same workspaces and ports; the flock is what prevents that."""
+    the same workspaces and ports."""
     import fcntl
 
     with tempfile.TemporaryDirectory() as tmp:
         state_file = os.path.join(tmp, "state.json")
-        # The file must stay open for the flock to be held (SIM115 is
-        # deliberate, exactly as in poll_loop).
+        # The file must stay open for the flock to be held (SIM115 deliberate,
+        # as in poll_loop).
         holder = open(state_file + ".lock", "w")  # noqa: SIM115
         fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
@@ -1014,8 +962,7 @@ def test_worker_lock():
 
 
 def test_seen_eviction():
-    """#25: the seen set stays bounded - the oldest id is evicted, so the
-    state file cannot grow without limit."""
+    """#25: the seen set stays bounded - the oldest id is evicted."""
     limit = SEEN_LIMIT
     new_id = "f" * 24
     with tempfile.TemporaryDirectory() as tmp:
@@ -1050,11 +997,9 @@ def test_seen_eviction():
 class _FakeSession:
     """A stand-in for requests.Session, INJECTED onto the client.
 
-    kcilib/api.py opens its own session in __init__ and resolves self.session
-    at call time (kcilib/api.py:85), so replacing that one attribute is the
-    seam: no request leaves the machine, and the kwargs the client passes -
-    allow_redirects above all, which is what makes the redirect refusal
-    reachable at all - stay observable.
+    kcilib/api.py resolves self.session at call time, so replacing that one
+    attribute is the seam: no request leaves the machine, and the kwargs the
+    client passes - allow_redirects above all - stay observable.
     """
 
     def __init__(self, handler):
@@ -1082,9 +1027,8 @@ def _api_client(handler, base="http://x:8001", **kwargs):
 def test_api_latest_prefix():
     """kcilib/api.py: one /latest base, whatever form the caller passes.
 
-    The /latest prefix is the thing the five hand-written clients this module
-    replaced disagreed about, so both accepted forms must address the SAME
-    endpoint - not merely both "work".
+    The /latest prefix is what the hand-written clients disagreed about, so both
+    accepted forms must address the SAME endpoint - not merely both "work".
     """
     from kcilib.api import KernelCI
 
@@ -1112,8 +1056,7 @@ def test_api_latest_prefix():
     check(all(entry.get("limit") == 7 and entry.get("offset") == 0
               for entry in params), params)
 
-    # An absolute URL is used as given: a job definition URL is external and
-    # must never be re-based under /latest.
+    # An absolute URL is used as given: a job definition URL is external.
     forwarded = []
 
     def absolute(url, _kwargs):
@@ -1129,11 +1072,9 @@ def test_api_latest_prefix():
 def test_api_all_nodes_pages():
     """kcilib/api.py: all_nodes() walks {items,total,offset}, and stops.
 
-    A missing page used to look exactly like "no such build", so the loop is
-    worth a test rather than a comment - including the two ways it must end
-    (the total is reached; a page comes back short when there is no total) and
-    the stale-total case, where an empty page is the only thing that can stop
-    it.
+    A missing page used to look exactly like "no such build".  Three endings
+    are checked: the total is reached, a short page when there is no total, and
+    an empty page when the total is stale.
     """
     import kcilib.api as kcapi
 
@@ -1178,7 +1119,7 @@ def test_api_all_nodes_pages():
     check(offsets == [0, limit], offsets)
 
     # (c) a total that never arrives (10**6 with 250 nodes): the short page and
-    # then the empty one are what end it - never an unbounded loop.
+    # then the empty one end it, so the walk stays bounded.
     offsets = []
     nodes = _api_client(
         paging([first, rest], total=10 ** 6, offsets=offsets)).all_nodes()
@@ -1198,11 +1139,9 @@ def test_api_all_nodes_pages():
 def test_api_non_json_is_api_error():
     """kcilib/api.py: a body that is not JSON is an APIError, not a ValueError.
 
-    A proxy in front of the API answers an HTML page; response.json() raises
-    ValueError, which used to escape the client and kill callers that only
-    catch API errors.  The stub raises the exception a real requests response
-    raises (requests.exceptions.JSONDecodeError), not a bare ValueError, so
-    _json()'s except clause is exercised for the type it really sees.
+    A proxy answers an HTML page; response.json() raises ValueError, which used
+    to escape the client and kill callers that catch only API errors.  The stub
+    raises what requests really raises, not a bare ValueError.
     """
     import kcilib.api as kcapi
 
@@ -1211,22 +1150,20 @@ def test_api_non_json_is_api_error():
     check(not issubclass(kcapi.APIError, ValueError),
           "APIError must not be a ValueError - it replaces that escape")
     # The exception response.json() really raises for an HTML body: requests'
-    # own subclass of json.JSONDecodeError where it has one (2.27+), the plain
-    # json.JSONDecodeError before that.  Both are ValueError, which is what
-    # _json() catches - so neither can escape as a bare ValueError.
+    # JSONDecodeError where it has one (2.27+), json.JSONDecodeError before.
+    # Both are ValueError, which is what _json() catches.
     decoder_error = getattr(_real_requests.exceptions, "JSONDecodeError",
                             json.JSONDecodeError)
     check(issubclass(decoder_error, ValueError),
           "the decoder error _json() catches must be a ValueError")
 
     # NB: raise_for_status() runs first, so the not-JSON path is a 2xx whose
-    # body is HTML (a captive proxy, an SSO page); a 502 never gets that far.
+    # body is HTML (a captive proxy, an SSO page).
     html = _Response(200, json_error=decoder_error(
         "Expecting value", "<html>not json</html>", 0))
     definition_url = "http://scheduler/job.yaml"
-    # get() is the raw read and hands back whatever parsed; the typed readers
-    # are the ones that owe the caller a shape, and they are the ones asserted
-    # to refuse a page that is not an object (below).
+    # get() hands back whatever parsed; the typed readers are the ones that owe
+    # the caller a shape, and they refuse a page that is not an object (below).
     typed_reads = (
         ("nodes()", lambda client: client.nodes()),
         ("all_nodes()", lambda client: client.all_nodes()),
@@ -1245,7 +1182,7 @@ def test_api_non_json_is_api_error():
             check(False, f"{label} must refuse a body that is not JSON")
 
     # JSON that is not an object: each reader says so, instead of handing a
-    # list to code that is about to index it as a page.
+    # list to code that indexes it as a page.
     not_an_object = _Response(200, json_body=["no"])
     for label, call in typed_reads:
         try:
@@ -1255,8 +1192,8 @@ def test_api_non_json_is_api_error():
         else:
             check(False, f"{label} must refuse JSON that is not an object")
 
-    # A 5xx stays requests' own HTTPError (callers catch RequestException) and
-    # must never be turned into an empty page.
+    # A 5xx stays requests' HTTPError (callers catch RequestException) and must
+    # never be turned into an empty page.
     server_error = _Response(502, json_body={})
     try:
         _api_client(lambda _url, _kwargs: server_error).get("/nodes")
@@ -1270,11 +1207,9 @@ def test_api_non_json_is_api_error():
 def test_api_refuses_redirect():
     """kcilib/api.py: job_definition() refuses a redirect.
 
-    The definition URL is handed out by the scheduler, so a redirect means
-    something in between is answering.  A 3xx that carries a perfectly good
-    JSON body is the case a "does the body parse?" check would wave through:
-    the refusal has to come first, and it can only come at all because
-    allow_redirects=False reaches the session.
+    A redirect means something in between is answering, so the refusal comes
+    first - a 3xx carrying a good JSON body is exactly what a "does the body
+    parse?" check would wave through.
     """
     import kcilib.api as kcapi
 
@@ -1282,9 +1217,8 @@ def test_api_refuses_redirect():
     for status in (301, 302, 303, 307, 308):
         redirect = _Response(status, headers={"Location": "http://whom/"},
                              json_body={"artifacts": {}, "tests": []})
-        # The response is bound as a default so the lambda does not close
-        # over the loop variable (ruff B023: every call would then see the
-        # last redirect built).
+        # The response is bound as a default so the lambda does not close over
+        # the loop variable (ruff B023: every call would see the last redirect).
         client = _api_client(lambda _url, _kwargs, reply=redirect: reply)
         try:
             client.job_definition(url)
@@ -1314,9 +1248,8 @@ def test_api_refuses_redirect():
 def test_api_retries_a_dropped_connection():
     """kcilib/api.py: a dropped connection is retried; a 5xx is not.
 
-    The local API closes idle keep-alive connections, so one dropped connection
-    used to lose a page; retrying a 5xx instead would turn a refusal into a
-    slow refusal.
+    The local API closes idle keep-alive connections, so a dropped connection
+    used to lose a page; retrying a 5xx would only slow a refusal down.
     """
     import kcilib.api as kcapi
 
@@ -1347,8 +1280,7 @@ def test_api_retries_a_dropped_connection():
         check(len(attempts) == 1,
               f"retries=0 must still make one attempt: {len(attempts)}")
 
-        # ... and a retry that succeeds returns the page: that is what the
-        # sleep between the attempts is for.
+        # ... and a retry that succeeds returns the page.
         attempts.clear()
 
         def once_then_ok(_url, _kwargs):
@@ -1382,8 +1314,8 @@ def test_api_retries_a_dropped_connection():
 def ledger_at(path):
     """Point the ledger's root at *path* for the duration.
 
-    The same seam test_missing_callback_keeps_result_pending uses, for the same
-    reason: a guard must not write into the repository's work/results/.
+    Same seam and reason as test_missing_callback_keeps_result_pending: a guard
+    must not write into the repository's work/results/.
     """
     real = os.environ.get(ledger.RESULTS_DIR_ENV)
     os.environ[ledger.RESULTS_DIR_ENV] = path
@@ -1400,9 +1332,8 @@ def ledger_at(path):
 def no_api_calls():
     """Any use of the one API client fails for the duration.
 
-    kcilib/source.py:8 documents the table source as local-only (index minus
-    ledger), so a request on this path means the "offline" source grew a
-    network dependency without anyone saying so.
+    kcilib/source.py documents the table source as local-only (index minus
+    ledger), so a request here means it grew a network dependency silently.
     """
     from kcilib.api import KernelCI
 
@@ -1422,11 +1353,9 @@ def stub_newest_api(builds, windows, queries):
     """kcilib.source's two production-API seams, patched ON that module.
 
     NewestSource.build() resolves builds_from_production_api and _days_ago as
-    globals of kcilib.source (kcilib/source.py:83-84), so patching them there
-    is what the code actually reads.  It also makes the window the source asked
-    window the source asked for observable instead of something to infer from
-    the clock.  *builds* is called with the attempt number and returns the refs
-    that attempt found; *windows* and *queries* collect what was asked for.
+    globals of kcilib.source, so patching them there is what the code reads, and
+    the window asked for becomes observable.  *builds* takes the attempt number;
+    *windows* and *queries* collect what was asked for.
     """
     from kcilib import source as kcsource
 
@@ -1450,10 +1379,9 @@ def stub_newest_api(builds, windows, queries):
 def test_table_source_subtracts_the_ledger():
     """kcilib/source.py: TableSource is the index MINUS the ledger.
 
-    Two separate decisions are pinned down: a (build, test) the ledger already
-    holds a record for is not offered again (otherwise every run re-runs the
-    whole table), and a test the build cannot support is skipped WITH the
-    artifact it is missing - never silently dropped.
+    A (build, test) the ledger already holds is not offered again, and a test
+    the build cannot support is skipped WITH the artifact it is missing - never
+    silently dropped.
     """
     from kcilib import source as kcsource
     from kcilib.table.buildindex import BuildIndex
@@ -1492,9 +1420,8 @@ def test_table_source_subtracts_the_ledger():
                   f"the ledger's boot row must be subtracted: {specs2}")
             check(checked2 == 1, checked2)
 
-            # ... and with both of them recorded the list is empty - while the
-            # skip is still reported, because "0 to do" and "2 tests were
-            # skipped" are different answers.
+            # ... and with both recorded the list is empty while the skip is
+            # still reported: "0 to do" and "2 tests were skipped" differ.
             ledger.write_result(build_id, "kselftest-riscv",
                                 {"verdict": "pass", "source": "fetch"})
             specs3, skipped3, checked3 = kcsource.TableSource(db=db).jobs()
@@ -1514,9 +1441,8 @@ def test_newest_source_widens_the_window():
     """kcilib/source.py: NewestSource widens 3 -> 7 -> 30 -> 180 days.
 
     The production API pages old-first and a quiet tree can be days behind, so
-    a hit on the first window must stop the walk, a hit on a later one must
-    still be used, and the query that is finally asked has to be the one the
-    caller described.
+    a hit on the first window stops the walk, a hit on a later one is still
+    used, and the query asked is the one the caller described.
     """
     import calendar
 
@@ -1526,8 +1452,8 @@ def test_newest_source_widens_the_window():
                    artifacts={"kernel": "http://x/Image"},
                    tree="riscv", commit="deadbeef")
 
-    # The real widening clock, before it is patched: an ISO8601 second stamp
-    # that really is N days back (the module builds it with time.gmtime).
+    # The real widening clock, before it is patched: an ISO8601 stamp that
+    # really is N days back (the module builds it with time.gmtime).
     from kcilib import source as kcsource
 
     stamp = kcsource._days_ago(180)
@@ -1575,9 +1501,8 @@ def test_newest_source_widens_the_window():
 def test_newest_source_reports_no_build():
     """kcilib/source.py: nothing in 180 days is an empty list AND a reason.
 
-    "0 to do" is the answer an operator cannot act on; the source has to say
-    which job it looked for and how far back it looked - and it must have
-    looked all the way back before it says so.
+    "0 to do" is an answer an operator cannot act on, so the source names the
+    job and the window - after really looking that far back.
     """
     windows, queries = [], []
     with stub_newest_api(lambda _attempt: [], windows,
@@ -1599,9 +1524,8 @@ def test_newest_source_reports_no_build():
 def test_get_source_unknown_name():
     """kcilib/source.py: an unknown --source exits with the real names in it.
 
-    The events source is the trap this guards: ./run.sh worker is the way to
-    it, and a user who typed --source events must be told that instead of
-    getting a KeyError traceback.
+    --source events is the trap: ./run.sh worker is the way to it, and the user
+    must be told that rather than get a KeyError traceback.
     """
     from kcilib import source as kcsource
 
@@ -1633,7 +1557,7 @@ def test_get_source_unknown_name():
               f"get_source must forward the keyword arguments: {newest!r}")
 
     # The base class refuses to be a source: a subclass that forgets jobs()
-    # must fail loudly rather than answer "nothing to do".
+    # fails loudly rather than answering "nothing to do".
     try:
         kcsource.JobSource().jobs()
     except NotImplementedError:
@@ -1646,14 +1570,11 @@ def test_get_source_unknown_name():
 def test_no_repo_root_is_counted_with_dirname():
     """The repository root is walked up to (kcilib.repo_root), never counted.
 
-    Three tools moved into scripts/tools/ and kept a counted root, each of them
-    silently one level too deep: render-local-config.py rendered @KCI_ROOT@ as
-    .../scripts, so the stack's settings named
-    scripts/kernelci-pipeline/data/ssh/id_rsa_tarball and EVERY job node came back
-    submit_error; callback-catcher.py defaulted its log to scripts/work/logs/;
-    verify-lava-body.py pre-empted the same trap.  All of them still "worked" one
-    directory up, which is why nothing failed loudly - so the rule is checked
-    here instead: a module-level ROOT-ish name may not be built from
+    Three tools moved into scripts/tools/ and kept a counted root, each silently
+    one level too deep: render-local-config.py rendered @KCI_ROOT@ as .../scripts
+    so EVERY job node came back submit_error, and callback-catcher.py defaulted
+    its log to scripts/work/logs/.  All still "worked" one directory up, so the
+    rule is checked here: a module-level ROOT-ish name may not be built from
     os.path.dirname().
     """
     import glob
@@ -1685,12 +1606,9 @@ def test_shell_scripts_reference_live_modules():
     """A file that moves must not leave a shell caller on the old path.
 
     scripts/run-local-stack.sh kept calling `python3 -m kcilib.ports` after
-    ports.py had moved into kcilib/core/, so `./run.sh stack` died at its first
-    port check with "No module named kcilib.ports" - and no gate noticed, because
-    nothing here read the shell entry points.  The same class of mistake had
-    already bitten once when the six offline tools moved into scripts/tools/.
-    Two kinds of reference are therefore checked: every `python3 -m kcilib.<x>`
-    must import, and every flat `scripts/<name>.py` must exist.
+    ports.py moved into kcilib/core/, so `./run.sh stack` died at its first port
+    check and no gate noticed.  Checked: every `python3 -m kcilib.<x>` must
+    import, and every flat `scripts/<name>.py` must exist.
     """
     import glob
     import importlib.util
@@ -1720,8 +1638,8 @@ def test_shell_scripts_reference_live_modules():
             check(os.path.exists(os.path.join(root, "scripts", name)),
                   f"{rel} refers to scripts/{name}, which does not exist: it "
                   f"moved (the offline tools live in scripts/tools/)")
-    # Both patterns must match something, or this guard would pass by finding
-    # nothing at all the day the call sites are rewritten.
+    # Both patterns must match something, or this guard passes by finding
+    # nothing the day the call sites are rewritten.
     check(modules >= 1, "no `python3 -m kcilib.*` reference found; the pattern is stale")
     check(paths >= 1, "no flat scripts/*.py reference found; the pattern is stale")
     print("test_shell_scripts_reference_live_modules OK")

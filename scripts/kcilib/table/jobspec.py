@@ -1,32 +1,22 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-"""从"一个构建"得到"要跑的测试":表里的一行,和交给执行层的定义。
+"""One build -> the tests to run: a table row, and the executor's definition.
 
-两个东西,别混:
-
-* **JobSpec** 是**表里的一行** —— (build_id, test, timeout_s)。它能存、能打印、
-  能拿来比"跑没跑";它**不**含 callback URL,因为那是"跑的时候"才知道的。
-* **JobDefinition** 是**交给执行层的完整定义** —— artifacts / tests /
-  environment / callback。它的字段名和上游 pull_labs.jinja2 渲染出来的**完全
-  一样**,所以 kcilib.run.jobrun.run_node 分不清也不用分清这一份是官方 API 给的、
-  还是我们自己拼的:同一个函数吃两种来源。
-
-于是"我本地造一个 job 跑掉"和"我领一个上游 job 跑掉"在**执行层是同一件事**,
-差别只有 job_definition() 的 callback_url 给不给:
-
-    给了 callback_url -> 跑完还会回传(callback 段写进定义)
-    没给             -> 只写账本(定义里没有 callback 段)
+JobSpec is a row of the table (build_id, test, timeout_s) with no callback URL,
+which is only known at run time. JobDefinition is what run_node receives, shaped
+exactly like the upstream pull_labs.jinja2 render, so run_node cannot tell ours
+from the API's; a callback section decides report-back versus ledger only.
 """
 
 from dataclasses import dataclass
 
 from kcilib.table.buildref import build_ref_from_node
 
-# 我们这套配置认领的三个测试,与 config/scheduler-pull-labs.yaml 里那三条
-# runtime=pull-labs-riscv 的条目一一对应(整个文件 44 条,命中的只有 3 条)。
+# The three tests this configuration claims: the three runtime=pull-labs-riscv
+# entries of config/scheduler-pull-labs.yaml (3 of that file's 44).
 DEFAULT_TESTS = ("boot", "kselftest-riscv", "kselftest-kvm")
 
-# 每个测试的默认超时。boot 只要启动内核;两个 kselftest 集合是长跑。
+# Default timeout per test: boot only starts the kernel, the two kselftest sets are long runs.
 TEST_TIMEOUTS = {
     "boot": 600,
     "kselftest-riscv": 1800,
@@ -39,16 +29,15 @@ ARCH = "riscv"
 
 @dataclass
 class JobSpec:
-    """表里的一行:一个构建 × 一个测试。
+    """One row of the table: a build x a test.
 
-    故意只有三个字段 —— 它是"意图",不是"怎么跑"。多一个字段都会让它不再是
-    一张能拿在手里的清单。
+    Deliberately three fields - this is intent, not instructions.
     """
 
     build_id: str
     test: str
     timeout_s: int = 0
-    build: object = None                # BuildRef;单独放,便于只打印 build_id
+    build: object = None                # BuildRef; held aside so as_row() names ids only
 
     def __post_init__(self):
         if not self.timeout_s:
@@ -60,16 +49,12 @@ class JobSpec:
 
 
 def jobs_from_build(build, tests=None, timeout_s=None):
-    """★ 一个构建 -> N 个 JobSpec。纯函数:不联网、不落盘、不跑测试。
+    """★ One build -> N JobSpecs. Pure: no network, no disk, no test run.
 
-    *build* 可以是 BuildRef,也可以是**完整的节点 dict** —— 后者是刻意的:
-    自己造的节点没有 id 可查,而"输入一个节点"让官方和自己造的一视同仁。
-
-    返回 (specs, skipped):
-      specs   —— 长度可能小于 len(tests):缺构件的测试会被跳过
-      skipped —— [(test, 原因)];静默跳过是"为什么没跑"这类问题的常见来源
-
-    构建整个不可用(连 kernel 都没有)时 specs 为空,skipped 里说明原因。
+    *build* may be a BuildRef or a full node dict, deliberately: a self-made node
+    has no queryable id, and taking either treats both sources alike. Returns
+    (specs, skipped); a test with a missing artifact is skipped and the reason
+    recorded, never dropped silently.
     """
     tests = tuple(tests) if tests else DEFAULT_TESTS
     if not hasattr(build, "missing_for"):
@@ -92,8 +77,7 @@ def jobs_from_build(build, tests=None, timeout_s=None):
 def test_of(definition):
     """A definition -> the test it asks for (tests[0].type, then id, then boot).
 
-    One place owns "what is this job called": the ledger files rows under it, and
-    the run's own naming must agree with the callback it produces.
+    One place owns "what is this job called": the ledger files rows under it.
     """
     tests = definition.get("tests") or [{}]
     first = tests[0] if isinstance(tests[0], dict) else {}
@@ -101,12 +85,11 @@ def test_of(definition):
 
 
 def job_definition(spec, callback_url=None, token_name=None):
-    """★ JobSpec -> 交给 run_node 的定义。纯函数。
+    """★ JobSpec -> the definition handed to run_node. Pure.
 
-    *callback_url* 是**出口开关**:给了就回传,不给就只写账本。它在这里而不是
-    在 JobSpec 里,是因为列表阶段还不知道要回传给谁(本地栈?生产?).
-
-    产出的形状与上游模板渲染结果同构 —— 见模块开头的说明。
+    *callback_url* is the sink switch: with it the run reports back, without it
+    only the ledger is written. It lives here rather than on JobSpec because the
+    listing stage does not know where results would go (local stack, production).
     """
     build = getattr(spec, "build", None)
     if build is None:

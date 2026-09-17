@@ -2,19 +2,11 @@
 #
 """Persisted worker state: poll cursor, seen node ids, unposted results.
 
-The RISC-V pull-lab worker has to survive a restart in the middle of a batch
-without re-running a job whose result it already holds:
-
-* the cursor says where the next poll resumes scanning (it is authoritative -
-  `--since` only seeds a state file that has no cursor yet),
-* `seen` says which nodes already ran, so a late event for one of them is
-  re-posted, never re-run,
-* `pending` holds a LAVA callback body whose POST failed transiently, so
-  the next start can post it again without re-running tuxrun.
-
-Those three fields are a contract, not an implementation detail: operators
-hand-edit the file and an older worker must read a file a newer one wrote, so
-the shape is exactly the one the worker has always written::
+A restart must not re-run a job whose result is already held, so the cursor is
+authoritative (--since only seeds a file that has none), `seen` makes a late
+event re-post rather than re-run, and `pending` holds a callback body whose
+POST failed.  The shape is a contract - operators hand-edit the file and an
+older worker reads what a newer one wrote::
 
     {
       "timestamp": "2026-09-15T16:08:08.858000",   // cursor, or null
@@ -22,34 +14,29 @@ the shape is exactly the one the worker has always written::
       "pending": {"<node id>": {"callback": "<url>", "body": {...}}}
     }
 
-The callback *token* is deliberately not part of that shape: it is read from
-the environment when the body is posted and is never written to disk.
-
-The file is written through a temporary file and a rename, so a worker killed
-while saving leaves the previous state behind rather than a half-written one -
-the pending result that survives a crash is the whole point of the file.
+The callback token is deliberately not in it (read from the environment when
+the body is posted), and the file is written through a temp file and a rename,
+so a worker killed while saving leaves the previous state behind.
+Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
 import json
 import os
 
-# Seen-node ids kept in the state file, evicted oldest first.  Sized far
-# beyond what one re-scan window (CURSOR_OVERLAP_S) can produce, so eviction
-# can never re-expose a recently processed node to a re-run.  Read at call
-# time rather than captured per instance, so a test can shrink it.
+# Seen-node ids kept, evicted oldest first, sized far beyond what one re-scan
+# window (CURSOR_OVERLAP_S) can produce.  Read at call time so a test can shrink
+# it.
 SEEN_LIMIT = 20000
 
-# The fields this module owns, in the order they are written.  Anything else
-# found in a state file is carried through untouched (see _extra).
+# The fields this module owns; anything else is carried through (see _extra).
 STATE_FIELDS = ("timestamp", "seen", "pending")
 
 
 def _empty_state():
     """The state of a worker that has never run - and of an unreadable file.
 
-    A state file that cannot be parsed must not kill the worker far away from
-    the file that caused it, and it must not be trusted either, so callers get
-    this same empty state either way; load() says which one happened."""
+    An unparseable file must not kill the worker and must not be trusted, so
+    callers get this empty state either way; load() says which one happened."""
     return {"timestamp": None, "seen": [], "pending": {}}
 
 
@@ -66,37 +53,30 @@ class StateFile:
         state.pop_pending(node_id)       # the entry, or None
         state.save()                     # atomic; no-op when nothing changed
 
-    `seen` is the on-disk list (oldest first, duplicates impossible) and is
-    what a caller reads and writes; `has_seen()` is the membership test that
-    stays cheap once the list is at SEEN_LIMIT.  `pending` maps a node id to
-    the stored `{"callback": ..., "body": ...}` dict, so a caller rebuilds the
-    (callback, token, body) tuple it posts with the token from the environment."""
+    `seen` is the on-disk list (oldest first) and is what a caller reads and
+    writes; `pending` maps a node id to `{"callback": ..., "body": ...}`, so a
+    caller rebuilds the tuple it posts with the token from the environment."""
 
     def __init__(self, path):
         self.path = path
         self.cursor = None
         self.seen = []
-        # Accelerator for has_seen(): the worker tests every event of every
-        # poll against up to SEEN_LIMIT ids.  It is rebuilt whenever it
-        # disagrees with the list, so a caller that appends to .seen directly
-        # cannot silently desynchronise it.
+        # Accelerator for has_seen(), rebuilt whenever it disagrees with the
+        # list, so a caller appending to .seen directly cannot desync it.
         self._seen_set = set()
         self.pending = {}
         self._extra = {}
-        # Bytes of the last document this object wrote, and the re-entrancy
-        # flag: a signal handler saving while a save is in progress must not
-        # write the same temporary file twice.
+        # Bytes of the last document written, and the re-entrancy flag: a signal
+        # handler must not write the same temporary file twice.
         self._written = None
         self._saving = False
 
     def load(self):
         """Read the file into this object and return it.
 
-        A file that does not exist yet is simply an empty state (the first run
-        of a fresh worker, no warning).  A file that exists but is corrupt or
-        of an unexpected shape is refused loudly - it is the state that keeps
-        a restarted worker from re-running jobs - and replaced in memory by an
-        empty state, never trusted."""
+        A missing file is an empty state, no warning.  A corrupt or wrong-shaped
+        one is refused loudly and replaced in memory by an empty state, never
+        trusted."""
         self._reset()
         if not self.path or not os.path.exists(self.path):
             return self
@@ -120,34 +100,24 @@ class StateFile:
         self.seen = list(state.get("seen", []))
         self._seen_set = set(self.seen)
         self.pending = dict(state.get("pending") or {})
-        # Keys this module does not own are kept: the worker used to rewrite
-        # the very dict it had read, and dropping a field an operator or a
-        # newer worker put there would lose it silently.
+        # Keys this module does not own are kept: dropping a field an operator
+        # or a newer worker put there would lose it silently.
         self._extra = {
             key: value for key, value in state.items() if key not in STATE_FIELDS
         }
-        # The next save() must write: the file on disk may be hand-formatted,
-        # and the worker's first flush after a load has always written.
+        # The next save() must write: the file on disk may be hand-formatted.
         self._written = None
         return self
 
     def save(self):
         """Write the state out atomically; True when the file was written.
 
-        Called after EVERY event, not once per batch (#9): a worker killed
-        after a transient callback failure but before the batch ended used to
-        lose the report, the pending entry and the seen update, so the next
-        start re-ran tuxrun for a node whose result it already had - exactly
-        what the "re-posted, never re-run" contract promises not to do.  It is
-        also called from the SIGTERM/SIGINT handler, hence the re-entrancy
-        guard.
-
-        The other guard keeps that honest rather than expensive: a batch of a
-        thousand events with nothing new to record must not rewrite a state
-        file that can carry up to SEEN_LIMIT node ids a thousand times.  The
-        comparison is on the document that would be written, so an eviction at
-        SEEN_LIMIT - same length, different ids - is not mistaken for "nothing
-        changed" and silently left unwritten."""
+        Called after EVERY event, not once per batch - and from the SIGTERM/
+        SIGINT handler, hence the re-entrancy guard.  A worker killed after a
+        transient callback failure used to lose the report and re-run tuxrun for
+        a node whose result it already had.  The write is skipped only when the
+        document is unchanged, so an eviction at SEEN_LIMIT (same length,
+        different ids) is not mistaken for "nothing changed"."""
         if not self.path or self._saving:
             return False
         payload = json.dumps(self._document())
@@ -169,9 +139,8 @@ class StateFile:
     def mark_seen(self, node_id):
         """Record *node_id* as processed; True when it was not there already.
 
-        Only a node that was actually processed belongs here: the first event
-        for a node may arrive before its job_definition artifact is attached,
-        and marking such an event seen would hide the later, complete one."""
+        Only a node that was actually processed belongs here: marking an
+        incomplete first event seen would hide the later, complete one."""
         if len(self._seen_set) != len(self.seen):
             # A caller mutated .seen itself; resynchronise before deciding.
             self._seen_set = set(self.seen)
@@ -199,8 +168,8 @@ class StateFile:
     def pop_pending(self, node_id):
         """Forget and return the pending entry for *node_id*, or None.
 
-        Called once the body is posted, or once the callback failed
-        permanently: a node must never keep a body it can no longer post."""
+        Called once posted, or once the callback failed permanently: a node must
+        never keep a body it can no longer post."""
         return self.pending.pop(node_id, None)
 
     def _reset(self):

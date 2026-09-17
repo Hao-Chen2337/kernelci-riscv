@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # kernelci-riscv one-command entry: deploy -> run -> inspect.
-# Usage: ./run.sh <subcommand> [args]; ./run.sh help for the full list.
-# Details: docs/RUNBOOK.md (how to run it) and docs/INTERNAL-NOTES.md (deep dive).
+# Usage: ./run.sh <subcommand> [args]; ./run.sh help lists them.
+# Details: docs/RUNBOOK.md, docs/INTERNAL-NOTES.md; rationale: docs/code-notes/W2b-entrypoints.md.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -9,35 +9,24 @@ PIPE="$ROOT/kernelci-pipeline"
 TUXRUN_BIN="${TUXRUN_BIN:-$(command -v tuxrun || echo "$HOME/.local/bin/tuxrun")}"
 CALLBACK_TOKEN="${PULL_LABS_CALLBACK_TOKEN:-labtoken-callback}"
 API_URL="${KCI_API_URL:-http://127.0.0.1:${KCI_API_PORT:-8001}}"
-# Where the stack's storage service publishes build artifacts.  config_drift
-# falls back to it for a kbuild node that carries no _config artifact, so it is
-# derived from the same KCI_STORAGE_PORT run-local-stack.sh moves the stack
-# with - a deployment on 18002 used to be read from 8002.
+# Storage service publishing build artifacts; config_drift falls back to it for a
+# kbuild node with no _config artifact.  Must follow KCI_STORAGE_PORT too - a
+# deployment on 18002 used to be read from the fixed 8002.
 STORAGE_URL="${KCI_STORAGE_URL:-http://127.0.0.1:${KCI_STORAGE_PORT:-8002}}"
 
 die() { echo "X $*" >&2; exit 1; }
 ok()  { echo "OK $*"; }
 
-# Proxy handling lives in scripts/net-preflight.sh.  It probes the network with
-# the configuration exactly as the user set it and only bypasses a proxy when
-# asked (KCI_BYPASS_PROXY=1) or when the proxy is demonstrably broken - it never
-# silently unsets a working proxy configuration the way the old no_proxy_setup()
-# did (that function hardcoded one machine's dead proxy into the repository).
-# An explicit KCI_PROBE_URL is captured BEFORE sourcing: net-preflight.sh
-# defaults it to files.kernelci.org, and the per-endpoint preflight below must
-# both honour a user-supplied probe and name the URL it really probed.
+# Proxy handling lives in scripts/net-preflight.sh (bypass only on
+# KCI_BYPASS_PROXY=1 or a demonstrably broken proxy - never silently).
+# KCI_PROBE_URL is captured BEFORE sourcing; the preflight below honours it.
 KCI_PROBE_URL_OVERRIDE="${KCI_PROBE_URL:-}"
 # shellcheck source=scripts/net-preflight.sh
 . "$ROOT/scripts/net-preflight.sh"
 
-# Probe the endpoint(s) the NEXT command actually talks to, one line each, and
-# name the URL that was probed.  The preflight probes a single endpoint while
-# its message used to read "kernelci API" (it probed files.kernelci.org): an OK
-# verdict then looked like a general network verdict and the next command could
-# still time out through the same proxy - measured, api.kernelci.org answered
-# 000/exit 28 while files.kernelci.org answered 200 (docs/RUN-MODES-AND-BUGS.md
-# #17).  So: probe per endpoint, say which one, and keep the verdict as narrow
-# as the check.  Returns 1 when at least one endpoint failed.
+# Probe the endpoint(s) the NEXT command actually talks to, naming the URL really
+# probed: a general "network is fine" verdict once hid a proxy that killed the
+# next command (RUN-MODES-AND-BUGS.md #17); returns 1 when any endpoint failed.
 kci_preflight() {
   local label="$1" url probe failed=0
   shift
@@ -135,10 +124,8 @@ cmd_setup() {
         "$ROOT/kernelci-$repo" || die "cloning kernelci-$repo failed after retries"
     fi
   done
-  # PR1 config patch; skipped once upstream contains it (same command
-  # before/after the PR merges).  The patch landing is VERIFIED afterwards:
-  # `git apply` failing quietly used to leave a stack with no riscv platform
-  # at all, which validate_yaml cannot detect.
+  # PR1 config patch, skipped once upstream carries it; the landing is verified
+  # below - a silently failed `git apply` left a stack with no riscv platform.
   if git -C "$PIPE" grep -q "qemu-riscv64" -- config/platforms.yaml 2>/dev/null; then
     ok "PR1 config present (pipeline already has the riscv platform, patch skipped)"
   else
@@ -150,7 +137,7 @@ cmd_setup() {
       die "PR1 config patch did not land: kernelci-pipeline/config/platforms.yaml has no qemu-riscv64 platform. Upstream moved - see docs/INTERNAL-NOTES.md"
     fi
   fi
-  # bullseye archive-source patch (official Debian archive issue; needed to build the local ssh container)
+  # bullseye archive-source patch: without it the local ssh container will not build.
   if grep -q archive.debian.org "$ROOT/kernelci-api/docker/ssh/Dockerfile" 2>/dev/null; then
     ok "bullseye patch present"
   else
@@ -158,7 +145,7 @@ cmd_setup() {
       && ok "bullseye patch applied" \
       || die "bullseye patch failed to apply; the ssh container will not build (inspect kernelci-api/docker/ssh/Dockerfile)"
   fi
-  # storage nginx uid patch (jobdefs uploaded via scp must be readable by nginx as uid 1000)
+  # storage nginx user patch: jobdefs scp'd in must be readable by nginx as uid 1000.
   if grep -q "user: '1000:1000'" "$ROOT/kernelci-api/docker-compose.yaml" 2>/dev/null; then
     ok "storage nginx patch present"
   else
@@ -166,12 +153,10 @@ cmd_setup() {
       && ok "storage nginx patch applied" \
       || die "storage nginx patch failed to apply; jobdef uploads will 404 (inspect kernelci-api/docker-compose.yaml)"
   fi
-  # tuxlava patch (site-packages, cannot be applied here - just report)
+  # tuxlava patch lives in site-packages: report it, cannot apply it here.
   TUXLAVA_DIR="$(python3 -c 'import tuxlava,os;print(os.path.dirname(tuxlava.__file__))' 2>/dev/null || true)"
-  # The patch has to be applied where tuxlava IS, not in this interpreter's
-  # user site-packages: a virtualenv or a system-wide install put the two in
-  # different trees, and the printed command then either patched nothing or
-  # reported "Reversed (or previously applied) patch detected" (N8).
+  # Apply the patch where tuxlava IS, not this interpreter's user site-packages:
+  # a virtualenv or a system install puts the two in different trees (N8).
   if [ -n "$TUXLAVA_DIR" ]; then
     TUXLAVA_SITE="$(dirname "$TUXLAVA_DIR")"
   else
@@ -179,19 +164,14 @@ cmd_setup() {
       || echo "$HOME/.local/lib/python$(python3 -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)/site-packages")"
   fi
   if [ -z "$TUXLAVA_DIR" ]; then
-    # tuxlava missing entirely is a different problem with a different fix,
-    # and the banner below would have blamed the patch for it.
+    # tuxlava missing entirely is a different problem with a different fix.
     echo "  !! tuxlava is not importable: run the jobs' guest setup needs it (pip install tuxrun pulls it in)"
   elif grep -q "KselftestRiscv\|kselftest-riscv" "$TUXLAVA_DIR/tests/kselftest.py" 2>/dev/null; then
     ok "tuxlava patch applied"
   else
-    # Reported at the END of setup instead of where it is detected: this is a
-    # hard prerequisite for the riscv kselftest jobs (tuxrun builds its --tests
-    # choices from tuxlava, so without it the job dies with exit 2 and the node
-    # is filed as an infrastructure error), and as one `!!` line in the middle
-    # of ~145 lines of setup output nobody noticed it until the worker failed
-    # ~20 minutes later.  Still non-fatal: a deployment that only runs
-    # `baseline` does not need it.
+    # Deferred to the END of setup on purpose: a hard prerequisite for the riscv
+    # kselftest jobs (tuxlava missing = tuxrun exit 2 = filed as an infrastructure
+    # error) whose `!!` line went unnoticed mid-setup; non-fatal for baseline only.
     TUXLAVA_PATCH_MISSING="$TUXLAVA_SITE"
   fi
   [ -f "$PIPE/.env" ] || cat > "$PIPE/.env" <<'EOF'
@@ -201,9 +181,8 @@ KCI_TREES=riscv
 EOF
   # SOW Phase 1 acceptance clause: "First validation script successfully parsed locally"
   (cd "$PIPE" && python3 tests/validate_yaml.py) || die "validate_yaml failed"
-  # Everything the runtime needs that is NOT in git: the API's .env (with its
-  # own SECRET_KEY), the SSH key pair used to publish job definitions, and a
-  # real API token.  Generated per deployment - no secrets are ever committed.
+  # Everything the runtime needs that is NOT in git: the API's .env (own
+  # SECRET_KEY), the SSH key pair and a real API token - never committed.
   if [ -f "$ROOT/scripts/local-instance-init.sh" ]; then
     echo "-> generating deployment-local configuration (API .env, SSH keys, API token)"
     bash "$ROOT/scripts/local-instance-init.sh" || die "local-instance-init.sh failed"
@@ -212,8 +191,8 @@ EOF
   fi
   ok "setup done"
   if [ -n "${TUXLAVA_PATCH_MISSING:-}" ]; then
-    # Last thing on screen, deliberately: this is the prerequisite whose
-    # absence surfaces much later as an unexplained "Infrastructure" job error.
+    # Printed last, deliberately: its absence surfaces much later as an
+    # unexplained "Infrastructure" job error.
     echo
     echo "================================ WARNING ================================"
     echo "tuxlava is NOT patched, so the kselftest-riscv job cannot run: tuxrun"
@@ -229,8 +208,8 @@ EOF
 }
 
 cmd_provision() {
-  # Provisioning picks the newest passing kbuild from the production API and
-  # then downloads that build's artifacts: two different hosts, two probes.
+  # Two hosts: the production API picks the newest passing kbuild, then the
+  # artifacts come from files.kernelci.org - probe both, separately.
   kci_preflight "provisioning" \
     "https://api.kernelci.org/latest/" "https://files.kernelci.org/" \
     || die "no usable network for provisioning (see the proxy advice above)"
@@ -239,8 +218,7 @@ cmd_provision() {
 }
 
 cmd_fetch() {
-  # --kvm is run.sh's shortcut; every other arg passes through
-  # (--kvm-full/--job/--test).
+  # --kvm is run.sh's shortcut; --kvm-full/--job/--test pass through as they are.
   local args=()
   local a
   for a in "$@"; do
@@ -269,25 +247,21 @@ cmd_worker() {
   local since="${SINCE:-$(date -u +%Y-%m-%d)T00:00:00}"
   local extra=()
   local a
-  # Every argument passes through: this used to keep only "$2", so `--kvm-full`
-  # or `--kvm-tests ...` were dropped without a word.
+  # Every argument passes through (this used to keep only "$2" and drop the rest).
   for a in "$@"; do
     [ -n "$a" ] && extra+=("$a")
   done
-  # The worker polls THIS deployment's API (KCI_API_URL) and then downloads
-  # the artifacts of every job it takes, which are production URLs
-  # (files.kernelci.org) - both are probed and named separately.
+  # The worker polls THIS deployment's API and downloads production artifact URLs
+  # from files.kernelci.org - two hosts, probed and named separately.
   if ! kci_preflight "worker" "$API_URL/latest/" "https://files.kernelci.org/"; then
     echo "    !! continuing anyway: the worker retries and reports infra errors honestly,"
     echo "       but a run whose endpoints are marked X above cannot do useful work."
   fi
-  # mkfs.ext4 lives in /usr/sbin on Debian/Ubuntu; run-local-stack.sh's worker
-  # invocation already added it, this one did not - two entry points, two
-  # behaviours for the same job.
+  # PATH needs /usr/sbin for mkfs.ext4 on Debian/Ubuntu (only the stack's worker
+  # invocation used to add it).
   #
-  # The state file and workspace carry the compose project in their names: two
-  # deployments on one machine do not share node ids, and a shared "already
-  # seen" set would silently make one of them skip its own queue.
+  # The state file and workspace carry the compose project name: a shared "already
+  # seen" set would make one of two deployments skip its own queue.
   local project="${KCI_COMPOSE_PROJECT:-kcirv}"
   PYTHONUNBUFFERED=1 PULL_LABS_CALLBACK_TOKEN="$CALLBACK_TOKEN" \
     PATH="/usr/local/sbin:/usr/sbin:$PATH" \
@@ -300,16 +274,13 @@ cmd_worker() {
 
 cmd_report() {
   local name
-  # The kvm entry is the shared kselftest-kvm-pull-labs job definition that
-  # kernelci-pipeline#1600 added for sasha-lab and #1599 reuses; the node name
-  # is the job name, so it is not riscv-specific any more.
+  # The node name is the job name, so the kvm entry is the shared
+  # kselftest-kvm-pull-labs definition, not a riscv-specific one.
   for name in baseline-riscv-pull-labs kselftest-riscv-pull-labs kselftest-kvm-pull-labs; do
     echo "--- $name (newest 3) ---"
-    # Robust against an unreachable API, an empty result and a node without an
-    # id: this used to traceback (json.load on an empty body, n["id"][:16] on
-    # None) exactly when the stack was down and the answer mattered.
-    # limit stays generous: the API returns nodes in its own order, so a small
-    # page can miss the newest ones entirely.
+    # Robust against an unreachable API, an empty result and a node without an id -
+    # it used to traceback exactly when the stack was down.  limit stays generous:
+    # the API orders nodes its own way, so a small page can miss the newest.
     kci_curl -s -m 10 "$API_URL/latest/nodes?kind=job&name=$name&limit=100" \
       | python3 -c '
 import json, sys
@@ -318,24 +289,16 @@ try:
 except Exception as error:
     print("  (no usable response from the API: %s)" % error)
     raise SystemExit(0)
-# The full 24-character id is printed: the previous [:16] truncation made two
-# different nodes of the same name print identically in one report.
+# Full 24-character id: a [:16] truncation made two nodes of one name print identically.
 items = sorted(items, key=lambda n: n.get("created") or "", reverse=True)
 if not items:
     print("  (no nodes)")
 for n in items[:3]:
     data = n.get("data") or {}
     revision = data.get("kernel_revision") or {}
-    # The error type is printed because docs/RUNBOOK.md tells the reader to
-    # look at it FIRST: "Infrastructure" means the run produced no usable data
-    # (a boot or infra failure), not that the kernel regressed - without the
-    # column the two were only distinguishable by querying the API by hand.
-    # Both spellings are read on purpose.  The runbook names the field
-    # data.error_type, while kernelci-core lava runtime writes the job error
-    # type as data.error_code (runtime/lava.py: "error_code" = job_meta
-    # error_type) and docs/UPSTREAM-BUILD-AND-DISPATCH.md documents error_code.
-    # Printing only one of the two shows "-" for real infrastructure failures.
-    # No apostrophes in this block: it is one single-quoted shell string.
+    # error_code AND error_type on purpose: the runbook names error_type, the
+    # kernelci-core lava runtime writes error_code, and one spelling alone shows
+    # "-" for real infra failures.  No apostrophes: single-quoted shell string.
     error_type = data.get("error_type") or data.get("error_code") or "-"
     print("  {:24s} {:12s} {:14s} {:14s} {} ({})".format(
         n.get("id") or "?", n.get("state") or "-", n.get("result") or "-",
@@ -344,48 +307,36 @@ for n in items[:3]:
 if len(items) > 3:
     print("  (%d node(s) matched, newest 3 shown)" % len(items))' \
       || true
-    # `|| true`: curl fails when the API is down, and under `set -o pipefail`
-    # that failure became the report's exit status (7) even though the message
-    # above is exactly what the reader needs (adversarial review, N6).
+    # `|| true`: curl fails when the API is down, and under pipefail that became
+    # the exit status of the report even though the message above is what is needed (N6).
   done
 }
 
 cmd_dashboard() {
-  # A read-only page over the local job table (build index + ledger + local API).
-  # Not the upstream kernelci-frontend: that one is a 2024 Flask app with its
-  # config in another repo and its own MongoDB connection, so it shows its data,
-  # not this lab's table. This serves what ./run.sh summary prints.
+  # A read-only page over the local job table - what ./run.sh summary prints.
+  # Not the upstream kernelci-frontend: that is a 2024 Flask app showing its own
+  # data (its config lives in another repo, with its own MongoDB connection).
   python3 "$ROOT/scripts/dashboard.py" "$@"
 }
 
 cmd_local_jobs() {
-  # The local job table (build index + ledger view). Deliberately separate from
-  # 'worker': the worker is the resident claimer, this is the table you look at.
-  # Everything here works without the local stack and without the upstream
-  # config being merged.
+  # The local job table (build index + ledger view) you look at - deliberately
+  # not 'worker', which is the resident claimer.  Everything here works without
+  # the local stack and without the upstream config being merged.
   python3 "$ROOT/scripts/local-jobs.py" "$@"
 }
 
 cmd_results() {
-  # The durable record this machine produced, read back: work/results/<build>/
-  # <test>.json, written by ./run.sh fetch and - since the worker was given the
-  # same ledger - by the resident worker too.  Deliberately NOT the API report
-  # above: this answers "what did this repo actually run and how did it end"
-  # from local files, so it still works with the stack stopped, and it is the
-  # reader the ledger never had (it was write-only until now).
+  # The durable record this machine produced, read back from local files:
+  # work/results/<build>/<test>.json, written by ./run.sh fetch and by the
+  # resident worker.  Works with the stack stopped - NOT the API report above.
   python3 "$ROOT/scripts/results.py" "$@"
 }
 
 cmd_prune() {
-  # work/downloads/<node_id>/ is one directory per fetched build (~45 MB each:
-  # Image + modules + kselftest + .config) and nothing ever removed them - a
-  # daily fetch loop is ~16 GB/year, before the bounded rootfs bake cache.
-  # This is the retention policy the entry point owns: explicit, bounded, and
-  # it never removes the build this deployment is using.
-  #   * the newest --keep builds (default 5) are kept,
-  #   * a build whose commit is the one work/env/build.env records (the build
-  #     ./run.sh stack --seed and work/serve/Image serve) is kept,
-  #   * --dry-run prints the same list without deleting anything.
+  # Retention for work/downloads/<node_id>/ (~45 MB per fetched build; a daily
+  # fetch loop is ~16 GB/year).  Keeps the newest --keep builds and the one
+  # work/env/build.env records; --dry-run prints the list and deletes nothing.
   local keep=5 dry=0 want_keep=0 arg
   for arg in "$@"; do
     if [ "$want_keep" = 1 ]; then
@@ -419,9 +370,7 @@ if not os.path.isdir(downloads):
     print(f"nothing to prune: {downloads} does not exist")
     raise SystemExit(0)
 
-# The build this deployment serves, as recorded by ./run.sh provision: its
-# commit (what every node names) and, when the directory happens to be the
-# artifact directory itself, its build id.
+# The build this deployment serves, as ./run.sh provision recorded it.
 commit = build_dir_id = ""
 if os.path.exists(build_env):
     text = open(build_env).read()
@@ -485,14 +434,9 @@ PY
 }
 
 cmd_verify() {
-  # Every gate must be able to fail this command.  Piping a check into
-  # `tail -1` (or trailing it with `|| true`) throws its exit status away, so
-  # this "full gate" used to print a traceback and still exit 0 - it reported
-  # success precisely when it should have reported a crash.
-  #
-  # The tools the gates themselves need are checked first: `ruff: command not
-  # found` from the last gate, after three others have already run, told a new
-  # user nothing about what to install (ruff was in no requirements file).
+  # Every gate must be able to fail this command: a `tail -1` or a trailing
+  # `|| true` threw the exit status away and this "full gate" once exited 0 on a
+  # traceback.  Their own tools are checked first, so a missing ruff says what to install.
   local missing=()
   command -v ruff >/dev/null 2>&1 || missing+=("ruff")
   python3 -c 'import yaml' >/dev/null 2>&1 || missing+=("PyYAML")
@@ -501,9 +445,8 @@ cmd_verify() {
   (cd "$PIPE" && python3 tests/validate_yaml.py) || die "validate_yaml failed"
   python3 "$ROOT/scripts/tools/verify-lava-body.py" || die "verify-lava-body failed"
   python3 "$ROOT/scripts/tools/verify-worker-guards.py" || die "verify-worker-guards failed"
-  # Compile the entry points and the library: the guards import the library only,
-  # so before this gate a syntax error in riscv_pull_worker.py (or in a kcilib
-  # module nobody exercises yet) reached the user as a runtime traceback.
+  # Compile the entry points and the library too: the guards import the library
+  # only, so a syntax error elsewhere used to reach the user as a traceback.
   python3 -m compileall -q "$ROOT/scripts" >/dev/null || die "compileall failed"
   # ruff checks our own scripts/ (upstream clones and work/ are gitignored)
   (cd "$ROOT" && ruff check .) || die "ruff failed"
@@ -511,8 +454,8 @@ cmd_verify() {
 }
 
 cmd_drift() {
-  # The probe endpoint and the API used below are the same URL again: the old
-  # "kernelci API" verdict was produced by probing files.kernelci.org.
+  # The probe endpoint and the API used below are the same URL (the old "kernelci
+  # API" verdict came from probing files.kernelci.org).
   if ! kci_preflight "config drift" "$API_URL/latest/"; then
     echo "    !! continuing anyway: drift reports its own API errors"
   fi
@@ -529,9 +472,8 @@ cmd_trend() {
   KCI_API_URL="$API_URL" kci_run python3 "$ROOT/scripts/tools/regression_tracker.py" trend
 }
 
-# Stop the host services of ONE deployment from the records
-# scripts/run-local-stack.sh wrote when it started them (role|pid|start|pattern).
-# The pid's start time is re-read before killing: a record from an old run whose
+# Stop ONE deployment's host services from the records run-local-stack.sh wrote
+# (role|pid|start|pattern).  The pid's start time is re-read first: a record whose
 # pid was meanwhile reused by an unrelated process must not kill that process.
 stop_recorded_services() {   # pid-file
   local file="$1" role pid start pattern now killed=0
@@ -557,24 +499,23 @@ stop_recorded_services() {   # pid-file
 }
 
 cmd_stop() {
-  # Same overridable identity as the stack: one machine can host more than one
-  # isolated deployment (its own compose project, volumes and ports), and
-  # stopping one must not stop the other.
+  # Same overridable identity as the stack: one machine can host several isolated
+  # deployments, and stopping one must not stop another.
   local project="${KCI_COMPOSE_PROJECT:-kcirv}"
   local serve_port="${KCI_SERVE_PORT:-8999}"
   local cb_port="${KCI_CB_PORT:-8003}"
   local sched_conf="/tmp/kcisched-$project"
   local pid_file="$ROOT/work/env/stack-$project.pids"
   local rc=0
-  # These used to be machine-global pkill patterns, so stopping one deployment
-  # killed another deployment's scheduler, callback and artifact server - while
-  # the compose teardown right below was already project-scoped (#18).
+  # These used to be machine-global pkill patterns that killed another deployment's
+  # scheduler, callback and artifact server (the compose teardown below was already
+  # project-scoped, #18).
   if [ -f "$pid_file" ]; then
     stop_recorded_services "$pid_file"
   else
-    # No record (the stack was started before pids were recorded, or by another
-    # checkout).  Say so, show exactly what pattern matching is about to hit,
-    # and then do it - a stop that quietly stops nothing would be worse.
+    # No record (started before pids were recorded, or by another checkout): say
+    # so, show what pattern matching is about to hit, then do it - a stop that
+    # quietly stops nothing would be worse.
     echo "  !! no service ownership record at $pid_file: this deployment cannot prove"
     echo "     which processes are its own, so it falls back to pattern matching,"
     echo "     which can also match ANOTHER deployment's services:"
@@ -594,9 +535,8 @@ cmd_stop() {
     if out="$(cd "$ROOT/kernelci-api" && docker compose -p "$project" -f docker-compose.yaml down 2>&1)"; then
       echo "API stack stopped (project $project)"
     else
-      # The branch had no else: a failed compose down printed nothing at all
-      # and the reader believed the stack was down while its containers kept
-      # running (#14).
+      # The branch had no else: a failed compose down printed nothing and the
+      # reader believed the stack was down while its containers kept running (#14).
       echo "X 'docker compose -p $project down' FAILED - containers of project $project may still be up:"
       printf '%s\n' "$out" | sed 's/^/    /'
       echo "    inspect with: docker compose -p $project -f $ROOT/kernelci-api/docker-compose.yaml ps"

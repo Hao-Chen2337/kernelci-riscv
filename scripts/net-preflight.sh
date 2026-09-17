@@ -1,23 +1,8 @@
 #!/usr/bin/env bash
 # Network preflight + proxy handling, shared by run.sh and run-local-stack.sh.
-#
-# Why this exists: the previous code unconditionally unset http_proxy/
-# https_proxy with a comment saying "the local proxy is dead;
-# direct access works".  That is one machine's temporary state baked into a
-# public repository.  Someone behind a working proxy (a lab, a corporate
-# egress proxy, a mirror-only network) would have it silently removed, and
-# their downloads would break instead of the author's.
-#
-# So: probe with the configuration exactly as the user set it, and only fall
-# back to a direct connection when the proxy is demonstrably broken - saying
-# so out loud, and letting the user force either mode:
-#
-#   (default)            honour the environment and git proxy configuration
-#   KCI_BYPASS_PROXY=1   ignore the proxy configuration for this run
-#
-# Nothing here changes the environment of the caller's shell: bypassing is
-# applied per command, so a run cannot leak a modified environment into the
-# next one.
+# Probe with the proxy configuration exactly as the user set it; fall back to a
+# direct connection only when the proxy is demonstrably broken.  KCI_BYPASS_PROXY=1
+# ignores the proxy for one run, and nothing here touches the caller's environment.
 set -uo pipefail
 
 KCI_PROBE_URL="${KCI_PROBE_URL:-https://files.kernelci.org/}"
@@ -32,7 +17,6 @@ _kci_unset_proxy_env() {
     -u all_proxy -u ALL_PROXY "$@"
 }
 
-# curl honouring the user's proxy configuration (or the bypass switch).
 kci_curl() {
   if kci_bypass_requested; then
     curl --noproxy '*' "$@"
@@ -41,14 +25,11 @@ kci_curl() {
   fi
 }
 
-# curl over a direct connection, whatever the environment says.
 kci_curl_direct() {
   _kci_unset_proxy_env curl --noproxy '*' "$@"
 }
 
-# Run a command with the proxy environment removed when a bypass is asked for.
-# Used for helpers that read the proxy variables themselves (python-requests,
-# tuxrun, git).
+# For helpers that read the proxy variables themselves (python-requests, tuxrun, git).
 kci_run() {
   if kci_bypass_requested; then
     _kci_unset_proxy_env "$@"
@@ -58,8 +39,7 @@ kci_run() {
 }
 
 # git honouring the bypass switch.  lowSpeedLimit/lowSpeedTime turn "hangs
-# forever behind a dead proxy" into "fails after 20s of no progress", which is
-# what makes the retry loops below useful.
+# forever behind a dead proxy" into "fails after 20s of no progress".
 kci_git() {
   local -a stall=(-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20)
   if kci_bypass_requested; then
@@ -77,11 +57,9 @@ kci_net_ok_direct() {
   kci_curl_direct -s -o /dev/null -m "$KCI_PROBE_TIMEOUT" -I "$KCI_PROBE_URL"
 }
 
-# Probe one proxy URL with the probe endpoint.  Returns 0 when it can carry the
-# request.  Used to name the *failing* entries instead of listing every setting
-# a user has: the list used to imply a working proxy was broken and never
-# tested git's own proxy - which is the one that actually kills `git clone`
-# (it is what `git` uses, regardless of what the http_proxy environment says).
+# Probe one proxy URL with the probe endpoint; 0 when it can carry the request.
+# Only failing entries are named - and git's own proxy is what `git clone` uses,
+# whatever the http_proxy environment says.
 kci_proxy_works() {
   [ -n "${1:-}" ] || return 1
   curl -x "$1" -s -o /dev/null -m "$KCI_PROBE_TIMEOUT" -I "$KCI_PROBE_URL"
@@ -94,10 +72,8 @@ kci_proxy_is_ssh() {
   esac
 }
 
-# Where the proxy configuration currently comes from (for error messages).
-# Only settings that FAILED the probe are printed as broken; the rest are
-# listed as working, because "these are your proxy settings" was read as
-# "these are the problem" even when the proxy in question answered fine.
+# Where the proxy configuration comes from (for error messages).  Only settings
+# that FAILED the probe are printed as broken; the rest are listed as working.
 kci_proxy_report() {
   local found=0 name value git_proxy probed
   for name in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY; do
@@ -130,8 +106,7 @@ kci_proxy_report() {
   return 0
 }
 
-# Probe and report.  Returns 0 when the network is usable, 1 with actionable
-# advice when it is not.  Callers decide whether that is fatal.
+# Probe and report: 0 usable, 1 with advice; callers decide whether that is fatal.
 kci_net_preflight() {
   local what="${1:-network}"
   if kci_net_ok; then
@@ -157,8 +132,7 @@ kci_net_preflight() {
 }
 
 # Clone a git URL with retries, falling back to a direct connection when the
-# configured proxy is dead.  This is the single most common failure on a fresh
-# machine: a stale proxy entry makes `git clone` hang with no output at all.
+# configured proxy is dead: a stale proxy entry makes `git clone` hang silently.
 kci_git_clone() {
   local url="$1" dest="$2" attempt
   for attempt in 1 2 3; do

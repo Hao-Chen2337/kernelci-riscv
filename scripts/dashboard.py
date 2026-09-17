@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-"""看板:把本地任务表渲染成一页,给人和 demo 看。
+"""Dashboard: render the local job table as one read-only page.
 
-为什么不是上游那个 frontend:kernelci-frontend 是 2024 年的 Flask 应用,依赖钉在
-Flask 1.0 / werkzeug 0.16 / pymongo 3.9,配置文件在另一个仓库
-(kernelci-frontend-config),而且直连 MongoDB。装它 = 另起一套老环境 + 一个配置文件
-+ 一个数据库连接,换来的还是"它想看的那套数据",不是我们这张表。
-
-这一页只读我们自己的三样东西:构建索引、账本、可选的本地 API 统计 —— 全是已经在
-kcilib 里的东西,零额外依赖,一个文件。
+Reads our own build index, ledger and optional local API - no extra
+dependencies, unlike the upstream frontend.  Binds 127.0.0.1, writes nothing.
 
     ./run.sh dashboard [--port 8079]
 
-只绑 127.0.0.1:它是给人看的,不是给网络看的;也不需要认证,因为不写任何东西。
+Notes: docs/code-notes/A-sink-source-dashboard.md
 """
 
 import argparse
@@ -96,8 +91,7 @@ def collect(db, api_url=None):
 def _api_stats(api_url):
     """Node counts per kind, or None when the API is not answering.
 
-    Goes through kcilib.api like every other reader: this page used to open its
-    own urllib request, which is how five copies of the same call happened.
+    Goes through kcilib.api like every other reader, not its own urllib call.
     """
     from kcilib.api import KernelCI
 

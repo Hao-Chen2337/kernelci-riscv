@@ -3,13 +3,9 @@
 """Shared library for the RISC-V pull-lab scripts (import with scripts/ on
 sys.path, e.g. ``from kcilib.run import judge``).
 
-Three lines live in it (see docs/ARCHITECTURE.md):
-
-    core/    cli config state ports params ledger        - plumbing both run paths share
-    run/     poll jobrun runner judge bake artifacts callback delivery - the run path
-    table/   buildref jobspec buildindex localrun        - the local job table
-    api.py   the one KernelCI API client
-    sink.py  where a result goes (ledger always, callback when the job says so)
+core/ is plumbing both run paths share, run/ is the run path, table/ the local
+job table, api.py the one KernelCI API client, sink.py where a result goes.
+Rationale: docs/code-notes/W2c-kcilib.md (layout: docs/ARCHITECTURE.md).
 """
 
 import os
@@ -18,13 +14,9 @@ import os
 def repo_root():
     """The repository root - walked up to, not counted in dirname() calls.
 
-    Modules sit at different depths (api.py, core/x.py, run/y.py, table/z.py), and
-    a fixed number of dirname() calls is a silent trap: after the last move,
-    ledger/buildindex/config/bake each pointed one level short, at scripts/, so
-    every artifact was written to scripts/work/ and the ledger read back empty.
-    Nothing raised - the paths were just wrong.  Walking up to the directory that
-    holds run.sh and scripts/ cannot drift that way.
-    """
+    Modules sit at different depths, and a fixed dirname() count pointed one
+    level short (at scripts/) after a package move: every artifact went to
+    scripts/work/ and the ledger read back empty, with nothing raised."""
     here = os.path.dirname(os.path.abspath(__file__))
     candidate = here
     for _ in range(6):
@@ -35,7 +27,6 @@ def repo_root():
         if parent == candidate:
             break
         candidate = parent
-    # Nothing matched (a checkout without run.sh, or a harness that copied only
-    # kcilib/): fall back to the old answer so callers get a root, not an
-    # exception.
+    # No run.sh (a checkout without one, or a harness that copied only kcilib/):
+    # fall back to the old answer so callers get a root, not an exception.
     return os.path.dirname(os.path.dirname(here))

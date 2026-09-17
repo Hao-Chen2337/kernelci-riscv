@@ -2,24 +2,13 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Debug callback catcher: logs every POST (headers + body) it receives.
 
-This is a DEBUG TOOL, not the stack's callback.  A running local stack delivers
-its job results to the real `lava_callback` service on KCI_CB_PORT (8003 by
-default, see ./run.sh stack), and nothing wires callbacks to this script - so
-someone who starts it expecting the stack's results to appear sees nothing.
-Point a job definition's callback URL (or a plain curl) here when you want to
-see the exact body and headers a callback carries.
+DEBUG TOOL, not the stack's callback: a running stack delivers its results to
+`lava_callback` on KCI_CB_PORT (8003 by default), and nothing is wired here.
+One JSON Lines record per request, rotated to <log>.1 above --max-bytes.
 
-Each request is appended as ONE JSON object per line (JSON Lines), so the file
-can be read directly with jq / `tail -f ... | jq .`; it used to be named
-callback-received.json while its content was JSON Lines.
+Rationale: docs/code-notes/W2d-tools.md.
 
-    python3 scripts/tools/callback-catcher.py                     # 127.0.0.1:9999
     python3 scripts/tools/callback-catcher.py --port 9998 --log /tmp/cb.jsonl
-
-The port is a flag (and KCI_CB_CATCH_PORT) instead of a hardcoded 9999: 9999
-was not overridable, and a port that is somebody else's on this machine failed
-with a bare traceback.  The log is capped - once it exceeds --max-bytes it is
-rotated to <log>.1 (one generation kept) instead of growing without bound.
 """
 
 import argparse
@@ -29,10 +18,9 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-# Derived from this file's location: a hardcoded absolute path pointed every
-# clone at one machine's checkout.  WALKED UP to run.sh (kcilib.repo_root), not
-# counted: this file moved into scripts/tools/, and the old two-dirname version
-# quietly defaulted the log to scripts/work/logs/ instead of work/logs/.
+# WALKED UP to run.sh (kcilib.repo_root), never counted: this file lives in
+# scripts/tools/, and a counted root quietly defaulted the log to
+# scripts/work/logs/ instead of work/logs/.
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))  # scripts/ holds kcilib
 
@@ -43,8 +31,7 @@ DEFAULT_LOG = os.path.join(ROOT, "work", "logs", "callback-received.jsonl")
 DEFAULT_PORT = 9999
 DEFAULT_MAX_BYTES = 8 * 1024 * 1024
 
-# Set from the command line in main(); the handler reads them as globals so a
-# single HTTP server instance can serve every request with them.
+# Set from the command line in main(); the handler reads them as globals.
 LOG = DEFAULT_LOG
 MAX_BYTES = DEFAULT_MAX_BYTES
 
@@ -91,8 +78,8 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(b'{"message":"OK"}')
 
     def do_GET(self):
-        # A cheap liveness/identity answer, so a port check can tell this
-        # catcher apart from whatever else may hold the port.
+        # Liveness/identity answer, so a port check can tell catcher from
+        # whatever else holds the port.
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -141,8 +128,7 @@ def main():
     try:
         server = HTTPServer((args.bind, args.port), H)
     except OSError as error:
-        # Name the port and the way out instead of a bare traceback: the
-        # default 9999 is somebody else's port on many machines.
+        # Name the port and the way out instead of a bare traceback.
         sys.exit(
             f"cannot listen on {args.bind}:{args.port}: {error}\n"
             f"pick a free port with --port (or KCI_CB_CATCH_PORT); the stack's "

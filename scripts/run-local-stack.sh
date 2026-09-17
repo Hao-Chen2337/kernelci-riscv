@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 # Local KernelCI full stack, one command: API stack + artifact server + real
 # callback + the official scheduler (reading our YAMLs).
-# Usage:
-#   run-local-stack.sh            # start services only, print status + next step
-#   run-local-stack.sh --seed     # start services + POST a kbuild seed node (triggers dispatch)
-#   run-local-stack.sh --worker   # start services + seed + run the worker in the foreground
+# Usage: [--seed] (POST a kbuild seed node) | [--worker] (seed + foreground worker)
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -12,16 +9,9 @@ API_DIR="$ROOT/kernelci-api"
 PIPE_DIR="$ROOT/kernelci-pipeline"
 ENV_FILE="$PIPE_DIR/.env"
 SERVE_DIR="$ROOT/work/serve"
-# Everything that identifies THIS deployment - the compose project (which fixes
-# the data volumes) and the host ports - is overridable, so a second deployment
-# can be exercised on the same machine against its own empty database instead of
-# the accumulated one:
-#   KCI_COMPOSE_PROJECT=kcirv-clean KCI_API_PORT=18001 KCI_CB_PORT=18003 \
-#   KCI_SERVE_PORT=18999 KCI_STORAGE_PORT=18002 KCI_SSH_PORT=18022 ./run.sh stack
-# They cannot run *simultaneously*: kernelci-api's compose file hardcodes
-# container_name (kernelci-api, kernelci-api-db, ...), so the first stack has to
-# be stopped - but it is the volume, and therefore the database, that decides
-# whether this is a fresh deployment or the old one.
+# Everything that identifies THIS deployment is overridable (KCI_COMPOSE_PROJECT plus
+# the KCI_*_PORT variables), so a second one can run against its own empty database.
+# They cannot run at once (compose hardcodes container_name); the volume decides freshness.
 PROJECT="${KCI_COMPOSE_PROJECT:-kcirv}"
 API_PORT="${KCI_API_PORT:-8001}"
 STORAGE_PORT="${KCI_STORAGE_PORT:-8002}"
@@ -30,23 +20,17 @@ MONGO_PORT="${KCI_MONGO_PORT:-8017}"
 CB_PORT="${KCI_CB_PORT:-8003}"
 SERVE_PORT="${KCI_SERVE_PORT:-8999}"
 API_URL="http://127.0.0.1:$API_PORT"
-# The scheduler's YAML config directory carries the compose project, so its
-# command line is unique per deployment.  Without that, "is a scheduler already
-# running?" matched (and `./run.sh stop` killed) every pull-labs-riscv
-# scheduler on the machine, including another deployment's (#18).
+# Per-deployment scheduler config dir, or "is a scheduler already running?" matched
+# (and ./run.sh stop killed) another deployment's scheduler too (#18).
 KCFG="/tmp/kcisched-$PROJECT"
-# Ownership record of the host services this deployment starts (see
-# record_service below); ./run.sh stop reads it.
+# Ownership record of the host services this deployment starts (record_service).
 PID_FILE="$ROOT/work/env/stack-$PROJECT.pids"
-# The compose file already reads these (${API_HOST_PORT:-8001} ...), so no
-# patching is needed to move a stack off the default ports.
+# compose reads these (${API_HOST_PORT:-8001} ...): exporting moves the published ports.
 export API_HOST_PORT="$API_PORT" STORAGE_HOST_PORT="$STORAGE_PORT"
 export SSH_HOST_PORT="$SSH_PORT" MONGO_HOST_PORT="$MONGO_PORT"
-# Runtime settings are rendered from the tracked templates (which use @NAME@
-# tokens) into gitignored files under work/: kernelci's toml.load() does not
-# expand environment variables, so a tracked file cannot refer to the checkout
-# next to it or to this deployment's ports, and hardcoding one machine's values
-# made every clone read another deployment's paths and endpoints.
+# Rendered from the tracked @NAME@ templates into gitignored files under work/:
+# toml.load() does not expand environment variables, so a tracked file cannot name
+# the checkout next to it or this deployment's ports.
 SETTINGS="$ROOT/work/local-callback.toml"
 CB_CONFIG="$ROOT/work/cb-config/pipeline.yaml"
 TUXRUN_BIN="${TUXRUN_BIN:-$(command -v tuxrun || echo "$HOME/.local/bin/tuxrun")}"
@@ -58,25 +42,9 @@ ok()  { echo "OK $*"; }
 . "$ROOT/scripts/net-preflight.sh"
 
 # --- ports ------------------------------------------------------------------
-# Every port this stack uses is overridable (KCI_*_PORT) and nothing checked
-# whether the value was free before a service was started on it.  A port held
-# by an unrelated listener then surfaced three layers down as "X artifact
-# server failed" - with the real EADDRINUSE only inside /tmp/fs8999.log - or as
-# a compose bind failure that blamed the API.  docs/HANDOVER.md used to tell
-# people to move the artifact server off 8999 "because the port is reserved";
-# that note is stale (8999 binds here), and this check is what answers the
-# question where it matters instead of by folklore.
-#
-# The probe itself lives in kcilib/core/ports.py and is reached through its command
-# line: the bind test, the holder lookup and the refusal text are ONE
-# implementation, shared with scripts/fetch-and-run-latest.py (which imports
-# it).  They used to exist twice - here and there - and the two copies already
-# disagreed about the address to bind: this one probed 0.0.0.0 because the
-# stack binds 0.0.0.0, while the library's default is 127.0.0.1, so "the same
-# check" answered two different questions.  --host 0.0.0.0 keeps the meaning
-# this script had; --project keeps the "our own compose project is not a
-# conflict" rule, and kcilib.core.ports states it more strictly than the shell did
-# (an empty owner never counts as ours).
+# Every port is overridable (KCI_*_PORT) and nothing checked it was free first: a
+# listener surfaced three layers down as "X artifact server failed".  The probe is
+# kcilib/core/ports.py's (shared with scripts/fetch-and-run-latest.py; --host 0.0.0.0).
 require_port_free() {   # port label override-var
   PYTHONPATH="$ROOT/scripts" python3 -m kcilib.core.ports \
     --require "$1" --label "$2" --override "$3" \
@@ -84,12 +52,9 @@ require_port_free() {   # port label override-var
 }
 
 # --- service ownership ------------------------------------------------------
-# ./run.sh stop used machine-global pkill patterns ("scheduler.py.*pull-labs-
-# riscv", "uvicorn lava_callback"), so stopping one deployment killed another
-# deployment's services, while the compose teardown next to it was already
-# project-scoped (#18).  Everything started here is recorded as
-# role|pid|start-time|pattern; stop kills exactly those pids after re-reading
-# the start time, so a recycled pid is never killed.
+# ./run.sh stop used machine-global pkill patterns and killed another deployment's
+# services (#18); here each service is recorded as role|pid|start-time|pattern and
+# stop kills those pids after re-reading the start time (a recycled pid survives).
 record_service() {   # role pattern
   local role="$1" pattern="$2" pid start
   mkdir -p "$(dirname "$PID_FILE")"
@@ -102,10 +67,8 @@ record_service() {   # role pattern
 
 [ -f "$ENV_FILE" ] || die "$ENV_FILE missing; run ./run.sh setup first"
 TOKEN="$(grep '^KCI_API_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
-# A non-empty check is not enough: setup's placeholder text
-# ("fill in the local kernelci-api admin JWT ...") is non-empty, so it used to
-# pass, start the whole stack, and then 401 on every single API call.  Demand
-# something that at least looks like the JWT the API hands out.
+# setup's placeholder text ("fill in the local kernelci-api admin JWT ...") is
+# non-empty, so it used to pass and then 401 on every API call: demand a JWT shape.
 case "$TOKEN" in
   ""|fill\ in*|*" "*)
     die "KCI_API_TOKEN in $ENV_FILE is not a real token (found: '${TOKEN:0:48}'); run ./run.sh setup (or scripts/local-instance-init.sh) to generate one" ;;
@@ -114,7 +77,6 @@ case "$TOKEN" in
     echo "  !! KCI_API_TOKEN does not look like a local API JWT (no 'eyJ' prefix); continuing" ;;
 esac
 
-# Render the settings templates for THIS deployment before anything reads them.
 python3 "$ROOT/scripts/tools/render-local-config.py" \
   --template "$ROOT/config/local-callback.toml" --output "$SETTINGS" >/dev/null \
   || die "could not render $SETTINGS from config/local-callback.toml"
@@ -126,33 +88,21 @@ python3 "$ROOT/scripts/tools/render-local-config.py" \
 ok "settings rendered ($SETTINGS, $CB_CONFIG; project=$PROJECT api=$API_PORT)"
 
 # --- seed inputs ------------------------------------------------------------
-# Resolved BEFORE any service is started.  The seed used to be resolved after
-# the whole stack was up, which is how "work/env/build.env's tree is not one
-# this runtime accepts" turned into a full start plus a 90 s wait ending in
-# "no job node appeared" - the node's tree label silently disagreeing with the
-# artifacts being booted (#1).  A seed that cannot work must cost a second.
+# Resolved BEFORE any service is started: a tree label that disagrees with the
+# artifacts being booted used to cost a whole stack start plus the 90 s wait (#1).
+# A seed that cannot work must cost a second.
 seed_requested() {
   [ "${1:-}" = "--seed" ] || [ "${1:-}" = "--worker" ]
 }
 
-# Every value below is spliced into a JSON heredoc, so each one is escaped for
-# JSON rather than interpolated raw: a quote or backslash in a branch name or a
-# describe string used to produce an invalid body, and the API answered with a
-# parse error instead of a node.
+# Every value below is spliced into a JSON heredoc, so escape it: a quote or
+# backslash used to make the body invalid and the API answered with a parse error.
 seed_json() { python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$1"; }
 
 resolve_seed_inputs() {
-  # CONSISTENCY RULE: work/serve/Image, the modules baked into
-  # work/env/rootfs-kvm.ext4 and the URLs in this seed must all be the SAME
-  # kbuild - the worker bakes modules.tar.xz into /lib/modules and modprobe
-  # matches them by kernel release, so a mismatch makes every kvm test skip
-  # ("Cannot open /dev/kvm").
-  #
-  # ./run.sh provision records the build it provisioned in work/env/build.env;
-  # seeding from it is what keeps the three places from drifting apart.  The
-  # SEED_* defaults below are only a fallback for a deployment that never ran
-  # provision (their pinned hash is old: storage prunes builds, which is why
-  # provision discovers the newest one instead of pinning anything).
+  # CONSISTENCY RULE: work/serve/Image, the modules in work/env/rootfs-kvm.ext4 and
+  # these URLs must be the SAME kbuild (modprobe matches by kernel release), so read
+  # work/env/build.env; the SEED_* defaults below only cover a never-provisioned stack.
   if [ -f "$ROOT/work/env/build.env" ]; then
     # shellcheck disable=SC1091
     . "$ROOT/work/env/build.env"
@@ -162,10 +112,8 @@ resolve_seed_inputs() {
       SEED_KSELFTEST_URL="${SEED_KSELFTEST_URL:-$KCI_BUILD_DIR/kselftest.tar.xz}"
       SEED_CONFIG_URL="${SEED_CONFIG_URL:-$KCI_BUILD_DIR/.config}"
     fi
-    # The revision of that build, so the nodes created below name the kernel
-    # that actually boots.  These used to be hardcoded defaults, which meant a
-    # deployment serving 7.3-rc2 created nodes labelled
-    # v7.3-rc1-516-gf217004a40c49: the runs were real, the attribution was not.
+    # The revision of that build, so the nodes name the kernel that actually boots:
+    # the hardcoded defaults labelled a 7.3-rc2 deployment v7.3-rc1-516-gf217004a40c49.
     # An explicit SEED_* in the environment still wins over all of it.
     SEED_COMMIT="${SEED_COMMIT:-${KCI_BUILD_COMMIT:-}}"
     SEED_DESCRIBE="${SEED_DESCRIBE:-${KCI_BUILD_DESCRIBE:-}}"
@@ -176,25 +124,21 @@ resolve_seed_inputs() {
     SEED_PATCHLEVEL="${SEED_PATCHLEVEL:-${KCI_BUILD_PATCHLEVEL:-}}"
     SEED_TAGS="${SEED_TAGS:-${KCI_BUILD_TAGS:-}}"
   fi
-  # The whole seed is env-overridable: when production storage prunes the
-  # original build, point SEED_*_URL at a newer build and replay.
+  # The whole seed is env-overridable, so a pruned build can be replaced and replayed.
   SEED_TREE="${SEED_TREE:-riscv}"
   SEED_BRANCH="${SEED_BRANCH:-master}"
   SEED_TREE_URL="${SEED_TREE_URL:-https://git.kernel.org/pub/scm/linux/kernel/git/riscv/linux.git}"
   SEED_VERSION="${SEED_VERSION:-7}"
   SEED_PATCHLEVEL="${SEED_PATCHLEVEL:-3}"
-  # No tag placeholder: a build whose node carries no commit_tags reports none.
-  # Defaulting to ["v7.3-rc1"] (the previous behaviour) put a tag on a node
-  # whose describe said v7.3-rc2-655-... - a self-contradicting record nobody
-  # would notice, since only the describe is displayed.
+  # No tag placeholder: defaulting to ["v7.3-rc1"] put a tag on a node whose
+  # describe said v7.3-rc2-655-..., a self-contradicting record nobody notices.
   SEED_TAGS="${SEED_TAGS:-${KCI_BUILD_TAGS:-}}"
   SEED_COMMIT="${SEED_COMMIT:-f217004a40c49e787372e798785aecb983828d35}"
   SEED_DESCRIBE="${SEED_DESCRIBE:-v7.3-rc1-516-gf217004a40c49}"
   if [ -z "${KCI_BUILD_COMMIT:-}" ]; then
     # Seeding with the placeholder is allowed (a hand-made Image has no build
-    # metadata), but it must not happen quietly: every node this creates, and
-    # every line ./run.sh report prints for them, will name a kernel that was
-    # never booted.
+    # metadata) but must not happen quietly: every node will name a kernel that
+    # was never booted.
     echo "  !! no build revision recorded: nodes from this seed will be labelled"
     echo "     $SEED_DESCRIBE, which is a placeholder, not the kernel in work/serve/Image."
     echo "     Fix: ./run.sh provision (records it), or set SEED_COMMIT/SEED_DESCRIBE."
@@ -213,17 +157,9 @@ resolve_seed_inputs() {
   SEED_CONFIG_URL="${SEED_CONFIG_URL:-https://files.kernelci.org/kbuild-gcc-14-riscv-6aa2170920239ade901a683f/.config}"
 }
 
-# The runtime that owns the riscv jobs declares rules.tree as an ALLOW-LIST
-# (kernelci-pipeline/config/pipeline-pull-labs.yaml) and the scheduler enforces
-# it (kernelci-core/kernelci/api/helper.py:358).  work/env/build.env records
-# the tree of the build this deployment actually serves, so the two can
-# disagree - and when they did, ./run.sh stack --seed started everything,
-# printed "seeded; scheduler will auto-create the 3 job nodes", waited the full
-# 90 s and ended with "no job node appeared", while the only cause was one
-# scheduler line:
-#   rules[tree]: Tree net-next not allowed due ['mainline', 'next', 'riscv'].
-# The check below asks the scheduler's OWN code (should_create_node) with the
-# scheduler's OWN config, so it cannot drift from what the scheduler decides.
+# rules.tree is an ALLOW-LIST the scheduler enforces with should_create_node: a tree
+# it refuses started everything, waited the full 90 s and ended with "no job node
+# appeared".  Asking the scheduler's own code and config cannot drift from it.
 seed_tree_guard() {
   local out allowed_trees reason
   if ! out="$(PYTHONPATH="$ROOT/kernelci-core" \
@@ -242,8 +178,7 @@ with open(os.path.join(pipe_dir, "config", "pipeline-pull-labs.yaml")) as handle
     config = yaml.safe_load(handle)
 runtime = (config.get("runtimes") or {}).get("pull-labs-riscv") or {}
 rules = runtime.get("rules") or {}
-# Rules are pure data: evaluating them needs no API connection, and a real
-# APIHelper would need one (so the check could not run before the stack is up).
+# Rules are pure data; a real APIHelper would need an API connection.
 helper = APIHelper.__new__(APIHelper)
 node = {"data": {"kernel_revision": {"tree": tree, "branch": branch}}}
 allowed = helper.should_create_node(rules, node)
@@ -251,9 +186,8 @@ print("RULES_TREE: " + " ".join(rules.get("tree") or []))
 print("VERDICT: " + ("ALLOWED" if allowed else "REFUSED"))
 PY
 )"; then
-    # kernelci-core not importable, or the config unreadable: say so and carry
-    # on - the wait below now prints the scheduler's own rejection reason, so a
-    # refusal is still visible instead of silent.
+    # kernelci-core not importable or config unreadable: carry on - the wait below
+    # prints the scheduler's own rejection reason, so a refusal is still visible.
     echo "  !! pre-seed tree check could not run (kernelci-core importable?):"
     printf '%s\n' "$out" | tail -3 | sed 's/^/     /'
     echo "     continuing; if the scheduler rejects this seed, it says why after the wait."
@@ -286,8 +220,8 @@ PY
 }
 
 # Provenance for the seed, written even when the run dies later: the nodes say
-# tree=$SEED_TREE while work/serve/Image and the artifact URLs come from the
-# tree=$KCI_BUILD_TREE build, and that difference is invisible in the API.
+# tree=$SEED_TREE while the artifacts come from the tree=$KCI_BUILD_TREE build,
+# and that difference is invisible in the API.
 write_seed_provenance() {
   mkdir -p "$ROOT/work/env"
   {
@@ -317,15 +251,9 @@ write_seed_provenance() {
 }
 
 
-# The ssh container stores job definitions and result logs through bind mounts
-# into these two directories, as its own user `kernelci` - uid 1000, see
-# kernelci-api/docker/ssh/Dockerfile.  A host directory owned by anybody else
-# makes that upload fail, and it fails SILENTLY: kernelci-core's
-# StorageSSH._upload runs `mkdir -p` fire-and-forget, so the scheduler sees only
-# "submit error: Failed to store job definition", every job node is parked as
-# incomplete and `stack --seed` reports "no job node appeared within 90s" - with
-# nothing pointing at permissions.  Checked here so nobody has to find that out
-# from a hang; root can simply fix it, another uid is told exactly what to run.
+# The ssh container stores job definitions through these bind mounts as uid 1000
+# (see kernelci-api/docker/ssh/Dockerfile).  Any other owner makes every job stay
+# incomplete with "submit error": StorageSSH._upload's `mkdir -p` fails SILENTLY.
 check_uid1000_dir() {
   local dir="$1" what="$2" owner
   mkdir -p "$dir" 2>/dev/null || true
@@ -350,14 +278,9 @@ check_uid1000_dir "$API_DIR/docker/storage/data" "job definitions and result log
 check_uid1000_dir "$API_DIR/docker/ssh/user-data" "the scheduler's upload key"
 
 
-# The worker's callback token: environment first (the precedence run.sh:10
-# uses), then THIS deployment's rendered settings.  The callback validates the
-# Authorization header against [runtime].pull-labs-riscv.callback_token, so
-# reading the configured token is what keeps a per-deployment token working in
-# this entry point as well.  It used to be the literal "labtoken-callback" on
-# the worker launch line below: a deployment with its own token got 401/403,
-# which the worker classifies as a PERMANENT callback failure, so the job was
-# abandoned behind a one-line message (#10).
+# The worker's callback token: the environment first, else this deployment's rendered
+# settings ([runtime].pull-labs-riscv.callback_token).  The literal "labtoken-callback"
+# that used to sit here 401/403'd every one of them - a PERMANENT failure (#10).
 CALLBACK_TOKEN="${PULL_LABS_CALLBACK_TOKEN:-}"
 TOKEN_SOURCE="built-in default (config/local-callback.toml's literal)"
 if [ -z "$CALLBACK_TOKEN" ] && [ -f "$SETTINGS" ]; then
@@ -365,9 +288,7 @@ if [ -z "$CALLBACK_TOKEN" ] && [ -f "$SETTINGS" ]; then
 import re
 import sys
 
-# python3 here is 3.10 (no tomllib), and the renderer emits one line per
-# runtime; config/local-callback.toml's commented example lines cannot match
-# because the runtime name is part of the pattern.
+# python3 here is 3.10 (no tomllib), and the renderer emits one line per runtime.
 with open(sys.argv[1]) as handle:
     text = handle.read()
 match = re.search(
@@ -395,8 +316,7 @@ if [ -z "$CALLBACK_TOKEN" ]; then
 fi
 
 # Resolve the seed and check its tree label BEFORE a single service is started:
-# a seed the runtime will reject must cost one second, not a full stack start
-# plus the 90 s wait (#1).
+# a seed the runtime will reject must cost one second, not a stack start (#1).
 if seed_requested "${1:-}"; then
   echo "-> resolving the seed (checked against the runtime's rules before starting)"
   resolve_seed_inputs
@@ -408,35 +328,30 @@ if seed_requested "${1:-}"; then
   write_seed_provenance "$SEED_TREE_MISMATCH"
 fi
 
-# Fresh ownership record: ./run.sh stop stops exactly the services this run
-# (re)started, or found already running on this deployment's own ports.
+# Fresh ownership record: ./run.sh stop stops exactly the services this run (re)started.
 mkdir -p "$(dirname "$PID_FILE")"
 : > "$PID_FILE"
 
 # 1) KernelCI API stack
 #
-# `docker compose up -d` runs even when the API already answers, because only
-# compose knows whether the running containers still match the requested port
-# mappings: skipping it left containers on the default ports while the rendered
-# cb-config pointed at this deployment's ports, and the scheduler then failed to
-# store any job definition ("unable to connect to port 18022").  With nothing to
-# change this is a no-op that costs about a second.
+# Run `up -d` even when the API answers: only compose knows whether the running
+# containers still match the requested port mappings, and skipping it left them on
+# the default ports while the rendered cb-config pointed at this deployment's.
 if curl -s -m 3 -o /dev/null "$API_URL/latest/"; then
   ok "API stack already up ($API_URL)"
   (cd "$API_DIR" && docker compose -p "$PROJECT" up -d api db redis storage ssh >/dev/null) \
     || echo "  !! compose could not reconcile the running containers; ports may be stale"
 else
-  # Bindability first, and name the conflict: a compose that cannot publish
-  # 8001 reports it in its own words, and the reader then hunts through the
-  # API's logs for a problem that is an unrelated listener on the port.
+  # Bindability first, and name the conflict: a compose that cannot publish 8001
+  # reports it in its own words, sending the reader through the API's logs instead.
   require_port_free "$API_PORT" "kernelci API" KCI_API_PORT
   require_port_free "$STORAGE_PORT" "artifact storage" KCI_STORAGE_PORT
   require_port_free "$SSH_PORT" "job-definition ssh" KCI_SSH_PORT
   require_port_free "$MONGO_PORT" "mongo" KCI_MONGO_PORT
   echo "-> starting: docker compose -p $PROJECT up -d api db redis storage ssh"
   if ! (cd "$API_DIR" && docker compose -p "$PROJECT" up -d api db redis storage ssh >/dev/null); then
-    # After a machine/docker restart, stale Exited containers cause compose
-    # name conflicts; data lives in volumes, so removing them is safe.
+    # After a machine/docker restart, stale Exited containers cause compose name
+    # conflicts; the data lives in volumes, so removing them is safe.
     echo "  compose conflict; removing stale stopped containers and retrying"
     for c in kernelci-api kernelci-api-db kernelci-api-redis kernelci-api-storage kernelci-api-ssh; do
       docker rm -f "$c" >/dev/null 2>&1 || true
@@ -451,12 +366,9 @@ done
 curl -s -m 3 -o /dev/null "$API_URL/latest/" || die "API not ready at $API_URL"
 ok "API stack up"
 
-# Which artifact is actually running - recorded, not inferred afterwards.
-# kernelci-api/docker-compose.yaml pulls a *mutable* tag
-# (${KERNELCI_API_IMAGE:-kernelci/staging-kernelci}:${KERNELCI_API_TAG:-api}), so
-# the image this deployment tested can change under it overnight; without this
-# line no report can name the artifact it verified.  Read it back from the
-# running container rather than from the tag we asked for.
+# Which artifact is actually running - recorded, not inferred: compose pulls a
+# *mutable* tag, so the image this deployment tested can change overnight, and no
+# report could otherwise name what it verified.  Read back from the container.
 API_IMAGE_ID="$(docker inspect -f '{{.Image}}' kernelci-api 2>/dev/null || true)"
 if [ -n "$API_IMAGE_ID" ]; then
   ok "API image: ${API_IMAGE_ID#sha256:} (${KERNELCI_API_IMAGE:-kernelci/staging-kernelci}:${KERNELCI_API_TAG:-api})"
@@ -471,37 +383,29 @@ if [ -n "$API_IMAGE_ID" ]; then
     echo "KCI_COMPOSE_PROJECT=$PROJECT"
   } > "$ROOT/work/env/images.env"
 else
-  # Say so instead of silently writing nothing: this record is the only way a
-  # later report can name the artifact it verified, and a renamed container
-  # (KCI_COMPOSE_PROJECT, an override) would otherwise vanish without a trace.
+  # Say so rather than write nothing: this record is the only way a later report can
+  # name the artifact it verified (a renamed container would vanish without a trace).
   echo "  !! could not read the running API image id (docker inspect kernelci-api failed);"
   echo "     work/env/images.env was NOT written, so this run's artifact is unrecorded"
 fi
 
-# `stop` + `stack` used to truncate the previous round's service logs, because
-# every service logs to a fixed /tmp path - so after a restart the round that
-# produced a result was no longer auditable.  Rotate one generation instead,
-# and ONLY when the service is about to be started below: rotating here
-# unconditionally moved the log file of an ALREADY RUNNING service to .prev,
-# leaving the live round with no log path at all while the service kept writing
-# to the moved inode (caught by an adversarial review, then observed live).
+# `stop` + `stack` used to truncate the previous round's logs (every service logs to
+# a fixed /tmp path).  Rotate one generation, and ONLY just before starting the service:
+# rotating an already-running one left the live round writing to a moved inode.
 rotate_log() {
   [ -f "$1" ] && mv -f "$1" "$1.prev"
   return 0
 }
 
-# Note on the service launches below: each one redirects the SUBSHELL's own
-# stdout/stderr as well as the service's.  Redirecting only the service left the
-# subshell holding the caller's stdout, so `./run.sh stack | tee log` never saw
-# EOF and appeared to hang long after the stack was up.
+# Every launch below redirects the SUBSHELL too: redirecting only the service left
+# it holding the caller's stdout, so `./run.sh stack | tee log` never saw EOF.
 # 2) artifact server (8999)
 if curl -s -m 3 -o /dev/null "http://127.0.0.1:$SERVE_PORT/Image"; then
   ok "artifact server already up (:$SERVE_PORT)"
   record_service "artifact server" "http\.server $SERVE_PORT"
 else
-  # A listener on this port that does not answer /Image is exactly the case the
-  # old message hid: "X artifact server failed", with the real EADDRINUSE only
-  # inside /tmp/fs8999.log.  require_port_free names the port and the holder.
+  # A listener that does not answer /Image is the case the old "X artifact server
+  # failed" hid; require_port_free names the port and the holder instead.
   require_port_free "$SERVE_PORT" "artifact server" KCI_SERVE_PORT
   rotate_log "/tmp/fs$SERVE_PORT.log"
   (cd "$SERVE_DIR" && setsid nohup python3 -m http.server $SERVE_PORT --bind 0.0.0.0 >/tmp/fs$SERVE_PORT.log 2>&1 < /dev/null &) >/dev/null 2>&1
@@ -510,8 +414,7 @@ else
     ok "artifact server started (:$SERVE_PORT)"
     record_service "artifact server" "http\.server $SERVE_PORT"
   else
-    # The service's own log is the evidence; print it instead of only naming
-    # the file it is in.
+    # The service's own log is the evidence; print it, not just its path.
     tail -3 "/tmp/fs$SERVE_PORT.log" 2>/dev/null | sed 's/^/     /'
     die "artifact server failed on port $SERVE_PORT (see /tmp/fs$SERVE_PORT.log)"
   fi
@@ -523,19 +426,9 @@ if curl -s -m 3 -o /dev/null "http://127.0.0.1:$CB_PORT/"; then
   record_service "lava_callback" "uvicorn lava_callback:app --port $CB_PORT"
 else
   require_port_free "$CB_PORT" "lava_callback" KCI_CB_PORT
-  # lava_callback runs on the HOST (not in a container) and imports the cloned
-  # kernelci-core, so its imports have to be installed here.  Importing the
-  # module is the honest check: listing four packages missed what the callback
-  # actually needs transitively (kernelci-core wants elftools, and a machine
-  # with only PyJWT/toml/uvicorn/fastapi still died here with a bare
-  # "callback failed (see /tmp/cb8003.log)").
-  #
-  # KCI_SETTINGS must be set for the check to mean anything: lava_callback.py
-  # reads it AT IMPORT TIME (toml.load), and it is otherwise only set inline on
-  # the launch line - so an import check without it fails with
-  # FileNotFoundError: 'config/kernelci.toml' on a perfectly healthy machine and
-  # blames dependencies that are installed.  (Caught by adversarial review of
-  # this very check, N11.)
+  # lava_callback runs on the HOST against the cloned kernelci-core, so import it to
+  # check the deps.  KCI_SETTINGS is read AT IMPORT TIME (toml.load): without it a
+  # healthy machine dies with FileNotFoundError 'config/kernelci.toml'.
   if ! CALLBACK_IMPORT_ERROR="$(cd "$PIPE_DIR/src" && KCI_SETTINGS="$SETTINGS" \
       PYTHONPATH="$ROOT/kernelci-core" python3 -c 'import lava_callback' 2>&1)"; then
     echo "$CALLBACK_IMPORT_ERROR" | tail -3 >&2
@@ -558,10 +451,8 @@ if pgrep -f "scheduler\.py.*--yaml-config $KCFG/" >/dev/null; then
   ok "scheduler already running (pull-labs-riscv, config $KCFG)"
   record_service "scheduler" "scheduler\.py.*--yaml-config $KCFG/"
 else
-  # A second scheduler on the same API dispatches every job a second time (both
-  # subscribe to the same node events), so a scheduler that is not ours is a
-  # conflict to report, not something to duplicate.  Before this deployment got
-  # its own config directory it could not tell.
+  # A second scheduler on the same API dispatches every job twice (both subscribe to
+  # the same node events), so a scheduler that is not ours is a conflict to report.
   if pgrep -af "scheduler\.py.*pull-labs-riscv" | grep -qv "$KCFG/"; then
     echo "  !! a scheduler for the same runtime is already running without this"
     echo "     deployment's config directory ($KCFG):"
@@ -613,32 +504,21 @@ echo
 
 if [ "${1:-}" = "--seed" ] || [ "${1:-}" = "--worker" ]; then
   echo "-> seeding kbuild node to trigger scheduling..."
-  # The seed itself (build revision, tree, artifact URLs) was resolved and its
-  # tree label checked against the runtime rules BEFORE any service was started:
-  # see resolve_seed_inputs / seed_tree_guard above.  What is left here is the
-  # local preflight, the checkout parent and the POST.
-  # Preflight: the local Image is a hard requirement; broken production URLs
-  # only warn (that job will report Infrastructure honestly; override and retry).
+  # The seed was resolved and its tree label checked before any service started
+  # (resolve_seed_inputs / seed_tree_guard).  Left: the local preflight, the checkout
+  # parent and the POST.  Image is required; broken artifact URLs only warn.
   [ -f "$SERVE_DIR/Image" ] || die "seed needs $SERVE_DIR/Image (run ./run.sh fetch or drop one there)"
-  # Probe the seed artifacts with the user's proxy configuration as-is.
-  # (This used to unset http_proxy/https_proxy unconditionally, with a comment
-  # about "the dead local proxy" - one machine's temporary state.  Someone whose
-  # proxy works would have it silently removed; KCI_BYPASS_PROXY=1 is the
-  # explicit opt-in for a broken one.)
-  # Note what this does and does not cover: these three URLs are the ARTIFACT
-  # host.  The API calls below are a different endpoint, so a green line here is
-  # not a verdict on them (and vice versa).
+  # Probe with the user's proxy configuration as-is (KCI_BYPASS_PROXY=1 is the explicit
+  # opt-in for a broken one - this used to unset the proxies silently).  These are the
+  # ARTIFACT host, not the API endpoint: a green line here is not a verdict on the API.
   for u in "$SEED_MODULES_URL" "$SEED_KSELFTEST_URL" "$SEED_CONFIG_URL"; do
-    # HEAD, not a Range probe: files.kernelci.org ignores Range and streams
-    # the whole file, so a range check on a big artifact always times out.
+    # HEAD, not Range: files.kernelci.org ignores Range and streams the whole file.
     kci_curl -s -m 15 -o /dev/null -I "$u" \
       || echo "  !! seed artifact unreachable: $u (override via SEED_*_URL; KCI_BYPASS_PROXY=1 ignores a dead proxy)"
   done
-  # A kbuild node hangs off a checkout node, so the seed needs one to exist.
-  # On a fresh database there is none - and the old lookup crashed (IndexError
-  # from items[0] on an empty list) and carried on with an empty parent, so the
-  # very first `./run.sh stack --seed` of a new deployment died.  Create the
-  # checkout node when the database has none.
+  # A kbuild node hangs off a checkout node; a fresh database has none, and the old
+  # lookup crashed on an empty list (IndexError from items[0]) and carried on with an
+  # empty parent, so the first --seed of a new deployment died.  Create one.
   api_get() { kci_curl -s -m 15 -H "Authorization: Bearer $TOKEN" "$API_URL/latest$1"; }
   PARENT="$(api_get "/nodes?kind=checkout&data.kernel_revision.tree=$SEED_TREE&limit=1" \
     | python3 -c 'import json,sys
@@ -649,9 +529,8 @@ except Exception:
 print(items[0]["id"] if items else "")')"
   if [ -z "$PARENT" ]; then
     echo "    no checkout node yet (fresh database); creating one"
-    # The body goes through a file rather than piping a heredoc into python:
-    # a pipe after a heredoc terminator inside a command substitution is a
-    # syntax error bash only reports when it reaches the line.
+    # Body via a file: piping a heredoc into python inside a command substitution
+    # is a syntax error bash only reports when it reaches the line.
     CHECKOUT_BODY="$(mktemp)"
     cat > "$CHECKOUT_BODY" <<EOF
 {
@@ -678,9 +557,8 @@ except Exception:
     [ -n "$PARENT" ] || die "could not create a checkout node on $API_URL (is the API up and the token valid?)"
     echo "    checkout node created: $PARENT"
   fi
-  # -m 30: the first POST after an API restart can stall mid-response; curl
-  # must not wait forever. (The node may already exist server-side; re-running
-  # only adds one more seed node, harmless in the dev DB.)
+  # -m 30: the first POST after an API restart can stall mid-response, and curl must
+  # not wait forever (re-running only adds one more seed node, harmless in a dev DB).
   if curl -s -m 30 -o /dev/null -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" --data @- "$API_URL/latest/node" <<EOF
 {
   "name": "kbuild-gcc-14-riscv", "kind": "kbuild", "state": "available",
@@ -704,17 +582,15 @@ except Exception:
 EOF
   then
     echo "    seeded; scheduler will auto-create the 3 job nodes"
-    # The node's own tree label is what the API and every report show; when it
-    # differs from the tree the served artifacts come from, say where that is
-    # recorded rather than letting the two drift apart silently (#1).
+    # The node's own tree label is what the API and every report show: name where
+    # the difference from the served artifacts is recorded (#1).
     echo "    (seed provenance: work/env/seed.env; tree label $SEED_TREE, build tree ${KCI_BUILD_TREE:-none recorded})"
   else
     echo "  !! seed POST got no response (the node may still exist - check /latest/nodes; re-running is harmless)"
   fi
-  # Wait for the scheduler to actually render the job nodes.  Seeding and then
-  # immediately running `./run.sh worker --once` used to hit an empty queue:
-  # the worker printed "batch processed, exiting" having run nothing at all,
-  # which looks like success and is deeply confusing.
+  # Wait for the scheduler to render the job nodes: `worker --once` straight after
+  # seeding hit an empty queue and printed "batch processed, exiting" - having run
+  # nothing at all, which looks like success and is deeply confusing.
   echo "-> waiting for the scheduler to create the job nodes..."
   deadline=$((SECONDS + ${SEED_WAIT_S:-90}))
   while [ "$SECONDS" -lt "$deadline" ]; do
@@ -733,9 +609,8 @@ print(sum(1 for n in items if (n.get("name") or "").endswith("pull-labs")))' 2>/
   done
   if ! [ "${pending:-0}" -ge 1 ] 2>/dev/null; then
     echo "  !! no job node appeared within ${SEED_WAIT_S:-90}s"
-    # The scheduler's own reason, first: a rule rejection is a plain stdout line
-    # in a log full of paramiko debug, so "check /tmp/sched-local.log" left the
-    # reader without the one sentence that explains it (#4).
+    # The scheduler's own reason first: a rule rejection is one stdout line in a log
+    # full of paramiko debug, so "check /tmp/sched-local.log" explains nothing (#4).
     reasons="$(grep -aE 'rules\[|not allowed|Not creating node' /tmp/sched-local.log 2>/dev/null | tail -5 || true)"
     if [ -n "$reasons" ]; then
       echo "     the scheduler refused to create them:"
@@ -753,10 +628,8 @@ fi
 if [ "${1:-}" = "--worker" ]; then
   echo '-> worker taking jobs (Ctrl-C to stop):'
   echo "   callback token from: $TOKEN_SOURCE"
-  # The token comes from the environment or this deployment's rendered settings
-  # (see CALLBACK_TOKEN above), not from the literal that used to sit here: the
-  # callback validates the header it receives against the configured
-  # callback_token, and a hardcoded value 401s every per-deployment token (#10).
+  # The token comes from CALLBACK_TOKEN above, not the literal that used to sit here:
+  # the callback validates the header it receives against the configured token (#10).
   PYTHONUNBUFFERED=1 PATH=/usr/local/sbin:/usr/sbin:$PATH PULL_LABS_CALLBACK_TOKEN="$CALLBACK_TOKEN" \
     kci_run python3 "$ROOT/scripts/riscv_pull_worker.py" \
     --api-url "$API_URL" --tuxrun-bin "$TUXRUN_BIN" \

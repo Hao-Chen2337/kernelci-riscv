@@ -2,26 +2,16 @@
 #
 """Durable (build, test, verdict) ledger of the local RISC-V pull lab.
 
-Every run of scripts/fetch-and-run-latest.py records what it tested and how it
-ended, because the run itself leaves nothing durable: its workspace is a
-gitignored work/downloads/<build-id>/ that the next run overwrites and its
-console only exists in the terminal it was started from.  The record is
-written for EVERY outcome - a failed run is exactly the one worth having a
-record of - so writing it must not be the thing that fails: records are
-written to a temporary file and renamed into place, and a reader may
-therefore trust any file it finds.
+Path layout and key set are the contract, not an implementation detail::
 
-The path layout and the key set are the contract, not an implementation
-detail (a report, a regression tracker or an operator reads them without
-importing this module)::
+    work/results/<build-id>/<test>.json   -   build_id, build_created, job,
+    test, source, timestamp, verdict, exit_code, detail, revision,
+    artifacts_dir, log, results
 
-    work/results/<build-id>/<test>.json
-
-      build_id, build_created, job, test, source, timestamp, verdict,
-      exit_code, detail, revision, artifacts_dir, log, results
-
-Keys are written sorted and indented by one space, so two records of the same
-outcome are byte-identical and diff cleanly.
+Every outcome is recorded (a failed run most of all), through a temporary file
+and a rename, so a reader may trust any file it finds.  Keys are written sorted
+and indented by one space, so identical outcomes diff cleanly.
+Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
 import json
@@ -30,21 +20,15 @@ import time
 
 from kcilib import repo_root
 
-# Repository layout derived from this file's own location (never a hardcoded
-# absolute path): work/ is gitignored and holds regenerable runtime artifacts.
-# kcilib.repo_root() WALKS UP to the directory holding run.sh instead of counting
-# dirname() levels: a fixed count pointed one short (at scripts/) after the last
-# package move, so every record was quietly written under scripts/work/ and the
-# ledger read back empty - no error, just the wrong place.
+# Derived from this file's own location, never a hardcoded path: work/ is
+# gitignored and regenerable.  repo_root() walks up to run.sh - a fixed
+# dirname() count landed in scripts/.
 ROOT = repo_root()
 RESULTS_DIR = os.path.join(ROOT, "work", "results")
 
-# The root is overridable, and the reason is testing, not deployment: the guard
-# suite drives a REAL run_node() (scripts/tools/verify-worker-guards.py,
-# test_missing_callback_keeps_result_pending), so once the worker writes records
-# too, an unredirectable root means `./run.sh verify` leaves records in the
-# repository's work/ tree.  The LAYOUT below is still the contract - only the
-# root moves.
+# Overridable for testing, not deployment: ./run.sh verify drives a real
+# run_node() that would otherwise leave records in the repository's work/ tree.
+# Only the root moves - the layout stays the contract.
 RESULTS_DIR_ENV = "KCI_RESULTS_DIR"
 
 
@@ -52,18 +36,15 @@ def results_dir():
     """The directory records live in: work/results, or $KCI_RESULTS_DIR."""
     return os.environ.get(RESULTS_DIR_ENV) or RESULTS_DIR
 
-# The one place the record's key set is defined: `write_result()` fills the
-# fields a caller leaves out and refuses fields that are not here, so a typo
-# cannot quietly drop a field from the record.
+# The one place the record's key set is defined: write_result() fills what a
+# caller leaves out and refuses anything else, so a typo cannot drop a field.
 RESULT_FIELDS = (
     "build_id",
     "build_created",
     "job",
     "test",
-    # Which writer filed the record: "fetch" (the one-shot runner re-running one
-    # production build) or "worker" (the resident poller taking lab jobs).  Two
-    # writers with one layout is the point; a reader that cannot tell which one
-    # produced a row cannot tell a re-run from a dispatched job either.
+    # Which writer filed the record ("fetch" one-shot runner, "worker", "table"):
+    # a reader that cannot tell them apart cannot tell a re-run from a job.
     "source",
     "timestamp",
     "verdict",
@@ -75,8 +56,7 @@ RESULT_FIELDS = (
     "results",
 )
 
-# Taken from the fallbacks the writer has always used: a build without a name
-# is "" and one without a revision is {}, not null.
+# The writer's historical fallbacks: "" for a missing name, {} for a revision.
 _FIELD_DEFAULTS = {
     "build_created": None,
     "job": "",
@@ -100,10 +80,8 @@ def result_path(build_id, test):
 def write_result(build_id, test, payload):
     """Write the record for one (build, test) and return the path written.
 
-    *payload* carries the outcome - build_created, job, verdict, exit_code,
-    detail, revision, artifacts_dir, log, results (and optionally timestamp) -
-    while the build and test identity comes from the arguments, so a record
-    can never be filed under a path that names a different run."""
+    *payload* carries the outcome; the build and test identity comes from the
+    arguments, so a record can never be filed under a path naming another run."""
     if not build_id or not test:
         raise ValueError(
             f"a result record needs a build id and a test name, got "
@@ -127,8 +105,7 @@ def write_result(build_id, test, payload):
     record["build_id"] = build_id
     record["test"] = test
     if not record["timestamp"]:
-        # A record that does not say when it was written cannot be lined up
-        # with the build it describes.
+        # Without a timestamp a record cannot be lined up with its build.
         record["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     path = result_path(build_id, test)
@@ -145,9 +122,8 @@ def write_result(build_id, test, payload):
 def read_results(build_id):
     """Every recorded record of one build, keyed by test name.
 
-    A test that was never run is simply absent ({} for a build nothing is
-    recorded for), and a record that cannot be parsed raises rather than being
-    skipped: a ledger that quietly loses rows is worse than no ledger."""
+    An unrun test is simply absent; an unparseable record raises rather than
+    being skipped - a ledger that quietly loses rows is worse than none."""
     directory = os.path.join(results_dir(), build_id)
     records = {}
     if not os.path.isdir(directory):
@@ -168,11 +144,9 @@ def read_results(build_id):
 def list_builds():
     """Every build id the ledger holds a record for, newest record first.
 
-    Ordered by the newest timestamp IN the records, not by directory mtime:
-    a build whose directory was touched by a copy or a restore would
-    otherwise sort as if it had just run.  An unreadable record raises here
-    for the same reason read_results() does - a listing that silently skips
-    rows is worse than no listing."""
+    Ordered by the newest timestamp IN the records, not by directory mtime (a
+    copy or a restore would sort as if it had just run); an unreadable record
+    raises here too."""
     root = results_dir()
     if not os.path.isdir(root):
         return []
@@ -187,7 +161,6 @@ def list_builds():
             (record.get("timestamp") or "") for record in records.values()
         )
         builds.append((newest, name))
-    # Descending by newest timestamp; the name breaks a tie so two builds
-    # recorded in the same second still come back in a stable order.
+    # The name breaks a tie, so same-second builds still come back stably.
     builds.sort(reverse=True)
     return [name for _newest, name in builds]

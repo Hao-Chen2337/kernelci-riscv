@@ -2,46 +2,23 @@
 #
 """The result report: LAVA-compatible body assembly and its delivery.
 
-A finished pull-lab job has exactly one durable output - the callback POST -
-so the two halves of it live here rather than in each entry point:
+lava_body() builds the LAVA-compatible callback body - the ONLY format the
+pipeline's callback endpoint (kernelci.runtime.lava.Callback) ingests, so any
+other would silently lose the result - and post_result() delivers it and says
+what happened: "result posted" belongs to a real 2xx and nothing else.
 
-* ``lava_body()`` assembles the **LAVA-compatible callback body**, the only
-  format the pipeline's callback endpoint (lava_callback.py +
-  kernelci.runtime.lava.Callback) ingests; there is no server-side parser for
-  the PULL_LABS protocol body, so any other format would silently lose the
-  result;
-* ``post_result()`` delivers it and, crucially, *says what happened*: the
-  "result posted" line belongs to a real 2xx and nothing else.
+Three behaviours are load-bearing and are not to be "improved": a definition
+without a callback URL raises CallbackMissingURLError (a *transient* error) so
+the caller keeps the result pending instead of logging "result posted" while
+the result exists nowhere; 4xx is permanent, 5xx/network is retried 3 times and
+then transient, so "not posted" can never look like "posted"; and the token
+comes from the environment at post time - never a parameter here, never in the
+body, never in the state file.
 
-Both were moved out of scripts/riscv_pull_worker.py unchanged: the bodies, the
-comments and the printed lines are byte-for-byte the same, and nothing had to
-be renamed to become module-level.  The worker keeps its own policy - the poll
-loop, the job mapping, the baked guest cache, the console archive and the
-re-post-from-state rule.
-
-lava_body() takes the two callback-metadata names off a
-kcilib.core.config.RunConfig instead of an argparse namespace (phase 4); the
-configuration it reads did not change, only where it comes from.
-
-Three behaviours are load-bearing and are not to be "improved":
-
-* a job definition without a callback URL raises ``CallbackMissingURLError``
-  (a subclass of the *transient* error) instead of returning quietly, so the
-  caller keeps the result pending rather than logging "result posted" while the
-  result exists nowhere (#3);
-* a 4xx is permanent, a 5xx/network error is retried (3 attempts) and then
-  transient; both raise, so "not posted" can never look like "posted";
-* the callback token comes from the environment at post time.  It is never a
-  parameter of ``lava_body()``, never a field of the body, and never written to
-  the state file - ``pending_entry()``/``report_from_pending()`` below are the
-  round trip that keeps it that way (see kcilib.core.state.StateFile).
-
-The judged verdicts are *inputs*, never re-derived here: ``tap`` is
-``(label, summary, per_test)`` - the ``summary`` and ``per_test`` halves of the
-5-tuple ``kcilib.run.judge.judge_run()`` returns, paired with the test label exactly
-as the worker's ``run_node()`` builds it - and ``error_msg`` is the ``detail`` that
-goes with them.  This module never runs tuxrun, never parses TAP and never
-reads a job definition.
+The verdicts are inputs, never re-derived here: *tap* is
+(label, summary, per_test) and *error_msg* is the matching detail.  This module
+never runs tuxrun, never parses TAP and never reads a job definition.
+Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
 import os
@@ -70,9 +47,8 @@ LOG_LIMIT = 2 << 20  # cap of log text embedded in a result body
 
 LAVA_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 
-# The suite case lava_body() files a kselftest run under ("0_kselftest.<suite>");
-# the prefix is what marks a case as the selftest verdict rather than a boot
-# case.
+# The prefix of the suite case lava_body() files a kselftest run under
+# ("0_kselftest.<suite>"): it marks the selftest verdict rather than a boot case.
 SUITE_CASE_PREFIX = "0_kselftest."
 # LAVA's status for a job whose result could not be produced; 2 is Complete.
 LAVA_STATUS_INCOMPLETE = 3
@@ -85,33 +61,24 @@ def lava_body(
     """Build a LAVA-compatible callback body: the only format the pipeline's
     callback endpoint (kernelci.runtime.lava.Callback) ingests.
 
-    Required pieces, mirroring a real LAVA server callback:
-      - status: LAVA numeric job status (2=Complete, 3=Incomplete)
-      - definition: YAML whose metadata carries api_config_name /
-        storage_config_name (what get_meta() reads)
-      - results.lava: case/stage list; login-action and kernel-messages are
-        replayed from tuxrun's own LAVA lines so boot results get the usual
-        'setup' hierarchy
-      - results.<suite>: per-test entries keyed 0_kselftest.<collection>;
-        the parser builds a suite node whose children are the tests and
-        flips the job to 'fail' when any failed (tuxrun exits 0 even then)
-      - log: LAVA output.yaml format (list of {dt, lvl, msg}); without it
-        the endpoint forces 'incomplete'
+    Pieces, mirroring a real LAVA server callback: status (2=Complete,
+    3=Incomplete); definition YAML carrying api_config_name/storage_config_name;
+    results.lava with login-action and kernel-messages replayed from tuxrun's own
+    LAVA lines (so boot results get the usual 'setup' hierarchy);
+    results.<suite> keyed 0_kselftest.<collection>, which the parser turns into a
+    suite node and flips to 'fail' when a test failed (tuxrun exits 0 even then);
+    and log in LAVA output.yaml format - without it the endpoint forces
+    'incomplete'.
 
-    tap is (label, summary, per_test) from tap_summary().  infra marks an
+    tap is (label, summary, per_test) from tap_summary(); *infra* marks an
     infrastructure error via the 'job' stage metadata (what
-    Callback.is_infra_error() reads).
-
-    run_config is a kcilib.core.config.RunConfig, and only two of its fields are
-    read here: the api_config_name / storage_config_name the callback definition
-    metadata must carry.  The body itself is a pure function of the verdicts -
-    no HTTP, no tuxrun, no state.
+    Callback.is_infra_error() reads).  Only run_config's two config names are
+    read; the body is a pure function of the verdicts.
     """
     status = 2 if returncode == 0 else 3
     if tap:
-        # TAP available = the job DID complete (tuxrun exits 0/1/2 by LKFT
-        # result plumbing); the per-test hierarchy drives the final result,
-        # so the job stays Complete unless this is an infra error.
+        # TAP available = the job DID complete; the per-test hierarchy drives
+        # the result, so it stays Complete unless this is an infra error.
         status = 2 if not infra else 3
     cases = [{"name": "job", "metadata": {}}]
     boot_cases = []
@@ -143,8 +110,7 @@ def lava_body(
         )
         cases[0]["metadata"] = {"error_type": "Job", "error_msg": last[-200:]}
     elif not tap and not boot_cases:
-        # rc 0 without any boot case lines means the log does not show a
-        # real boot; never report that as pass.
+        # rc 0 with no boot case lines is not a real boot; never report a pass.
         status = 3
         cases[0]["metadata"] = {
             "error_type": "Job",
@@ -201,22 +167,19 @@ def lava_body(
     }
 
 
-# The report tuple a caller posts is (callback_url, token, body); these are the
-# two expressions the worker resolves it from - the callback URL recorded in the
-# job definition (run_job's job.get("callback", {}) / callback.get("url")) and
-# the token, which is read from the environment every time it is needed because
-# it is a "remote token" name shared with the pipeline admins and is never
-# persisted.
+# A report tuple is (callback_url, token, body).  The token is a "remote token"
+# shared with the pipeline admins: read from the environment every time it is
+# needed, and never persisted.
 CALLBACK_TOKEN_ENV = "PULL_LABS_CALLBACK_TOKEN"
 
 
 def _lava_cases(body):
     """The (name, result) pairs of a body's lava case list, never raising.
 
-    The list is a YAML string inside the body (that is the format the
-    pipeline's callback parses), so it is read back the same way.  A body that
-    cannot be read yields no cases rather than an exception: a caller reading
-    a verdict must not be able to break a run that already finished.
+    The list is a YAML string inside the body - the format the pipeline's
+    callback parses - so it is read back the same way.  An unreadable body
+    yields no cases: reading a verdict must not break a run that already
+    finished.
     """
     raw = (body.get("results") or {}).get("lava") or ""
     try:
@@ -235,17 +198,15 @@ def _lava_cases(body):
 def verdict_from_body(body):
     """The ledger's (verdict, exit_code, detail) for a body lava_body() built.
 
-    Read back OUT OF the body on purpose: a record must agree with what was
-    actually reported upstream, and the body is what upstream received.
-    Computing the verdict a second time from the console - judge_run(), which
-    is the one-shot path's route - would be a second opinion about the same
-    run, and the two are free to disagree; "the ledger says pass and the
-    pipeline says fail" is precisely the confusion a durable record exists to
-    remove.
+    Read back OUT OF the body on purpose: the body is what upstream received, so
+    the record cannot disagree with the pipeline.  Computing the verdict a second
+    time from the console (judge_run(), the one-shot path's route) would be a
+    second opinion about the same run - "the ledger says pass and the pipeline
+    says fail" is the confusion a durable record exists to remove.
 
-    status 3 is LAVA's Incomplete (no usable result: infrastructure), 2 is
-    Complete.  A Complete job is not automatically a pass: tuxrun exits 0 even
-    when every selftest fails, so the suite case carries the verdict.
+    status 3 is LAVA's Incomplete (infrastructure), 2 is Complete.  A Complete
+    job is not automatically a pass: tuxrun exits 0 even when every selftest
+    fails, so the suite case carries the verdict.
     """
     status = body.get("status")
     error = _job_case_metadata(body)
@@ -268,8 +229,7 @@ def verdict_from_body(body):
 def _job_case_metadata(body):
     """The metadata of the body's 'job' case, or {} when it has none.
 
-    This is where an infrastructure failure names itself (error_type
-    Infrastructure and the message the callback's is_infra_error() reads).
+    Where an infrastructure failure names itself (error_type Infrastructure).
     """
     for case in _lava_case_dicts(body):
         if case.get("name") == "job":
@@ -307,9 +267,8 @@ def callback_target(job):
 def pending_entry(report):
     """The persistable half of a (callback_url, token, body) report tuple.
 
-    The token is dropped on purpose: the state file holds the callback URL and
-    the body only, and the token is re-read from the environment when the body
-    is posted again (report_from_pending)."""
+    The token is dropped on purpose: the state file holds the URL and the body
+    only, and the token is re-read from the environment on the next post."""
     return {"callback": report[0], "body": report[2]}
 
 
@@ -332,14 +291,11 @@ class CallbackTransientError(Exception):
 class CallbackMissingURLError(CallbackTransientError):
     """The job definition carries no callback URL: there is nowhere to post.
 
-    Deliberately treated as transient rather than as a give-up.  The run has
-    already happened and its result is the only copy, so the caller keeps it in
-    the persisted pending set and does not mark the node seen; an operator who
-    fixes the job definition (or the deployment's callback) then gets the
-    result posted instead of losing it.  The old code printed a warning and
-    returned normally, so the caller went on to log "result posted to the
-    callback" while the job stayed available forever and the result existed
-    nowhere (#3)."""
+    Deliberately transient rather than a give-up: the run already happened and
+    its result is the only copy, so the caller keeps it pending and does not mark
+    the node seen - an operator who fixes the definition then gets it posted
+    instead of losing it.  Returning normally logged "result posted" while the
+    result existed nowhere."""
 
 
 def post_result(callback, token, body):

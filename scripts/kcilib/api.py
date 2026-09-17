@@ -2,39 +2,21 @@
 #
 """The one KernelCI API client. Every script that reads nodes goes through here.
 
-Why this module exists: the same three functions had been written out five
-times, roughly verbatim, in scripts that all talk to the same API -
-
-    scripts/fetch-and-run-latest.py   api_get / pick_newest
-    scripts/tools/config_drift.py           api_get / fetch_all_nodes / list_nodes
-    scripts/tools/regression_tracker.py     api_get / fetch_all_nodes / list_nodes
-    scripts/kcilib/run/poll.py            fetch_nodes / retrieve_job_definition
-    scripts/kcilib/table/buildref.py        fetch_nodes
-
-- each with its own idea of the /latest prefix, its own pagination loop (or no
-pagination at all), and its own retry story.  An API change then has to be made
-in five places, and the four that were forgotten fail silently: a missing page
-looks exactly like "the build does not exist".
-
-What is deliberately NOT here: kernelci-core's own client.  It is the right
-client for the *services* that already depend on kernelci-core (the callback,
-the scheduler), but these scripts are standalone on purpose - ./run.sh fetch is
-documented as needing "no stack, no node, no token", and requiring a cloned
-kernelci-core with a kernelci.toml would take that away.  What we do owe the
-upstream client is its CONVENTIONS: the /latest prefix, {items,total,offset}
-pagination, and JSON-or-error.
+It keeps upstream's conventions - the /latest prefix, {items,total,offset}
+pagination, JSON-or-error - without upstream's client, because these scripts
+must stay standalone (./run.sh fetch needs "no stack, no node, no token").
+Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
 import time
 
 import requests
 
-# The public API, and the default a deployment overrides with KCI_API_URL.
+# The public API; a deployment overrides it with KCI_API_URL.
 PRODUCTION_API = "https://api.kernelci.org"
 LOCAL_API = "http://127.0.0.1:8001"
 REQUEST_TIMEOUT = 60
-# /nodes pages at this size when the caller does not say.  200 is what the
-# scripts that already paged used, and what the API serves happily.
+# /nodes page size when the caller does not say.
 PAGE_LIMIT = 200
 
 
@@ -45,10 +27,8 @@ class APIError(RuntimeError):
 class KernelCI:
     """A read-mostly client for one KernelCI API.
 
-    Only what these scripts actually need: fetch nodes (one page or all),
-    one node, an event page, and a job definition.  Writes (creating nodes)
-    are done by the scripts that own that decision, through :meth:`post`,
-    so an accidental write is never one method call away from a read.
+    Reads are the methods below; a write goes through :meth:`post`, so it is
+    never one method call away from a read.
     """
 
     def __init__(self, base_url=None, token=None, timeout=REQUEST_TIMEOUT,
@@ -61,8 +41,7 @@ class KernelCI:
 
     @property
     def latest(self):
-        """The /latest base: KernelCI serves everything under it, and the dev
-        API accepts both forms, so the canonical one is always used."""
+        """The canonical /latest base (KernelCI serves everything under it)."""
         if self.base_url.endswith("/latest"):
             return self.base_url
         return f"{self.base_url}/latest"
@@ -73,9 +52,8 @@ class KernelCI:
     def get(self, path, params=None, retries=None):
         """GET one path and return the parsed JSON object.
 
-        Retries a connection error (the local API drops idle ones) and raises
-        requests' own exceptions otherwise, so callers that already catch
-        requests.exceptions.RequestException - kcilib.run.poll does - keep working.
+        Retries a connection error (the local API drops idle ones); everything
+        else raises requests' own exceptions, which callers already catch.
         """
         url = path if path.startswith("http") else f"{self.latest}{path}"
         attempts = self.retries if retries is None else retries
@@ -108,13 +86,10 @@ class KernelCI:
 
     @staticmethod
     def _refuse_redirect(response, url):
-        """A 3xx is never the answer: it means something else is answering.
+        """A 3xx is never the answer: something else is answering.
 
-        Only job_definition() used to check this, so a proxy that replied "302 +
-        a perfectly valid JSON body" was accepted as data by every other reader -
-        and 302+HTML merely looked like a JSON error, which hid the difference.
-        Asking not to follow redirects (allow_redirects=False) is not the same as
-        noticing one arrived.
+        allow_redirects=False only declines to follow one - it does not notice
+        that one arrived.
         """
         if response.is_redirect or response.is_permanent_redirect:
             raise APIError(
@@ -126,8 +101,7 @@ class KernelCI:
         try:
             return response.json()
         except ValueError as error:
-            # A proxy's HTML error page is not JSON.  This used to escape as a
-            # bare ValueError and kill callers that only expect API errors.
+            # A proxy's HTML error page: an APIError, not a bare ValueError.
             raise APIError(f"{url} did not return JSON: {error}") from error
 
     # ---- the reads these scripts actually make -------------------------
@@ -145,11 +119,9 @@ class KernelCI:
     def all_nodes(self, **filters):
         """Every matching node, walking pages.
 
-        /nodes returns results in creation order and truncates each response to
-        the page limit, so a single request silently misses the newest nodes of
-        a busy job - a missing page is indistinguishable from "no such build".
-        The response carries {items,total,offset}, which is what makes walking
-        it possible without guessing.
+        A single request is truncated at the page limit, and a missing page is
+        indistinguishable from "no such build".  {items,total,offset} is what
+        makes walking it possible without guessing.
         """
         params = {key: value for key, value in filters.items()
                   if value is not None}
@@ -189,8 +161,8 @@ class KernelCI:
     def job_definition(self, url):
         """Fetch a pull-lab job definition from its (external) URL.
 
-        Refuses a redirect: the definition URL is handed out by the scheduler
-        and a redirect means something in between is answering instead.
+        Refuses a redirect: something in between would be answering instead of
+        the scheduler that handed the URL out.
         """
         response = self.session.get(url, timeout=self.timeout,
                                     allow_redirects=False)

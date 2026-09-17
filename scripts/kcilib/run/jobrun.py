@@ -3,58 +3,22 @@
 #
 """Job definition -> tuxrun argv -> run -> judge -> report body.
 
-The middle of the worker's job path, moved VERBATIM out of
-scripts/riscv_pull_worker.py: the bodies, the comments and every printed line
-are the worker's own - only the imports are new.  ``build_command()`` maps a
-job definition onto a tuxrun argv (baking a disk rootfs out of a tarball
-artifact when the job carries one), ``run_command()`` runs it and captures the
-console into the workspace, ``run_node()`` drives the two and turns the outcome
-into a LAVA callback body.  The console archive (``archive_console_log()`` and
-``prune_console_logs()``) travels with them because run_node's ``finally`` is
-what keeps a real run's evidence alive past the per-job workspace that held it
-(#6).
+THIS MODULE DOES NOT KNOW THE API EXISTS: run_node(node, run_config, node_id)
+takes the job definition the events API served plus a
+kcilib.core.config.RunConfig and returns the (callback_url, token, body) report
+tuple - the poll loop posts it.  A caller that never polled anything (a replay of
+a saved job definition, an offline test) can run a node with a hand-built
+RunConfig.  The console archive travels with run_node() because its ``finally``
+is what keeps a real run's evidence alive past the per-job workspace.
 
-THIS MODULE DOES NOT KNOW THE API EXISTS.  ``run_node(node, run_config)`` takes
-the job definition the events API served plus a kcilib.core.config.RunConfig and
-returns the report tuple; fetching nodes, the cursor and the flock are
-kcilib.run.poll's business, and the poll loop hands this function its config rather
-than this module reaching for anything global.  A caller that has never polled
-anything (a replay of a saved job definition, an offline test) can run a node
-with a RunConfig it built by hand.
-
-WHAT IT DELEGATES - and why each seam has to stay exactly where it is:
-
-* the judging is kcilib.run.judge's, and specifically the three predicates
-  (``tuxrun_invocation_error`` / ``tuxrun_job_error`` / ``tuxrun_infra_error``)
-  plus ``tap_summary`` and ``tuxrun_error_message``.  NOT ``judge_run``: its
-  timeout wording differs, and swapping it in would change the ``error_msg``
-  that reaches the callback for a timed-out job;
-* the command line is ``kcilib.run.runner.build_tuxrun_argv`` (flag order, the rw
-  boot-args rationale and the --rootfs/--modules/--tests omission rules live
-  there) and the execution is ``kcilib.run.runner.run_tuxrun`` - the worker's
-  ``timeout_s + 180`` grace, the workspace as cwd, and
-  ``stream_separator="\n"`` so the console keeps its blank line where stdout
-  and stderr meet;
-* the guest image is ``kcilib.run.bake.baked_rootfs_image``: the same bake and the
-  same cache the worker used to own, so "guest prepared in Ns" and the bake
-  cache lines are unchanged;
-* the progress printer is imported from ``kcilib.run.bake.stamp`` (the shared
-  implementation) instead of being copied a third time.  Its ``[HH:MM:SS] ``
-  line is byte-identical to the worker's own stamp(), and a caller that
-  re-binds ``kcilib.run.bake.stamp`` - or this module's ``stamp`` - moves every
-  line of this module with it, exactly as the offline guard tests re-bind
-  module attributes;
-* ``run_node()`` does NOT post the result: it returns the
-  ``(callback_url, token, body)`` tuple and the poll loop posts it.  The token
-  is read from the environment here and is never persisted (kcilib.run.callback).
-
-Nothing was "tidied": the archived consoles under work/logs, the printed
-lines and the state file are test fixtures.  Every string, comment and
-f-string below is the worker's, character for character.
-
-The worker's CLI (kcilib/core/cli.py) and the flag -> field mapping
-(kcilib/core/config.py) are the only things above this module; nothing here reads a
-command line, and no field is named after a flag.
+WHAT IT DELEGATES, and why each seam stays where it is: judging is
+kcilib.run.judge's three predicates plus tap_summary/tuxrun_error_message - NOT
+judge_run(), whose timeout wording would change the error_msg a timed-out job
+reports; the command line and its execution are kcilib.run.runner's (flag order,
+the timeout+180 grace, stream_separator="\n"); the guest image is
+kcilib.run.bake.baked_rootfs_image's, cache included; the progress printer is
+kcilib.run.bake.stamp, which a caller may re-bind.  Nothing here reads a command
+line.  Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
 import os
@@ -78,22 +42,14 @@ from kcilib.run.judge import (
 from kcilib.run.runner import build_tuxrun_argv, run_tuxrun
 
 DEFAULT_TIMEOUT = 1800  # seconds, when the job def carries no timeout
-# Bounds applied to whatever the job definition asked for.  The clamp used to
-# be a silent max(60, min(timeout_s, config.max_timeout)): a definition asking
-# for 1800s was cut to the 1200s the shell entry points pass, the job was
-# killed at 20 minutes and reported as Infrastructure, and nothing in the log
-# said the timeout had been reduced.  Both bounds now have a name, a CLI flag
-# and a line of their own the moment they bite (see clamp_timeout).
+# Bounds applied to whatever the job definition asked for.  The clamp used to be
+# silent - a job killed early reported Infrastructure with nothing saying why -
+# so both bounds have a name, a CLI flag and a logged line (see clamp_timeout).
 MIN_TIMEOUT = 60  # floor: below this tuxrun cannot even boot a guest
 
-# Where the per-job tuxrun console is archived before its workspace is removed
-# (#6): the console is written inside the workspace and the workspace is
-# deleted at the end of every job, so the only local copy of a real run used to
-# disappear with it - all that survived was the callback's LOG_LIMIT-capped
-# copy, and nothing at all when the callback failed.  Anchored to the
-# repository root rather than the CWD, so "the logs are in work/logs" holds
-# whatever directory the worker was started from (work/ is the gitignored tree
-# this repo already treats as durable).
+# Newest archived consoles kept in LOG_DIR.  The console lives inside the
+# per-job workspace and the workspace is deleted at the end of every job, so
+# without this the only local copy of a real run disappeared with it.
 LOG_ARCHIVE_KEEP = 200  # newest archived consoles kept in LOG_DIR
 
 TAR_SUFFIXES = (".tar", ".tar.gz", ".tar.xz", ".tgz")
@@ -122,9 +78,8 @@ def build_command(node, run_config, workspace):
 
     parameters = [f"cpu={cpu_for(run_config.cpu, test_type)}"]
 
-    # An explicit --rootfs overrides whatever the job definition carries:
-    # the lab owns its guest images (e.g. point at a local mirror when
-    # storage.kernelci.org is throttled).
+    # An explicit --rootfs overrides the job definition's: the lab owns its
+    # guest images (e.g. a local mirror when storage.kernelci.org is throttled).
     rootfs_url = run_config.rootfs or node_artifacts.get("rootfs")
     if not rootfs_url and node_artifacts.get("ramdisk"):
         print(
@@ -147,8 +102,7 @@ def build_command(node, run_config, workspace):
             max_size=run_config.max_download_size,
         )
         rootfs_arg = f"file://{image}"
-        # Modules are already inside the baked image; the --modules LAVA
-        # overlay lands after boot and cannot load kvm.ko at boot time.
+        # Already baked in; the --modules LAVA overlay lands after boot, too late.
         modules_url = None
     elif rootfs_url:
         rootfs_arg = rootfs_url
@@ -164,14 +118,9 @@ def build_command(node, run_config, workspace):
         parameters.append(f"KSELFTEST={kselftest_url}")
         test_args = [test_type]
         if test_type == "kselftest-kvm":
-            # Curated subset instead of the whole collection: the LKFT
-            # script hands TST_CASENAME to `run_kselftest.sh -t`, which
-            # matches each kvm:name entry exactly (allow-list).  kvm.ko is
-            # loaded at boot: modules.tar.xz is baked into /lib/modules and
-            # a modules-load.d conf modprobes it (see bake_rootfs_image).
-            # The LKFT "modules" test is a load/unload round-trip and must
-            # NOT be used here (verified: it unloads kvm again before
-            # kselftest runs).
+            # Curated subset, not the whole collection: LKFT hands TST_CASENAME
+            # to `run_kselftest.sh -t`.  Its "modules" test must NOT be used
+            # here - it unloads kvm again before kselftest runs.
             if run_config.kvm_full:
                 # whole collection: no allow-list; LKFT runs every kvm test.
                 pass
@@ -184,9 +133,8 @@ def build_command(node, run_config, workspace):
                         else " ".join(f"kvm:{name}" for name in subset)
                     )
                 )
-    # Flag order, the rw boot-args rationale (Debian images mount / read-only
-    # without it) and the omission rules for --rootfs/--modules/--tests all
-    # live in kcilib.run.runner.build_tuxrun_argv.
+    # Flag order and the --rootfs/--modules/--tests omission rules live in
+    # kcilib.run.runner.build_tuxrun_argv.
     argv = build_tuxrun_argv(
         tuxrun_bin=run_config.tuxrun_bin,
         runtime=runtime_name(run_config),
@@ -220,12 +168,10 @@ def run_command(cmd, timeout_s, workspace):
 def prune_console_logs(log_dir, keep=LOG_ARCHIVE_KEEP):
     """Keep only the newest *keep* archived consoles in *log_dir*.
 
-    Archiving every job's console is a real disk cost (one 25-minute kselftest
-    console is hundreds of KB, and a resident lab runs hundreds of jobs a
-    month), so the archive is bounded by count and pruned oldest-first - the
-    same shape as prune_bake_cache.  Only ``<node id>.log`` files this module
-    writes are considered, so a hand-placed file in the same directory is never
-    removed.  Returns the names it removed."""
+    Consoles are hundreds of KB each and a resident lab runs hundreds of jobs a
+    month, so the archive is bounded by count and pruned oldest-first.  Only
+    this module's own ``<node id>.log`` files are considered; returns the names
+    it removed."""
     try:
         names = [
             name
@@ -257,23 +203,16 @@ def prune_console_logs(log_dir, keep=LOG_ARCHIVE_KEEP):
 def archive_console_log(workspace, log_dir, node_id):
     """Copy the job's tuxrun console out of the workspace before it is removed.
 
-    The console is written inside the per-job workspace and the workspace is
-    deleted at the end of every job unless --keep-workspace is passed - which
-    neither shell entry point does - so the only local copy of a real run's
-    console used to disappear with it (#6).  All that survived was the copy
-    embedded in the callback body, capped at LOG_LIMIT, and nothing at all when
-    the callback itself failed.
-
-    Returns the archived path, or "" when the job produced no console.  Raises
-    OSError when the copy itself fails, so the caller can keep the workspace
-    instead of deleting the last copy of the evidence."""
+    The workspace is deleted at the end of every job, so without this the only
+    local copy of a real run's console disappeared with it.  Returns the
+    archived path, or "" when there was no console; raises OSError when the copy
+    fails, so the caller keeps the workspace instead of deleting the evidence."""
     if not log_dir or not node_id:
         return ""
     source = os.path.join(workspace, "tuxrun.log")
     if not os.path.isfile(source):
         return ""
-    # The node id comes from the API and ends up in a filename: keep it to
-    # characters that cannot escape the log directory.
+    # The node id comes from the API and becomes a filename: keep it safe.
     safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", str(node_id))
     if not safe_id:
         return ""
@@ -288,14 +227,8 @@ def clamp_timeout(timeout_s, max_timeout, min_timeout=MIN_TIMEOUT):
     """Apply the worker's timeout bounds and report it when they bite.
 
     Returns (effective_timeout, note); note is "" when nothing was clamped.
-
-    Clamping a job definition's timeout is intended (a definition must not be
-    able to run forever), but it used to be silent: a definition asking for
-    1800s, cut to the 1200s the shell entry points pass, was killed at 20
-    minutes and reported as Infrastructure with nothing in the log saying the
-    timeout had been reduced - indistinguishable from a job that genuinely
-    needs more time.  Both bounds are now named, both are CLI flags
-    (--min-timeout / --max-timeout) and every clamp is announced.  (#15)"""
+    Clamping is intended - a definition must not run forever - but it must never
+    be silent, or an early kill reads as a job that genuinely needed more time."""
     effective = max(min_timeout, min(timeout_s, max_timeout))
     if effective == timeout_s:
         return effective, ""
@@ -310,11 +243,8 @@ def clamp_timeout(timeout_s, max_timeout, min_timeout=MIN_TIMEOUT):
     )
 
 
-# Who filed the record.  The ledger's field is documented as "which writer
-# produced this row", and it was hardcoded to "worker" here - so a run started by
-# ./run.sh run --source table (the local job table, which never touches the events
-# API) was filed as if the resident worker had taken it.  The field is only worth
-# having if it is true.
+# Who filed the ledger record.  Hardcoding "worker" filed local-job-table runs as
+# if the resident worker had taken them; the field is only worth having if true.
 SOURCE_WORKER = "worker"
 SOURCE_TABLE = "table"
 
@@ -322,25 +252,13 @@ SOURCE_TABLE = "table"
 def record_result(node, node_id, body, tap, log_path, source=SOURCE_WORKER):
     """File this run in the durable ledger and return the path written.
 
-    kcilib.core.ledger owns the layout (work/results/<build-id>/<test>.json) and the
-    key set; this function is the worker's NAMING of the run, and it is written
-    for every outcome - a failed run is exactly the one worth having a record
-    of.  Until the worker wrote records, work/results/ held only the one-shot
-    runner's rows, so a resident lab that had taken a hundred dispatched jobs
-    had no history of its own.
-
-    The build is taken from the job's artifact URLs (a pull-lab job definition
-    carries no build id, only URLs - see artifacts.build_id_from_artifacts).
-    When no URL names one, the job node id stands in, and the record says so by
-    naming the node in *job*: a record filed under a made-up id would be worse
-    than one filed under a real node id.
-
-    The verdict comes from the callback BODY that was just built, not from a
-    second look at the console (callback.verdict_from_body): the record and the
-    pipeline must not be able to disagree about the same run.
-
-    Failure to write is reported and returned as "", never raised: the run
-    already happened and its result still has to reach the callback.
+    kcilib.core.ledger owns the layout and the key set; this is the worker's
+    NAMING of the run, written for every outcome - a failed run is exactly the
+    one worth having a record of.  The build comes from the job's artifact URLs,
+    or the node id when no URL names one (a made-up id would be worse).  The
+    verdict comes from the callback BODY, not from a second look at the console,
+    so record and pipeline cannot disagree.  A failed write is reported and
+    returned as "", never raised.
     """
     tests = node.get("tests") or [{}]
     test = tests[0].get("type") or tests[0].get("id") or "boot"
@@ -370,9 +288,8 @@ def record_result(node, node_id, body, tap, log_path, source=SOURCE_WORKER):
 def _relative_to_repo(path):
     """*path* relative to the repository root, or as given when it is outside.
 
-    The one-shot runner stores repository-relative paths in the same field, and
-    a reader lining the two writers' rows up must not have to guess which is
-    which.
+    The one-shot runner stores repository-relative paths in the same field, so a
+    reader lining the two writers' rows up must not have to guess.
     """
     if not path:
         return None
@@ -384,19 +301,17 @@ def _relative_to_repo(path):
 def run_node(node, run_config, node_id=None, source=SOURCE_WORKER):
     """Execute one job definition in a per-job workspace and return the
     report tuple (callback_url, token, body); the caller posts it.  Every
-    failure inside is converted into an infra-error LAVA body, so a report
-    is always produced (unless the workspace itself cannot be created).
+    failure inside becomes an infra-error LAVA body, so a report is always
+    produced (unless the workspace itself cannot be created).
 
-    *node* is a job definition exactly as the events API served it and
-    *run_config* is a kcilib.core.config.RunConfig - the two things a run needs, and
-    the API is not one of them.  *node_id* labels the progress lines and names
-    the archived console log (see archive_console_log)."""
+    *node* is a job definition as the events API served it and *run_config* a
+    kcilib.core.config.RunConfig - the API is not one of them.  *node_id* labels
+    the progress lines and names the archived console log."""
     environment = node.get("environment", {})
     system = environment.get("platform", run_config.platform)
     callback = node.get("callback", {})
     callback_url = callback.get("url")
-    # The callback token is a "remote token" name shared with the pipeline
-    # admins; the worker holds the secret in an env var.
+    # A "remote token" shared with the pipeline admins; the secret is in an env var.
     callback_token = os.environ.get("PULL_LABS_CALLBACK_TOKEN")
     timeout_s = next(
         (
@@ -410,9 +325,8 @@ def run_node(node, run_config, node_id=None, source=SOURCE_WORKER):
         timeout_s, run_config.max_timeout, run_config.min_timeout
     )
     if clamp_note:
-        # Announced once per job, before anything runs: the effective timeout
-        # is the number to look at first when a job comes back Infrastructure
-        # after a kill (#15).
+        # Announced before anything runs: the effective timeout is the number to
+        # look at first after a kill.
         stamp(f"{node_id or 'job'}: {clamp_note}")
 
     own_base = not run_config.output_dir
@@ -423,8 +337,8 @@ def run_node(node, run_config, node_id=None, source=SOURCE_WORKER):
     tap = None
     infra = False
     error_msg = ""
-    # The archived console path, set by the finally block below; the ledger
-    # record names it, so a reader reaches the evidence from the record.
+    # Set by the finally block below; the ledger record names it, so a reader
+    # reaches the evidence from the record.
     archived = None
     try:
         started = time.time()
@@ -444,17 +358,15 @@ def run_node(node, run_config, node_id=None, source=SOURCE_WORKER):
             or tuxrun_job_error(returncode, output)
             or tuxrun_infra_error(returncode, output)
         ):
-            # e.g. kselftest-riscv before the tuxlava class lands upstream,
-            # artifacts the dispatcher container cannot reach, or the serial
-            # connection dying mid-run: report an infra error with the reason.
-            # The reason is built for the callback's 200-character window
-            # instead of being sliced out of the tail of a 7KB argparse line.
+            # e.g. a missing tuxlava class, artifacts the dispatcher cannot
+            # reach, or the serial connection dying mid-run: report an infra
+            # error, with a reason built for the callback's 200-character window.
             infra = True
             error_msg = tuxrun_error_message(output, label)
         if label.startswith("kselftest-"):
-            # tuxrun returns 0 even when selftests fail; judge from the TAP.
-            # Computed even on infra failures, so a suite that died mid-run
-            # keeps the per-test results it produced.
+            # tuxrun returns 0 even when selftests fail, so judge from the TAP;
+            # computed even on infra failures, so a suite that died mid-run keeps
+            # the per-test results it produced.
             summary, _tests_out, per_test = tap_summary(output, label)
             tap = (label, summary, per_test)
     except Exception as error:  # noqa: BLE001 - any failure becomes an infra-error report
@@ -467,9 +379,8 @@ def run_node(node, run_config, node_id=None, source=SOURCE_WORKER):
             archived = archive_console_log(workspace, run_config.log_dir,
                                            node_id)
         except OSError as error:
-            # Keep the workspace when its console could not be archived: it is
-            # the only surviving copy of the run, and deleting it is exactly
-            # the evidence loss this archiving exists to stop (#6).
+            # The workspace is now the only copy of the run: keep it rather than
+            # delete the evidence.
             keep_workspace = True
             print(
                 f"Warning: could not archive the console log to "
@@ -493,10 +404,8 @@ def run_node(node, run_config, node_id=None, source=SOURCE_WORKER):
         infra=infra,
         error_msg=error_msg,
     )
-    # The durable record of this run, filed next to the one-shot runner's rows
-    # (work/results/<build-id>/<test>.json).  Written before the caller posts, so
-    # a callback that never lands still leaves a record of what ran; a failure to
-    # write is reported inside and never stops the report.
+    # Filed next to the one-shot runner's rows, before the caller posts, so a
+    # callback that never lands still leaves a record of what ran.
     record = record_result(node, node_id, body, tap, archived, source=source)
     if record:
         stamp(f"{node_id or 'job'}: recorded in {_relative_to_repo(record)}")

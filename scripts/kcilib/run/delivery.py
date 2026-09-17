@@ -1,58 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-"""构件投送:同一个 guest,构件可以从两个地方来。
+"""Artifact delivery: the same guest, two ways to feed it artifacts.
 
-**in_container**(kcilib/run/jobrun.build_command 的现状,也是本模块的默认)
-    构件 URL 直接写进 tuxrun 的命令行(--kernel <url>、--modules <url>、
-    KSELFTEST=<url>),tuxrun 起的容器自己去下载。无状态、不占宿主机磁盘、
-    不需要额外端口;代价是每次运行都是一次真实的网络依赖:CDN 抖一下,这次
-    运行就变成 Infrastructure,而且"这个构件完整吗"不归我们管——下到一半被
-    截断的内核会被直接交给 qemu,失败现场留在 guest 里。
-
-**local_server**(scripts/fetch-and-run-latest.py 一直以来的做法)
-    构件先落到本地(work/downloads/<build>/、work/env/)、校验大小,再用一个
-    本机 HTTP 服务喂给容器——容器读不到宿主机的路径,所以"本地文件"必须以
-    HTTP 的形式出现。换来的能力:
-
-    * **启动前校验**:ensure_artifact() / ensure_kernel_image() 只把"证明过
-      完整"的文件当成缓存命中(记录过的大小、服务器给的 Content-Length、
-      或 gzip 尾部记的原始长度),对不上的重新下载,而不是拿去启动;被中断的
-      gunzip 留下的那个"存在且非空"的 Image 正是这条守卫要拦的东西;
-    * **服务出去的大小必须等于磁盘上的大小**:start_artifact_server() 在
-      tuxrun 之前,用 tuxrun 将要拿到的那个端口把 Content-Length 读回来比对,
-      不一致就拒绝运行——原话是 "refusing to boot a different or truncated
-      kernel"。起了一个别的、或被截断的内核却报告说跑了这个构建,是这条路上
-      最难查的故障;
-    * **可离线、可换内核**:file:// 源与手写的 --kernel-url 走同一条路,构件
-      不必来自生产 CDN。
-
-    代价是宿主机多一份磁盘、多一个端口,以及一段要自己维护的下载/校验代码。
-
-本模块只提供**能力**,不替调用方做**选择**。两种方式各有名字,执行层只问一个
-问题——"内核该从哪个地址取"——也就是 kernel_url():
-
-    in_container:   kernel_url(IN_CONTAINER, url) 就是 url 本身;
-    local_server:   ensure_artifact(...) 落盘校验 ->
-                    server = start_artifact_server(out, port, node, kernel) ->
-                    kernel_url(LOCAL_SERVER, url, f"{base}/Image") ->
-                    stop_artifact_server(server)。
-
-今天 kcilib/run/jobrun.build_command() 仍然是 in_container、
-scripts/fetch-and-run-latest.py 仍然是 local_server;把两条线接起来是另一步,
-不是这个模块替它们做的决定。
-
-**这里搬进来的是 scripts/fetch-and-run-latest.py 原本自己持有的那份实现**
-(ensure_artifact / ensure_kernel_image / 清单与大小记录 / 本地 HTTP 服务),
-逐字搬、只把脚本私有的名字改成公开的名字。它打印的每一行
-(  downloading <name> (<url>)、kernel -> <path> (...)、
-artifact server on <port> serves ...)都是那个脚本的控制台契约,搬家过程中
-不许改;同理,搬过来的英文注释与函数体保持原样,不"顺手整理"——那些注释里
-带着真实故障的结论(#13 截断的 Image、#12 陈旧的 artifact server)。本模块
-新写的说明用中文。
-
-ROOT、work/ 布局与 work/env/.manifest.json 的定义在这里:构件清单是投送层的
-东西,scripts/fetch-and-run-latest.py 从本模块取这套拼法,不再自己写一份。
+in_container hands artifact URLs straight to tuxrun, which downloads them
+in the container; local_server downloads and verifies them locally first,
+then serves them to the container over a local HTTP server. This module
+offers the capabilities and never picks a mode for the caller.
+Long-form rationale: docs/code-notes/B-delivery-buildref.md.
 """
 
 import gzip
@@ -70,11 +25,9 @@ from kcilib import repo_root
 from kcilib.core import ports
 from kcilib.run import artifacts
 
-# Repository layout derived from this file's own location (never a hardcoded
-# absolute path): work/ is gitignored and holds regenerable runtime artifacts.
-# Walked up to run.sh (kcilib.repo_root), never counted: fetch-and-run-latest.py
-# reached the root with one dirname() and this file needs four, and a stale count
-# silently puts downloads and the artifact server's document root under scripts/.
+# Repo layout from this file's own location: walk up to run.sh
+# (kcilib.repo_root), never count dirname() levels - a stale count puts
+# downloads and the artifact server's document root under scripts/.
 ROOT = repo_root()
 WORK_ENV = os.path.join(ROOT, "work", "env")
 WORK_SERVE = os.path.join(ROOT, "work", "serve")
@@ -82,27 +35,26 @@ MANIFEST_PATH = os.path.join(WORK_ENV, ".manifest.json")
 
 BUILD_ID_FILE = "build-id.json"
 ARTIFACT_RECORD = "artifacts.json"
-# How long the freshly started artifact server gets to serve its build-id file
-# back before the run is refused (see start_artifact_server).
+# Seconds the freshly started artifact server gets to serve build-id.json back.
 SERVE_READY_TIMEOUT = 15.0
 
 
 # ---------------------------------------------------------------------------
-# 方式的名字:执行层按一个字段选,拼错不静默退回默认值
+# Mode names: one field selects the mode, a typo never falls back to a default
 # ---------------------------------------------------------------------------
 
 IN_CONTAINER = "in_container"
 LOCAL_SERVER = "local_server"
 MODES = (IN_CONTAINER, LOCAL_SERVER)
-# 默认仍是执行层今天的行为:URL 直接给 tuxrun,容器自己下。
+# Default stays the executor's behaviour today: the URL goes to tuxrun.
 DEFAULT_MODE = IN_CONTAINER
 
 
 def validate(mode):
-    """*mode* 必须是已知的投送方式,否则 ValueError。
+    """Return *mode* if it is a known delivery mode, else raise ValueError.
 
-    拼错的字段名不能静默地退回默认值:那会让"我选了 local_server"和"我什么都
-    没选"在控制台上长得一模一样,而这两种选择的失败方式完全不同。
+    A misspelled mode must not fall back to the default silently: that would
+    make "I chose local_server" and "I chose nothing" look identical here.
     """
     if mode not in MODES:
         raise ValueError(
@@ -112,24 +64,22 @@ def validate(mode):
 
 
 def describe(mode):
-    """一种投送方式的一句话说明(给 --help、日志和报告用)。"""
+    """One-line description of *mode*, for --help, logs and reports."""
     validate(mode)
     if mode == IN_CONTAINER:
-        return ("in_container: 构件 URL 直接交给 tuxrun,容器自己下载 "
-                "(不占本地磁盘,校验在 tuxrun 手里)")
-    return ("local_server: 构件先下载并校验到本地,再由本机 HTTP 服务喂给容器 "
-            "(占磁盘和一个端口,换启动前校验)")
+        return ("in_container: the artifact URL goes straight to tuxrun and the "
+                "container downloads it (no local disk, tuxrun does the checking)")
+    return ("local_server: the artifacts are downloaded and verified locally, then "
+            "served to the container over a local HTTP server (costs disk and a "
+            "port, buys a check before the guest starts)")
 
 
 def kernel_url(mode, url, served_url=None):
-    """执行层唯一要问的问题:内核该从这个地址取?
+    """The address the kernel is taken from.
 
-    in_container: *url* 本身——tuxrun 的 --kernel 拿到 URL,容器自己下。
-    local_server: *served_url*——start_artifact_server() 服务出来的本机地址
-    (通常 http://<gateway>:<port>/Image)。这里不替调用方拼它:地址里的
-    gateway 是"容器怎么回到宿主机"的部署知识,而 local_server 的全部意义就是
-    "生产 URL 被本机地址换掉",所以它必须显式传进来——不传是编程错误,不是
-    可以猜的默认值。
+    in_container returns *url* itself; local_server returns *served_url*,
+    which must be passed explicitly: the caller owns the gateway knowledge,
+    and a missing one is a programming error, not a guessable default.
     """
     validate(mode)
     if mode == IN_CONTAINER:
@@ -142,19 +92,16 @@ def kernel_url(mode, url, served_url=None):
 
 
 # ---------------------------------------------------------------------------
-# local_server:构件落盘(单发传输 + 清单 + 大小记录)
+# local_server: artifacts on disk (transfer + manifest + size record)
 # ---------------------------------------------------------------------------
 
 def download(url, dest):
-    """Download *url* to *dest*, verifying size against Content-Length
-    (a truncated 144MB rootfs must fail loudly, not boot half an image).
+    """Download *url* to *dest*, checking the size against Content-Length.
 
-    This is ensure_artifact()'s own single-shot transfer, and it is left
-    exactly as it was: kcilib.run.artifacts.download() - which fetch() below
-    uses for the same job - prints different lines ("Downloading <url>", then
-    "           -> <dest> (N bytes)") and resumes partial transfers through
-    .part files, so swapping it here would change the console of every run and
-    the contents of work/downloads/<build>/ (reported)."""
+    A truncated 144MB rootfs must fail loudly, not boot half an image. Kept
+    as its own single-shot transfer on purpose: artifacts.download() resumes
+    .part files and prints different lines, changing the console contract.
+    """
     print(f"  downloading {os.path.basename(dest)} ({url})")
     with urllib.request.urlopen(url, timeout=300) as resp, open(dest, "wb") as f:
         shutil.copyfileobj(resp, f)
@@ -212,12 +159,12 @@ def record_entry(manifest, key, dest):
 
 
 def cache_hit(manifest, key, dest):
-    """True when *dest* is usable for *key*: non-empty, size matches the
-    record (if any).  An existing file with no record at all is adopted
-    (fresh clone / pre-seeded work/), but a file recorded under a different
-    key (another build's kernel/modules) must be regenerated - and a
-    record-less file still has to look complete, because a truncated Image
-    boots as garbage while the stage "succeeds" (#13)."""
+    """True when *dest* is non-empty and matches *key*'s recorded size.
+
+    A file with no record is adopted (fresh clone / pre-seeded work/) unless
+    another key claims it, and it must still look complete: a truncated
+    Image boots as garbage while the stage "succeeds" (#13).
+    """
     if not os.path.exists(dest):
         return False
     size = os.path.getsize(dest)
@@ -237,14 +184,13 @@ def cache_hit(manifest, key, dest):
 
 
 def fetch(url, dest, max_size=artifacts.MAX_DOWNLOAD_SIZE):
-    """Download *url* to *dest*.  file:// sources are copied locally (offline
-    tests); http(s) is kcilib.run.artifacts.download (resume + size/truncation
-    checks, the one transfer implementation the worker uses too).
+    """Download *url* to *dest*: file:// is copied, http(s) via
+    artifacts.download (resume + size/truncation checks).
 
-    The printed "copied <src> -> <dest> (...)" line is the console contract of
-    the script that used to own this function, and that script still re-binds
-    kcilib.run.bake.download to THIS function so the bake's tarball transfer
-    prints the same line."""
+    The printed "copied <src> -> <dest> (...)" line is a console contract: the
+    script that used to own this function re-binds kcilib.run.bake.download to
+    it.
+    """
     if url.startswith("file://"):
         src = unquote(urlparse(url).path)
         if not os.path.exists(src):
@@ -262,8 +208,7 @@ def fetch(url, dest, max_size=artifacts.MAX_DOWNLOAD_SIZE):
 
 
 def _ensure_symlink(target, link):
-    """Point *link* at *target*; work/serve/Image is a symlink to
-    ../env/Image so the artifact server serves the canonical kernel file."""
+    """Point *link* at *target* (work/serve/Image -> ../env/Image)."""
     if os.path.lexists(link):
         if os.path.exists(link) and os.path.getsize(link) > 0:
             return
@@ -296,13 +241,12 @@ def check_consistency(kernel_url, modules_url):
 
 
 def provision_kernel(kernel_url, image_path, serve_image_path, manifest):
-    """Ensure the raw kernel Image exists at *image_path* and is linked from
-    *serve_image_path*; downloads + gunzips only on a manifest miss.
+    """Ensure the raw Image exists at *image_path* and is linked from
+    *serve_image_path*; downloads and gunzips only on a manifest miss.
 
-    The compressed artifact is kept next to the Image (recorded in the
-    manifest under its own key) instead of being deleted after gunzip: this
-    CDN truncates downloads often enough that re-provisioning a correct
-    artifact should not depend on the network at all."""
+    The compressed artifact is kept next to the Image so re-provisioning
+    does not depend on a CDN that truncates downloads often enough to matter.
+    """
     key = f"kernel|{kernel_url}"
     if cache_hit(manifest, key, image_path):
         record_entry(manifest, key, image_path)
@@ -383,13 +327,10 @@ def recorded_size(record, name, url):
 def ensure_artifact(url, dest, record, name, what):
     """Make sure *dest* holds the complete artifact at *url*.
 
-    A bare os.path.exists() adopted an Image that an interrupted run had left
-    truncated, and handed it to tuxrun as a kernel (#13).  Reuse therefore has
-    to be proven: by the size recorded when this script wrote the file, or -
-    for a file it did not write (a pre-seeded work/downloads/) - by the
-    server's Content-Length.  A recorded size that does not match is proof of
-    truncation and is said so; anything that cannot be shown complete is
-    fetched again."""
+    Reuse has to be proven - by the recorded size, or by the server's
+    Content-Length for a file this script did not write - because a bare
+    os.path.exists() once adopted a truncated Image and booted it (#13).
+    """
     expected = recorded_size(record, name, url)
     if os.path.exists(dest):
         size = os.path.getsize(dest)
@@ -422,11 +363,10 @@ def ensure_artifact(url, dest, record, name, what):
 def ensure_kernel_image(url, gz_path, image_path, record):
     """Ensure the gunzipped kernel at *image_path* is complete.
 
-    The Image is written through a .part file + rename, so a partial kernel can
-    never appear under the final name, and it is only reused when its recorded
-    size still matches the compressed artifact it came from: an interrupted
-    *gunzip* leaves both files present and non-empty, which is exactly the case
-    a plain existence check cannot see (#13)."""
+    The Image goes through a .part file + rename and is reused only when its
+    recorded size still matches its .gz: an interrupted *gunzip* leaves both
+    files non-empty, which an existence check cannot see (#13).
+    """
     ensure_artifact(url, gz_path, record, "Image.gz", "kernel")
     gz_size = os.path.getsize(gz_path)
     entry = record.get("Image") or {}
@@ -445,8 +385,7 @@ def ensure_kernel_image(url, gz_path, image_path, record):
         with gzip.open(gz_path, "rb") as src, open(tmp, "wb") as dst:
             shutil.copyfileobj(src, dst)
     except (OSError, EOFError) as error:
-        # A truncated .gz fails here (EOFError / BadGzipFile) instead of
-        # leaving a half-written Image in place.
+        # A truncated .gz fails here instead of leaving a half-written Image.
         if os.path.exists(tmp):
             os.unlink(tmp)
         raise OSError(f"gunzip {gz_path} failed: {error}") from error
@@ -458,7 +397,7 @@ def ensure_kernel_image(url, gz_path, image_path, record):
 
 
 # ---------------------------------------------------------------------------
-# local_server:本机 HTTP 服务(以及"服务出去的确实是这个文件"的守卫)
+# local_server: the local HTTP server and what it actually serves
 # ---------------------------------------------------------------------------
 
 def _served_body(port, name, timeout=5):
@@ -496,27 +435,12 @@ def stop_artifact_server(server):
 def start_artifact_server(out, port, node, kernel_path):
     """Start the artifact server and prove what it serves before tuxrun runs.
 
-    The old code started http.server with stdout/stderr on DEVNULL and slept a
-    fixed 1.5s: a server left on the port by a killed earlier run kept serving
-    an older work/downloads/<node>/, so the run tested one kernel while the
-    console - and the log - named another (#12).  Now the port is probed first
-    (busy = a loud refusal, never a silent swap), the server logs into the
-    build directory instead of DEVNULL, and its build-id file plus the served
-    Image size are read back through the very port tuxrun is handed.  The probe
-    is kcilib.core.ports.port_is_free() - binding is the only honest test, and it
-    binds 0.0.0.0 because that is how the stack serves - while the refusal names
-    the holder through kcilib.core.ports.port_holder().
-
-    The refusals still name --serve-port, which is the flag of the script that
-    calls this: the wording is part of that script's console contract and it is
-    the reader who has to be told how to move the port.
-
-    Those refusals are sys.exit(), because this function's only caller today is
-    a command-line script whose exit status IS the verdict.  A resident caller
-    (the worker, if local_server is ever wired into jobrun) must NOT get a
-    SystemExit out of a library call - it would take the daemon down with it -
-    so that step needs a raised exception instead, and a per-job port rather
-    than one fixed --serve-port."""
+    The port is probed first (busy = a loud refusal, never the stale server
+    that once served an older build - #12), and the served build-id plus
+    Image size are read back through the very port tuxrun is handed. The
+    probe binds 0.0.0.0, as the stack serves. Refusals are sys.exit(): a
+    resident caller (the worker) would have to raise instead.
+    """
     if not ports.port_is_free(port, host="0.0.0.0"):
         holder = ports.port_holder(port)
         sys.exit(
@@ -563,8 +487,7 @@ def start_artifact_server(out, port, node, kernel_path):
     try:
         served_bytes = served_size(port, name)
     except OSError as error:
-        # A 404 for the kernel we just verified is itself the failure this
-        # guard exists for, so report it instead of tracing back.
+        # A 404 here is itself the failure this guard exists for, so report it.
         served_bytes = f"unreadable ({error})"
     local_size = os.path.getsize(kernel_path)
     if served_bytes != local_size:

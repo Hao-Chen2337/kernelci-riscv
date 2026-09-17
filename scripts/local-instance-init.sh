@@ -24,9 +24,8 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 API_DIR="$ROOT/kernelci-api"
 PIPE_DIR="$ROOT/kernelci-pipeline"
-# Overridable deployment identity, matching scripts/run-local-stack.sh: the
-# compose project decides which containers and data volumes this deployment
-# owns, so a second isolated stack on the same machine keeps its own database.
+# Overridable deployment identity: the compose project owns the containers and the
+# data volumes, so a second stack on the same machine keeps its own database.
 PROJECT="${KCI_COMPOSE_PROJECT:-kcirv}"
 API_PORT="${KCI_API_PORT:-8001}"
 STORAGE_PORT="${KCI_STORAGE_PORT:-8002}"
@@ -34,10 +33,8 @@ SSH_PORT="${KCI_SSH_PORT:-8022}"
 MONGO_PORT="${KCI_MONGO_PORT:-8017}"
 API_URL="${KCI_API_URL:-http://127.0.0.1:$API_PORT}"
 # Keep in sync with scripts/run-local-stack.sh: the compose file publishes
-# ${API_HOST_PORT:-8001} and friends, so starting the containers here without
-# all of them leaves this deployment on the default ports while the rendered
-# cb-config points at the custom ones - which surfaces later as the scheduler
-# failing to store a job definition ("unable to connect to port <ssh port>").
+# ${API_HOST_PORT:-8001} and friends, or the containers land on the defaults while
+# cb-config points at the custom ports ("unable to connect to port ...").
 export API_HOST_PORT="$API_PORT" STORAGE_HOST_PORT="$STORAGE_PORT"
 export SSH_HOST_PORT="$SSH_PORT" MONGO_HOST_PORT="$MONGO_PORT"
 
@@ -70,8 +67,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# set_env <file> <key> <value>  Replace an existing KEY= line, or append one.
-# Values used here are restricted to [A-Za-z0-9@._/:+-] so sed is safe.
+# set_env <file> <key> <value>: replace a KEY= line or append one.  Values are
+# restricted to [A-Za-z0-9@._/:+-] so sed is safe.
 set_env() {
   local file="$1" key="$2" val="$3"
   if [ -f "$file" ] && grep -q "^${key}=" "$file"; then
@@ -81,27 +78,18 @@ set_env() {
   fi
 }
 
-# api_up  True (exit 0) when the API answers on /latest/ (any HTTP status
-# means the server is up; matches scripts/run-local-stack.sh's readiness probe).
+# api_up  True when the API answers on /latest/ - any status means the server is up,
+# matching scripts/run-local-stack.sh's readiness probe.
 api_up() { curl -s -m 3 -o /dev/null "$API_URL/latest/"; }
 
-# whoami_code <token>  HTTP status of /latest/whoami with the bearer token.
-# 200 = the token authenticates; anything else = invalid/expired/missing.
+# whoami_code <token>  HTTP status of /latest/whoami: 200 = the token authenticates,
+# anything else = invalid/expired/missing.
 whoami_code() { curl -s -m 15 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" "$API_URL/latest/whoami"; }
 
-# mint_token_in_container  Print a fresh JWT for the admin, by running the
-# API's own code INSIDE the api container: the JWT strategy (so the token is
-# signed with the SECRET_KEY the API itself loaded) and, on a database with no
-# user at all, the same first-admin bootstrap that api/main.py's
-# ensure_initial_admin_user() performs.
-#
-# That bootstrap has to happen here because the app actually served is
-# `versioned_app`, whose on_startup list does not include
-# ensure_initial_admin_user - so a genuinely fresh database never gets an
-# admin, and with no admin no token can be minted at all.  Credentials come
-# from the container's own environment (KCI_INITIAL_*), the same place the API
-# would have read them.  Prints the token on stdout; exits non-zero (message on
-# stderr) when the container is unreachable or the bootstrap is impossible.
+# mint_token_in_container  Print a fresh admin JWT from inside the api container:
+# the app actually served is `versioned_app`, which never runs the first-admin
+# bootstrap, so a fresh database has no admin to log in as. Credentials from
+# KCI_INITIAL_*; token on stdout, failures on stderr with a non-zero exit.
 mint_token_in_container() {
   (cd "$API_DIR" && docker compose -p "$PROJECT" exec -T api python3 - <<'PY'
 import asyncio
@@ -124,13 +112,10 @@ async def ensure_admin():
         )
         sys.exit(1)
 
-    # NOT Authentication.get_password_hash(): the api image ships passlib 1.7.4
-    # together with bcrypt 5.0.0, and passlib 1.7.4 reads
-    # bcrypt.__about__.__version__, which bcrypt 4.1 removed.  passlib traps
-    # that failure, falls back to a stub backend and then raises the thoroughly
-    # misleading "password cannot be longer than 72 bytes".  bcrypt itself
-    # works, so hash with it directly - this is the call passlib would have
-    # made anyway, and it keeps the flow independent of that mismatch.
+    # NOT Authentication.get_password_hash(): passlib 1.7.4 reads
+    # bcrypt.__about__.__version__, which bcrypt 4.1 removed, traps the failure and
+    # raises the misleading "password cannot be longer than 72 bytes".  bcrypt itself
+    # works, so call it directly.
     import bcrypt
 
     def hash_password(clear_text):
@@ -234,8 +219,7 @@ else
     ok "API stack started"
   fi
 
-  # Reuse an already-valid token (idempotent: a re-run must not churn a
-  # working token). A placeholder or expired token fails whoami -> replaced.
+  # Reuse a valid token (idempotent); a placeholder or expired one fails whoami.
   TOKEN="$(grep '^KCI_API_TOKEN=' "$PIPE_ENV" 2>/dev/null | head -1 | cut -d= -f2-)"
   if [ -n "$TOKEN" ] && [ "$(whoami_code "$TOKEN")" = "200" ]; then
     ok "KCI_API_TOKEN: using existing (already valid in $PIPE_ENV)"
@@ -243,10 +227,9 @@ else
     [ -n "$TOKEN" ] && info "existing KCI_API_TOKEN is invalid; obtaining a fresh one"
     TOKEN=""
 
-    # Try the official login endpoint first; when this kernelci-api build has no
-    # registered login route (upstream versioned-app regression -> 404/405),
-    # fall back to minting the token inside the api container with its own
-    # JWT strategy.
+    # Try the official login endpoint first; this kernelci-api build may have no
+    # registered login route (upstream versioned-app regression -> 404/405), and then
+    # mint the token inside the api container with the API's own JWT strategy.
     LOGIN_BODY="$(mktemp)"
     LOGIN_CODE="$(curl -s -m 20 -o "$LOGIN_BODY" -w '%{http_code}' \
       -X POST "$API_URL/latest/user/login" \
@@ -265,15 +248,12 @@ else
       if ! MINT_OUT="$(mint_token_in_container)"; then
         die "token minting failed: check the api container is running (docker compose -p $PROJECT ps) and that a user already exists in the DB"
       fi
-      # Keep only the JWT-shaped line: docker compose is free to print warnings
-      # on stdout, and a polluted token would only surface as a confusing
-      # whoami failure further down.
+      # Keep only the JWT-shaped line: docker compose may print warnings on stdout.
       TOKEN="$(printf '%s\n' "$MINT_OUT" | grep -E '^eyJ[A-Za-z0-9._-]+$' | tail -1)"
       [ -n "$TOKEN" ] || die "minting produced no JWT (docker compose output: $(printf '%s' "$MINT_OUT" | head -c 200))"
     fi
     [ -n "$TOKEN" ] || die "could not obtain a token"
 
-    # Verify the token on an authenticated endpoint before writing it.
     WHO_CODE="$(whoami_code "$TOKEN")"
     [ "$WHO_CODE" = "200" ] || die "token did not authenticate (/latest/whoami returned HTTP $WHO_CODE)"
 

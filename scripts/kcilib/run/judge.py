@@ -2,21 +2,19 @@
 #
 """The run verdict for one tuxrun run, in one place.
 
-Exit-code contract - judge_run's exit_code IS the process exit status of the
-local runner, and the same verdict LAVA reports for the worker's callback:
-    0   pass: TAP produced, no selftest failed (or the guest booted)
-    1   test failure: at least one selftest failed
-    3   infrastructure: tuxrun never started (argparse error, LAVA job error),
-        the console self-reports error_type Infrastructure, the run timed out,
-        the guest never booted, or no TAP lines were produced at all
+Exit-code contract - judge_run's exit_code IS the local runner's process exit
+status, and the verdict LAVA reports for the worker's callback: 0 pass (TAP
+produced, no selftest failed, or the guest booted), 1 at least one selftest
+failed, 3 infrastructure (tuxrun never started, the console self-reports
+error_type Infrastructure, a timeout, no boot, or no TAP lines at all).
 tuxrun exits 0 even when every selftest fails, so the TAP - never tuxrun's exit
-code - carries the verdict (judge_run used to reach in through importlib).
+code - carries the verdict.  Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
 import re
 
-# One verdict vocabulary.  Exit 3 for "infrastructure" mirrors LAVA's job
-# status 3 (incomplete): "the tests ran and failed" vs "nothing ran at all".
+# Exit 3 mirrors LAVA's job status 3 (incomplete): "the tests ran and failed"
+# vs "nothing ran at all".
 EXIT_PASS = 0
 EXIT_TEST_FAIL = 1
 EXIT_INFRA = 3
@@ -27,8 +25,8 @@ VERDICT_INFRA = "infra"
 VERDICT_ERROR = "error"
 
 
-# The local runner's tuxrun subprocess timeout, quoted by judge_run's timeout
-# detail so the message cannot name a timeout other than tuxrun's.
+# The local runner's tuxrun timeout; judge_run quotes it so the message cannot
+# name another one.
 TUXRUN_TIMEOUT = 1800
 
 
@@ -51,19 +49,19 @@ def strip_ansi(text):
 
 
 def tap_summary(output, label=""):
-    """Count top-level TAP results for a kselftest job from the tuxrun console
-    log.  tuxrun/LAVA report "job pass" even when a selftest fails, so the TAP
-    lines must be read here: any top-level ``not ok`` (or a started test that
-    never reported) makes the job fail.  Lines carry ANSI codes/timestamps.
-    ``label`` builds the TAP marker: without one nothing matches (no pass)."""
+    """Count top-level TAP results for a kselftest job from the tuxrun console.
+
+    tuxrun/LAVA report "job pass" even when a selftest fails, so the TAP lines
+    must be read here: a top-level ``not ok`` (or a started test that never
+    reported) fails the job.  Lines carry ANSI codes and timestamps, and
+    ``label`` builds the marker - without one nothing matches."""
     output = strip_ansi(output)
     collection = (
         label.removeprefix("kselftest-")
     )
     marker = "selftests: " + collection + ":"
     # Tolerate whitespace splits and glued variants ("notok", "NOT OK",
-    # "not\x1b[31mok", "not  ok"): the ok lookbehind keeps glued "notok" out
-    # of ok_m, and the not_ok loop overwrites any split "not ok" with fail.
+    # "not\x1b[31mok"): the lookbehind keeps glued "notok" out of ok_m.
     line = r"(?m)^[ \t]*(?:\S+ )?"
     ok_m = re.findall(
         line + rf"(?<!not)ok \d+ {re.escape(marker)}\s+(\S+)(.*)",
@@ -77,8 +75,7 @@ def tap_summary(output, label=""):
     )
     started = set(re.findall(line + rf"# {re.escape(marker)}\s+(\S+)", output))
     if not ok_m and not not_ok and not started:
-        # No TAP at all: the suite never ran (tuxrun job-level failure).  Never
-        # report that as pass - mark the suite failed so it surfaces as fail.
+        # No TAP at all: the suite never ran.  Never report that as pass.
         return (
             {"total": 0, "failed": 1, "skipped": 0},
             {label: {"status": "fail"}},
@@ -105,8 +102,8 @@ def tap_summary(output, label=""):
 LAVA_CASE_RE = re.compile(r"'case': '([^']+)'.*?'result': '(pass|fail|skip)'")
 
 
-# The guest's own console output: boot evidence that does not come from LAVA's
-# "Wait for prompt [...]" chatter.  A --test boot run has no TAP (judge_run).
+# Boot evidence from the guest's own console, not LAVA's "Wait for prompt"
+# chatter; a boot run has no TAP.
 BOOT_EVIDENCE_RE = re.compile(r"\[\s*0\.000000\]|Booting Linux")
 
 
@@ -129,25 +126,23 @@ def tuxrun_job_error(returncode, output):
 
 def _quoted(text):
     """A dict key/value marker for *text*, in either quote style: a log line can
-    be a plain Python repr, a JSON object, or the repr of a repr (LAVA embeds
-    its own repr inside the message, doubling the backslashes)."""
+    be a repr, a JSON object, or the repr of a repr (LAVA embeds its own repr,
+    doubling the backslashes)."""
     return r"\\?['\"]" + re.escape(text) + r"\\?['\"]"
 
 
 # LAVA's authoritative verdict: a job case dict carrying error_type
-# Infrastructure.  The gap between the two fields is BOUNDED but spans
-# newlines, so the pattern reads a repr, a JSON object and a multi-line dict
-# without letting the search wander across a multi-megabyte console.
+# Infrastructure.  The gap is BOUNDED (but spans newlines), so the search cannot
+# wander across a multi-megabyte console.
 JOB_CASE_GAP = 8192
 JOB_CASE_INFRA_RE = re.compile(
     _quoted("case") + r"\s*:\s*" + _quoted("job")
     + rf"[\s\S]{{0,{JOB_CASE_GAP}}}?"
     + _quoted("error_type") + r"\s*:\s*" + _quoted("Infrastructure")
 )
-# Fail-safe, deliberately NOT distance-bounded: a case dict whose own text
-# exceeds the gap (a very long error_msg) would fail to match, reporting a real
-# infrastructure failure as an ordinary job failure (status 2, error_type Job).
-# A plain substring search, it can only *add* infra classifications.
+# Fail-safe, deliberately NOT distance-bounded: a case dict longer than the gap
+# would miss the bounded pattern and report a real infra failure as an ordinary
+# job failure.  A plain substring search, it can only *add* classifications.
 INFRA_MARKER_RE = re.compile(
     _quoted("error_type") + r"\s*:\s*" + _quoted("Infrastructure")
 )
@@ -175,14 +170,14 @@ def is_infra_error(output, returncode):
     )
 
 
-# The callback keeps only the last 200 characters of error_msg (see lava_body),
-# so an infra reason has to fit in that window with its most useful part last.
+# lava_body keeps only the last 200 characters of error_msg, so an infra reason
+# has to fit in that window with its most useful part last.
 ERROR_MSG_BUDGET = 190
 TUXRUN_ERROR_LINE_RE = re.compile(r"^\s*(tuxrun: error: .*)$", re.MULTILINE)
 INVALID_CHOICE_RE = re.compile(r"invalid choice: '([^']+)'")
 CHOICES_TAIL_RE = re.compile(r"\s*\(choose from .*\)\s*$")
-# Windows, never whole-console copies: joining 14 MB of trailing output to make
-# a 190-character answer cost millions of token strings (+205 MB peak RSS).
+# Windows, never whole-console copies: building a 190-character answer out of
+# 14 MB of trailing output cost +205 MB peak RSS.
 ERROR_MSG_WINDOW = JOB_CASE_GAP + 4096  # the case dict + its trailing fields
 ERROR_MSG_TAIL = 4096  # unrecognised failure: the reason is the very last text
 ERROR_MSG_FIELD_RE = re.compile(
@@ -195,10 +190,9 @@ ERROR_MSG_PLAIN_FIELD_RE = re.compile(
 
 
 def missing_test_hint(output):
-    """Name the documented one-time patch when tuxrun rejects a test name
-    because tuxlava does not provide it: tuxrun builds ``--tests`` choices from
-    tuxlava's registry, so a tuxlava without the riscv kselftest class fails as
-    ``invalid choice: 'kselftest-riscv'`` - an unexplained infra error."""
+    """Name the documented one-time patch when tuxrun rejects a test tuxlava does
+    not provide: ``--tests`` choices come from tuxlava's registry, so a tuxlava
+    without the riscv kselftest class fails as an unexplained infra error."""
     match = INVALID_CHOICE_RE.search(strip_ansi(output))
     if not match or not match.group(1).startswith("kselftest"):
         return ""
@@ -228,8 +222,7 @@ def _repr_unescape(text):
 
 
 def _clip_head(message, budget):
-    """Keep the HEAD of *message*: argparse names the problem in its first words,
-    and the choices list after it is dropped separately."""
+    """Keep the HEAD of *message*: argparse names the problem in its first words."""
     if len(message) <= budget:
         return message
     if budget <= 3:
@@ -240,9 +233,8 @@ def _clip_head(message, budget):
 def _clip_reason(message, budget):
     """Keep BOTH ends of a reason that does not fit: the failure mode is the END
     of a reason ("...: Read timed out.") while the head names the artifact that
-    failed, and the callback keeps only the last 200 characters sent - so
-    ``message[:budget]`` reported node 6aa387ecba3aeacda180ff12 as
-    "HTTPSConnectionPool(host='files." alone."""
+    failed - ``message[:budget]`` alone reported a node as
+    "HTTPSConnectionPool(host='files."."""
     if len(message) <= budget:
         return message
     if budget < 16:
@@ -259,7 +251,7 @@ def _clip_tail(message, budget):
 def _compose(message, hint, clip):
     """Attach the actionable *hint* LAST and intact, inside ERROR_MSG_BUDGET: the
     callback keeps the LAST 200 characters, so the hint - the one-time tuxlava
-    patch - must never be truncated (capping it at half dropped the path)."""
+    patch - must never be truncated."""
     if not hint:
         return clip(message, ERROR_MSG_BUDGET)
     budget = ERROR_MSG_BUDGET - len(hint) - len(" | ")
@@ -273,11 +265,10 @@ def _compose(message, hint, clip):
 def _verdict_reason(cleaned, verdict):
     """The reason carried by the job case dict that *verdict* matched.
 
-    The dict's own ``error_msg`` is the authoritative reason: a 190-character
-    prefix of the whole dict spends the budget on scaffolding instead of on the
-    failure (a download timeout reported as a URL fragment).  The window reaches
-    *before* the verdict as well as after it, because LAVA does not fix the
-    field order - the candidate nearest the verdict wins."""
+    The dict's own ``error_msg`` is authoritative - a prefix of the whole dict
+    spends the budget on scaffolding instead.  The window reaches before the
+    verdict as well as after it (LAVA does not fix the field order), and the
+    candidate nearest the verdict wins."""
     start = max(0, verdict.start() - ERROR_MSG_WINDOW)
     end = min(len(cleaned), verdict.end() + ERROR_MSG_WINDOW)
     window = cleaned[start:end]
@@ -307,21 +298,18 @@ def _closest(pattern, window, anchor):
 def tuxrun_error_message(output, label=""):
     """The infra reason to report, built for the callback's 200-character window.
 
-    Neither tuxrun's argparse errors (one line whose choices list runs to
-    thousands of characters) nor LAVA's dispatcher verdict (a case dict) has its
-    useful text in the console's tail: reporting ``output[-2000:]`` produced
-    "md-analyze', ..., 'zlib')" for a run whose real problem was a missing test
-    class.  Three sources, in order of authority: the first ``tuxrun: error:``
-    line with the choices list dropped; the LAST job-case Infrastructure verdict
-    (only the final attempt counts), whose own ``error_msg`` field is reported
-    rather than a prefix of the dict; a bounded console tail.
-    ``label`` is kept for the callers' sake: the reason does not depend on it."""
+    The useful text is never in the console's tail - an argparse choices list
+    alone runs to thousands of characters.  Three sources, in order of authority:
+    the first ``tuxrun: error:`` line with the choices list dropped; the LAST
+    job-case Infrastructure verdict, whose own ``error_msg`` field is reported
+    rather than a prefix of the dict; a bounded console tail.  ``label`` is
+    kept for the callers' sake - the reason does not depend on it."""
     cleaned = strip_ansi(output)
     hint = missing_test_hint(cleaned)
     match = TUXRUN_ERROR_LINE_RE.search(cleaned)
     if match:
-        # With a hint the marker is redundant (the hint names the rejected
-        # class), and its 21 characters are what the intact hint needs.
+        # With a hint the marker is redundant, and its 21 characters are what
+        # the intact hint needs.
         replacement = "" if hint else " (invalid test name)"
         message = _condense(CHOICES_TAIL_RE.sub(replacement, match.group(1)))
         return _compose(message, hint, _clip_head)
@@ -331,7 +319,7 @@ def tuxrun_error_message(output, label=""):
     if verdict is not None:
         return _compose(_verdict_reason(cleaned, verdict), hint, _clip_reason)
     # Nothing recognisable: the reason (a traceback, a shutdown line) sits at
-    # the END of the output, so keep a bounded tail (without splitting it all).
+    # the END of the output, so keep a bounded tail.
     return _compose(
         _condense(cleaned[-ERROR_MSG_TAIL:]), hint, _clip_tail
     )
@@ -341,9 +329,9 @@ def judge_run(returncode, output, test):
     """The verdict for one tuxrun run:
     (verdict, exit_code, detail, summary, per_test).
 
-    TAP parsing is tap_summary() here, not a second weaker copy (#23): tuxrun
-    exits 0 even when every selftest fails, so it is authoritative (its total=0
-    encoding is the "suite never ran" case, #2).  returncode is None on timeout."""
+    TAP parsing is tap_summary(), not a second weaker copy: tuxrun exits 0 even
+    when every selftest fails, so it is authoritative (total=0 means the suite
+    never ran).  returncode is None on timeout."""
     if returncode is None:
         return (VERDICT_INFRA, EXIT_INFRA,
                 f"tuxrun timed out after {TUXRUN_TIMEOUT}s", None, {})
@@ -353,8 +341,7 @@ def judge_run(returncode, output, test):
     if test != "boot":
         summary, _status, per_test = tap_summary(output, test)
         if summary["total"] == 0:
-            # No TAP at all: the suite never ran.  Never a pass - exactly the
-            # false green tap_summary() guards against.
+            # No TAP at all: the suite never ran, and never a pass.
             if returncode != 0:
                 return (VERDICT_INFRA, EXIT_INFRA,
                         (f"no TAP lines and tuxrun exited {returncode}: the "
@@ -373,8 +360,8 @@ def judge_run(returncode, output, test):
             detail += (f" (tuxrun exited {returncode}; the TAP, not tuxrun's "
                        "exit code, carries the selftest verdict)")
         return VERDICT_PASS, EXIT_PASS, detail, summary, per_test
-    # boot has no TAP, and the exit code alone is not a verdict (lava_body()
-    # also refuses a run with no boot evidence a pass): require boot output.
+    # boot has no TAP and the exit code alone is not a verdict, so boot evidence
+    # is required (lava_body() refuses it a pass too).
     if returncode != 0:
         return (VERDICT_FAIL, EXIT_TEST_FAIL,
                 f"tuxrun exited {returncode}; see the log", None, {})

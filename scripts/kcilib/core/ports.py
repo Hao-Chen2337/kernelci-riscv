@@ -3,27 +3,10 @@
 #
 """Host-port probes shared by the local stack and the artifact server.
 
-Every port this deployment uses is overridable (KCI_*_PORT) and nothing checked
-whether the value was free before a service was started on it.  A port held by
-an unrelated listener then surfaced three layers down as "X artifact server
-failed" - with the real EADDRINUSE only inside /tmp/fs8999.log - or as a compose
-bind failure that blamed the API.  docs/HANDOVER.md used to tell people to move
-the artifact server off 8999 "because the port is reserved"; that note is stale
-(8999 binds here), and the check below is what answers the question where it
-matters instead of by folklore.
-
-Binding is the only honest test, for the same reason
-scripts/fetch-and-run-latest.py probes its artifact server port by binding: a
-listener that answers nothing still owns the port, and "something is there, but
-it did not answer me, so carry on" is how a stale server ends up serving an
-older build to a run that names a newer one.
-
-scripts/run-local-stack.sh is the third caller and it probes through THIS file's
-command line (python3 -m kcilib.core.ports --require PORT ...), because the shell used
-to carry its own copy of the bind test, the holder lookup and the refusal text.
-Two implementations of "is this port free" is one implementation too many: the
-shell's copy bound 0.0.0.0 and this module's default is 127.0.0.1, so the same
-question had two different answers waiting to happen.
+Binding is the only honest test: a listener that answers nothing still owns the
+port.  run-local-stack.sh probes through this module's command line, so there is
+one implementation of "is this port free" and not two that can differ.
+Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
 import argparse
@@ -32,31 +15,24 @@ import shutil
 import socket
 import subprocess
 
-# The stack binds 0.0.0.0, but a probe against a specific address is what the
-# callers need for "is the port I am about to hand to a local client taken?".
-# A caller that must reproduce the stack's own bind passes host="0.0.0.0".
+# What the callers need for "is the port I am about to hand to a client taken?".
+# A caller reproducing the stack's own bind passes host="0.0.0.0".
 DEFAULT_HOST = "127.0.0.1"
 
-# require_port_free() exempts a port published by OUR compose project (the stack
-# is partly up and compose reconciles it).  "Ours" is the same value
-# run-local-stack.sh builds as its PROJECT variable, resolved here so a caller
-# that does not name its project still means the default deployment.
+# require_port_free() exempts a port published by OUR compose project (the
+# partly-up stack); the default is what run-local-stack.sh builds as PROJECT.
 COMPOSE_PROJECT_ENV = "KCI_COMPOSE_PROJECT"
 DEFAULT_COMPOSE_PROJECT = "kcirv"
 
-# What the holder line says when neither ss nor lsof could be run: an empty line
-# would read as "no holder" inside the very message that exists to name the
-# conflict.
+# Never an empty line: a refusal that cannot name the holder has to say so.
 NO_HOLDER = "(listener could not be identified; install iproute2 for 'ss')"
 
 
 def _command_output(argv, skip_header=False):
     """First two lines of *argv*'s stdout, or "" - a probe, never a failure.
 
-    stderr is discarded exactly as the shell callers discarded it: ss absent,
-    lsof denied and "no listener" all mean the same thing to the caller, which
-    is why "could not be identified" is a sentence at the call site rather than
-    an exception here.
+    stderr is discarded: ss absent, lsof denied and "no listener" all mean the
+    same thing to the caller.
     """
     try:
         done = subprocess.run(argv, stdout=subprocess.PIPE,
@@ -72,11 +48,9 @@ def _command_output(argv, skip_header=False):
 def port_is_free(port, host=DEFAULT_HOST):
     """True when *port* can be bound on *host* right now.
 
-    A failed bind is the answer, not an error: the caller is asking whether a
-    service may be started here, and anything already holding the port - a live
-    listener, or a socket another process left behind - says no.  SO_REUSEADDR
-    is set because that is how the services themselves bind; without it a
-    recently closed connection would look like a conflict.
+    A failed bind is the answer, not an error - anything holding the port, even
+    a socket another process left behind, says no.  SO_REUSEADDR is set because
+    that is how the services themselves bind.
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -92,10 +66,8 @@ def port_is_free(port, host=DEFAULT_HOST):
 def port_holder(port):
     """Best-effort description of the listener on *port* (never raises).
 
-    ss first (it names the process too), lsof second, and an explicit sentence
-    last: this string is embedded in a refusal, and a refusal that cannot say
-    who holds the port sends the reader hunting through service logs for a
-    conflict that is not theirs.
+    ss first (it names the process), lsof second, an explicit sentence last:
+    the string is embedded in a refusal that has to name the holder.
     """
     if shutil.which("ss"):
         info = _command_output(["ss", "-ltnpH", f"sport = :{port}"])
@@ -112,9 +84,7 @@ def port_holder(port):
 def _compose_project(port):
     """The compose project publishing *port*, or "" when none does.
 
-    A listener this repo started (the partly-up stack) is not a conflict, so the
-    caller has to tell it from somebody else's.  Docker absent or unreadable
-    reports no owner, which only costs the "(compose project ...)" hint.
+    Docker absent or unreadable reports no owner, which only costs the hint.
     """
     if not shutil.which("docker"):
         return ""
@@ -129,37 +99,26 @@ def require_port_free(port, who, override_var, project=None,
                       host=DEFAULT_HOST):
     """Refuse to start *who* on *port* when somebody else already holds it.
 
-    Raises SystemExit (exit status 1, the code the shell's exit 1 produced) with
-    the message scripts/run-local-stack.sh prints today, so the refusal keeps the
-    same detail wherever it is raised from: the port, the label of the service
-    that wanted it, the holder, and the variable that moves this deployment
-    instead.  A caller with its own wording keeps it by building the message
-    from port_is_free()/port_holder() itself.
+    Raises SystemExit (status 1, the code the shell produced) naming the port,
+    the service that wanted it, the holder and the variable that moves this
+    deployment.  *project* names the compose project this deployment owns.
 
-    *project* names the compose project this deployment owns; the default is the
-    same value run-local-stack.sh uses for its PROJECT variable.
-
-    *host* is the address the probe binds, and it is NOT decoration: the stack
-    binds 0.0.0.0 (so a listener on any interface owns the port), while the
-    default 127.0.0.1 only answers "is it taken for a local client".  Probing
+    *host* is the address the probe binds and is NOT decoration: probing
     127.0.0.1 for a service that binds 0.0.0.0 would let a foreign listener on
     another interface through, which is why run-local-stack.sh passes
-    host="0.0.0.0" - the same value fetch-and-run-latest.py already passes to
-    port_is_free().
+    host="0.0.0.0".
     """
     if port_is_free(port, host=host):
         return
     if project is None:
         project = os.environ.get(COMPOSE_PROJECT_ENV) or DEFAULT_COMPOSE_PROJECT
     owner = _compose_project(port)
-    # The shell only exempted a port OWNED by our project: an empty owner
-    # compared against an empty project must not read as "ours", or a foreign
+    # An empty owner must not compare equal to an empty project, or a foreign
     # listener would be waved through in silence.
     if owner and owner == project:
         return
     suffix = f" (compose project '{owner}')" if owner else ""
-    # The KCI_*_PORT list really is at the top of that script, and every
-    # override variable this check is called with is one of its entries.
+    # Every override variable this check is called with is a KCI_*_PORT entry.
     raise SystemExit(
         f"X port {port} for the {who} is already in use{suffix}\n"
         f"  holder: {port_holder(port)}\n"
@@ -172,15 +131,9 @@ def require_port_free(port, who, override_var, project=None,
 def main(argv=None):
     """The probe as a command line, for scripts/run-local-stack.sh.
 
-    The shell entry point used to carry its own copy of the bind test, the
-    holder lookup and the refusal text (three functions, ~49 lines, and the
-    stale note in docs/HANDOVER.md quoted them by line number).  That copy is
-    gone and the shell calls this instead, so the check the stack makes and the
-    check fetch-and-run-latest.py makes cannot answer differently.
-
-    A taken port exits 1 with the refusal on stderr (require_port_free raises
-    SystemExit); a free port, or one published by this deployment's own compose
-    project, exits 0 and prints nothing.
+    The shell's own copy of the bind test and the refusal text is gone, so the
+    stack's check and fetch-and-run-latest.py's cannot answer differently.  A
+    taken port exits 1 with the refusal on stderr; a free one exits 0 silently.
     """
     parser = argparse.ArgumentParser(
         prog="python3 -m kcilib.core.ports",

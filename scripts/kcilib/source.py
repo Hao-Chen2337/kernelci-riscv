@@ -1,23 +1,13 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-"""来源:谁决定"这次要跑什么"。
+"""Sources: who decides what this run should execute.
 
-整个仓库只有一种 job 定义(kcilib/table/jobspec.job_definition 造的,字段与上游
-模板渲染结果同构),所以"跑一个 job"只有一条路。变的只是**谁决定跑哪些**:
+Only the chooser varies: "table" (local index minus ledger) or "newest" (newest
+usable production build).  The events worker is not a source - it is a state
+machine, not a jobs() iterator.  The layers share the boundary instead: every
+source yields job definitions for the same run_node.
 
-    table   本地索引表 − 账本       同步,调用者驱动     ← ./run.sh run --source table
-    newest  生产上最新的可用构建     同步,调用者驱动     ← ./run.sh run --source newest
-
-**为什么 events(worker 接单)不在这里**:它不是"取一批 job"这么简单。它要轮询、
-记游标、防重复、抢锁、把发失败的结果留着重发——那些是**常驻进程的状态机**,不是
-一个 jobs() 迭代器能表达的。把它塞进这个接口,只会得到一个假的统一。
-
-真正统一的地方是**边界**:两种来源最后都产出一份 job 定义,交给同一个 run_node。
-所以解耦规则是——
-
-    source 不知道 job 怎么跑(它不 import runner/judge/bake)
-    runner 不知道 job 从哪来(它只收一份定义)
-    sink   不知道谁发起的(账本无条件写;有 callback URL 才回传)
+Rationale: docs/code-notes/A-sink-source-dashboard.md.
 """
 
 from kcilib.api import PRODUCTION_API
@@ -29,9 +19,8 @@ from kcilib.table.jobspec import DEFAULT_TESTS, jobs_from_build
 class JobSource:
     """A pull source: something that can say what to run right now.
 
-    Subclasses implement jobs(); nothing else.  They must not run anything, and
-    they must not import the execution layer - that is what keeps "where a job
-    comes from" and "how a job is run" independently replaceable.
+    Subclasses implement jobs() only: they must not run anything or import the
+    execution layer, which keeps "where a job comes from" replaceable.
     """
 
     name = "?"
@@ -58,9 +47,8 @@ class TableSource(JobSource):
 class NewestSource(JobSource):
     """The newest usable production build, and the tests it can support.
 
-    This is what ./run.sh fetch does, expressed as a source instead of as a
-    script: query the production API, take the newest passing build, and offer
-    it as the three specs.  It reads only - no token, no local stack.
+    What ./run.sh fetch does, expressed as a source.  Read-only: no token, no
+    local stack.
     """
 
     name = "newest"
@@ -77,8 +65,7 @@ class NewestSource(JobSource):
         """The newest usable BuildRef, or None (and why, on stderr)."""
         query = BuildQuery(job=self.job, api=self.api, trees=self.trees,
                            result="pass")
-        # Widen the window until something shows up: the API pages old-first and
-        # a quiet tree can be days behind, which used to look like "no build".
+        # Widen the window: the API pages old-first, so a quiet tree looks empty.
         for days in (self.days, 7, 30, 180):
             query.since = _days_ago(days)
             refs, _dropped = builds_from_production_api(query)

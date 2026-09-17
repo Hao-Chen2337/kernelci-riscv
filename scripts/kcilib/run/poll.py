@@ -3,61 +3,21 @@
 #
 """The poll loop: events API -> handle_event -> run_node -> post the result.
 
-Moved VERBATIM out of scripts/riscv_pull_worker.py: ``poll_loop()`` (the flock,
-the per-event flush, the cursor rule and --once), ``handle_event()`` (the
-node-state re-check, the dedup/re-post of a cached report and the callback
-POST), ``retrieve_job_definition()``, ``fetch_nodes()``, ``start_cursor()``,
-``iso_ago()`` and ``_latest_base()``.  The bodies, the comments and every
-printed line are the worker's; only the imports and three expressions that had
-to become module-level names changed (marked below).
+THIS IS THE ONLY LAYER ON THE RUN PATH THAT TALKS TO THE EVENTS API; running one
+is not its business, and neither is state.  The loop is handed the run function
+and its config (kcilib.run.jobrun.run_node and a kcilib.core.config.PollConfig),
+so it can run a node without importing the run path - which is also what makes
+the run path testable: a test injects a stub run_node rather than patching an
+import.
 
-THIS IS THE ONLY LAYER ON THE RUN PATH THAT TALKS TO THE EVENTS API.  Where the
-nodes come from (the events API, the node-status re-check before a run) is here;
-RUNNING one is not, and it is not this module's to look up either.  (It is no
-longer the only module in the repository that knows an API exists: kcilib/api.py
-is the one HTTP client, and the local job table's reads go through it too - see
-docs/ARCHITECTURE.md, "three lines".)
-
-    poll_loop(poll_config, run_node, run_config)
-
-The loop is handed the run function and its config, so it can run a node
-without importing the run path at all - the interval, the retries and the
-cursor are poll_config's fields, and poll_config is a value, not a module
-global.  That is also what makes the run path testable on its own:
-handle_event() calls the run_node it was given, so a test injects a stub
-instead of patching an import.
-
-WHAT IT DELEGATES:
-
-* ``kcilib.core.state.StateFile`` owns the state file - the cursor, the seen set and
-  the pending reports are one document written atomically after EVERY event
-  (#9), and a corrupt file is refused loudly and replaced by an empty state;
-* the run itself is the caller's *run_node* (kcilib.run.jobrun.run_node), called as
-  ``run_node(node, run_config, node_id)``; it returns the
-  ``(callback_url, token, body)`` tuple and this module posts it.  Passing it in
-  keeps this module from having to know how a job is executed - and keeps the
-  run path from having to know that an events API exists;
-* ``kcilib.run.callback`` owns the post (``post_result``) and the pending round
-  trip.  The two expressions that changed: the startup rebuild of ``reports``
-  is now ``report_from_pending(pending)`` and the flush writes
-  ``pending_entry(report)`` - the same ``{"callback", "body"}`` dict in the
-  same key order, and the same environment read for the token.  The token is
-  never persisted: the state file holds the callback URL and the body only,
-  and the token is re-read from ``PULL_LABS_CALLBACK_TOKEN`` whenever a body is
-  posted;
-* the progress printer is ``kcilib.run.bake.stamp`` (the shared implementation),
-  byte-identical to the worker's own stamp(); this module keeps no copy.
-
-Two behaviours are load-bearing and unchanged: "result posted" is printed only
-after post_result() returned without raising, i.e. after a real 2xx (a 4xx, a
-5xx, a redirect or an unreachable endpoint raises and the body stays pending),
-and the cursor only advances once a whole batch succeeded - --since seeds a
-state file that has no cursor, --ignore-state-cursor forces it.
-
-``poll_config`` is a kcilib.core.config.PollConfig: api_url, state_file, since,
-once, poll_period, max_retries, ignore_state_cursor and the platform/runtime
-filters.  The defaults and the flag they come from live in kcilib/core/cli.py and
-kcilib/core/config.py; nothing here reads a command line.
+StateFile owns the state file (cursor, seen set, pending reports: one document,
+written atomically after EVERY event); callback owns the post and the pending
+round trip; bake.stamp owns the progress lines.  "Result posted" is printed only
+after post_result() returned without raising, i.e. after a real 2xx, and the
+cursor advances only once a whole batch succeeded - --since seeds a state file
+that has no cursor, --ignore-state-cursor forces it.  The token is never
+persisted.  Nothing here reads a command line.
+Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
 import signal
@@ -82,9 +42,7 @@ CURSOR_OVERLAP_S = 900  # re-scan window: the events API is not sorted
 
 
 def _latest_base(api_url):
-    """KernelCI serves its API under the /latest prefix; the local dev API
-    accepts both forms, production only the /latest one, so always target
-    the canonical /latest base regardless of what the user passed."""
+    """The canonical /latest base (production serves only that form)."""
     return api_url if api_url.endswith("/latest") else f"{api_url}/latest"
 
 
@@ -113,10 +71,8 @@ def retrieve_job_definition(url):
             f"refusing redirect for {url}"
         )
     response.raise_for_status()
-    # Same rule as the node API (#11): a non-JSON body (proxy error page) or a
-    # JSON body of the wrong shape is a transient fetch error, so the node is
-    # retried - not an unexpected exception that gives up on the node and marks
-    # it seen with its result never produced.
+    # Same rule as the node API: a non-JSON body or a wrong-shaped one is a
+    # transient fetch error, so the node is retried rather than given up on.
     try:
         job = response.json()
     except ValueError as error:
@@ -134,32 +90,24 @@ def retrieve_job_definition(url):
 def handle_event(event, poll_config, run_config, reports, run_node):
     """Process one job event.
 
-    A node whose execution already produced a report is retried by
-    re-posting that report only - tuxrun is never re-run for the same
-    node.  Returns True when the event is fully handled (or deliberately
-    given up on) so the caller may mark it seen.
-
-    *run_node* is the run function the loop was handed (kcilib.run.jobrun.run_node):
-    this layer knows the API, that one knows tuxrun, and neither imports the
-    other."""
+    A node that already produced a report is retried by re-posting that report
+    only - tuxrun is never re-run for the same node.  Returns True when the
+    event is fully handled (or deliberately given up on) so the caller may mark
+    it seen; *run_node* is the run function the loop was handed - this layer
+    knows the API, that one knows tuxrun, and neither imports the other."""
     node = event.get("node", {})
     node_id = node.get("id", "unknown")
     node_artifacts = node.get("artifacts", {})
 
-    # The events stream returns historical snapshots (state at event
-    # time); a node may have been taken/run since.  Only act on jobs
-    # that are still available NOW, so a fresh worker never replays
-    # yesterday's queue.
+    # The events stream returns historical snapshots: only act on jobs that are
+    # still available NOW, so a fresh worker never replays yesterday's queue.
     try:
         response = requests.get(
             f"{_latest_base(poll_config.api_url)}/node/{node_id}", timeout=30
         )
-        # A proxy's HTML error page is not JSON.  .json() used to be called
-        # straight on the response, so a 502 page from a reverse proxy raised
-        # json.JSONDecodeError (a ValueError) which nothing here, at the call
-        # site or in poll_loop caught: one bad response killed the whole worker
-        # while the lab was running (#11).  Now it is an ordinary API error:
-        # log, do not handle this event, retry on the next poll.
+        # A proxy's HTML error page is not JSON: make it an ordinary API error
+        # (log, skip this event, retry next poll) instead of a ValueError that
+        # kills the whole worker.
         response.raise_for_status()
         try:
             current = response.json()
@@ -172,8 +120,7 @@ def handle_event(event, poll_config, run_config, reports, run_node):
         print(f"{node_id}: node state check failed: {error}")
         return False
     if not isinstance(current, dict):
-        # A well-formed JSON body of the wrong shape (a list, a string) must
-        # not turn into an AttributeError that kills the poll loop either.
+        # Wrong-shaped JSON must not become an AttributeError that kills the loop.
         print(f"{node_id}: node state check returned {type(current).__name__}, "
               "not a node object")
         return False
@@ -266,9 +213,8 @@ def iso_ago(timestamp, seconds):
 def _parseable_iso(value):
     """True for a timestamp string iso_ago() and the events API can consume.
 
-    A state file hand-edited into nonsense would otherwise reach
-    datetime.fromisoformat inside iso_ago and raise ValueError, killing the
-    worker at startup - far away from the file that caused it."""
+    A hand-edited state file would otherwise raise ValueError inside iso_ago and
+    kill the worker at startup, far from the file that caused it."""
     if not isinstance(value, str) or not value:
         return False
     try:
@@ -281,13 +227,10 @@ def _parseable_iso(value):
 def start_cursor(state_timestamp, since, ignore_state_cursor):
     """The timestamp the first poll scans from, and say which one it is.
 
-    The persisted cursor is authoritative by default (#8).  Every entry point
-    passed --since (run.sh: the current day's 00:00) and the CLI value used to
-    win over the stored cursor, so a worker started the next day never looked
-    back at a job that arrived yesterday and is still ``available``: it sat in
-    the queue forever with no error anywhere.  --since is now the bootstrap
-    cursor - used only when the state file has none - unless the operator asks
-    for the override deliberately with --ignore-state-cursor."""
+    The persisted cursor is authoritative; --since only seeds a state file that
+    has none.  --since used to win, so a worker started the next day never
+    looked back at a job that arrived yesterday and is still available - it sat
+    in the queue forever, with no error anywhere."""
     stored = state_timestamp if _parseable_iso(state_timestamp) else None
     if state_timestamp and stored is None:
         print(f"Warning: state file cursor {state_timestamp!r} is not an "
@@ -324,11 +267,9 @@ def start_cursor(state_timestamp, since, ignore_state_cursor):
 def poll_loop(poll_config, run_node, run_config):
     """Poll the API forever (or once) and run every node this worker claims.
 
-    *poll_config* is a kcilib.core.config.PollConfig - the interval, the retry
-    budget, the cursor and the filters are its fields, so the loop is driven by
-    a value rather than by whatever the process happens to have parsed.
-    *run_node* is the run function (kcilib.run.jobrun.run_node) and *run_config* its
-    config; the loop passes both through to handle_event() and never runs a job
+    *poll_config* is a kcilib.core.config.PollConfig, so the loop is driven by a
+    value rather than by whatever the process parsed.  *run_node* and
+    *run_config* are passed through to handle_event(); the loop never runs a job
     itself."""
     import fcntl
 
@@ -343,43 +284,30 @@ def poll_loop(poll_config, run_node, run_config):
         raise SystemExit(1)
 
     state = StateFile(state_file).load()
-    # Which cursor wins is start_cursor()'s decision, and it says so on stdout:
-    # the operator needs to know whether this run scans from the persisted
-    # position or from --since before reading anything else (#8).
+    # start_cursor() decides which cursor wins and says so on stdout: the
+    # operator needs that before reading anything else.
     print(f"State file: {state_file}", flush=True)
     timestamp = start_cursor(state.cursor, poll_config.since,
                              poll_config.ignore_state_cursor)
-    # Unposted results left over from a previous run (e.g. --once exiting on
-    # a transient callback failure): re-post them without re-running tuxrun.
-    # The token is re-read from the environment and never persisted - the
-    # document StateFile writes holds the callback URL and the body only.
+    # Unposted results from a previous run (--once exiting on a transient
+    # callback failure): re-post them without re-running tuxrun.  The token is
+    # re-read from the environment and never persisted.
     reports = {}
     for node_id, pending in state.pending.items():
         if isinstance(pending, dict) and pending.get("callback") and pending.get("body"):
-            # kcilib.run.callback owns this round trip: the stored entry holds the
-            # callback URL and the body but never the token, so the token is
-            # re-read from the environment here - the same expression the
-            # inlined tuple used to be.
+            # kcilib.run.callback owns this round trip: the stored entry holds
+            # the URL and body but never the token, which comes from the env.
             reports[node_id] = report_from_pending(pending)
 
     def flush():
         """Write the cursor and the unposted reports out now.
 
-        Called after EVERY event, not once per batch (#9).  A worker killed
-        after a transient callback failure but before the batch ended used to
-        lose the in-memory report, the pending entry and the seen update, so
-        the next start re-ran tuxrun for a node whose result it already had -
-        exactly what the module's "re-posted, never re-run" contract promises
-        not to do.
-
-        StateFile.save() owns both guards that keep that honest rather than
-        expensive: a re-entrancy flag (a signal handler flushing while a flush
-        is already in progress) and a comparison against the document on disk,
-        so a batch of a thousand events with nothing new to record does not
-        rewrite a file that can carry SEEN_LIMIT node ids a thousand times."""
+        Called after EVERY event, not once per batch: a worker killed after a
+        transient callback failure used to lose the report and re-run tuxrun for
+        a node whose result it already had.  StateFile.save() owns the
+        re-entrancy and unchanged-document guards that make this cheap."""
         state.cursor = timestamp
-        # pending_entry() is the persistable half of a report tuple - the
-        # callback URL and the body, never the token (kcilib.run.callback).
+        # The persistable half of a report tuple: url and body, never the token.
         state.pending = {
             node_id: pending_entry(report)
             for node_id, report in reports.items()
@@ -397,9 +325,8 @@ def poll_loop(poll_config, run_node, run_config):
     signal.signal(signal.SIGINT, flush_and_exit)
     retry_count = 0
     while True:
-        # The events API is not sorted and can deliver events out of order,
-        # so re-scan a trailing window and dedup via `seen` - a cursor that
-        # only ever advances would silently skip late events.
+        # The events API is not sorted, so re-scan a trailing window and dedup
+        # via `seen`; a cursor that only advances would skip late events.
         try:
             events = fetch_nodes(
                 poll_config.api_url, iso_ago(timestamp, CURSOR_OVERLAP_S)
@@ -428,8 +355,7 @@ def poll_loop(poll_config, run_node, run_config):
             continue
 
         print(f"Got {len(events)} events", flush=True)
-        # Only advance the cursor when the whole batch succeeded, so a
-        # failed job is retried next poll; a job done once is skipped.
+        # The cursor advances only when the whole batch succeeded.
         all_ok = True
         processed = 0
         for event in events:
@@ -443,18 +369,14 @@ def poll_loop(poll_config, run_node, run_config):
                 if handled and node_id and event.get("node", {}).get(
                     "artifacts", {}
                 ).get("job_definition"):
-                    # Only remember nodes that were actually processed.  The
-                    # first event for a node may arrive before its
-                    # job_definition artifact is attached (e.g. create then
-                    # update), and handle_event() skips such events silently;
-                    # marking them seen would hide the later, complete event.
+                    # Only remember nodes that were actually processed: the
+                    # first event may arrive before job_definition is attached,
+                    # and marking that seen would hide the later, complete one.
                     state.mark_seen(node_id)
                     processed += 1
             finally:
-                # One flush per event, in a `finally` so it also runs for an
-                # event that raised: whatever handle_event() already changed (a
-                # node marked seen, a result queued for re-posting) survives a
-                # crash or a kill from here on (#9).
+                # One flush per event, in a `finally` so it runs for an event
+                # that raised too: whatever handle_event() changed survives.
                 flush()
             if not handled:
                 all_ok = False
@@ -468,12 +390,10 @@ def poll_loop(poll_config, run_node, run_config):
                 "Some events failed; cursor not advanced, will retry next poll",
                 flush=True,
             )
-            # Never busy-loop on a failing batch: the API needs a breather
-            # and the failure is usually environmental (404 jobdef, network).
+            # Never busy-loop on a failing batch: the API needs a breather and
+            # the failure is usually environmental (404 jobdef, network).
             time.sleep(poll_config.poll_period)
-        # The cursor only moves on a fully successful batch, so this final
-        # flush persists the advanced cursor; the per-event flushes above
-        # already persisted the seen/pending mutations.
+        # Persists the cursor advanced above; seen/pending were flushed per event.
         flush()
         if poll_config.once:
             print(

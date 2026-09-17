@@ -1,28 +1,26 @@
 #!/usr/bin/env python3
 """Verify lava_body() output against the REAL production parser
-(kernelci.runtime.lava.Callback) and every method lava_callback.py calls."""
+(kernelci.runtime.lava.Callback) and every method lava_callback.py calls.
+
+Rationale: docs/code-notes/W2d-tools.md.
+"""
 import json
 import os
 import sys
 
-# This tool lives in scripts/tools/, so the repository root is WALKED UP to
-# (kcilib.repo_root finds run.sh) instead of counted: three tools kept a counted
-# root when they moved here and silently pointed one level too deep.
+# WALKED UP to run.sh (kcilib.repo_root), never counted: a counted root points
+# one level too deep once the file lives in scripts/tools/.
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))  # scripts/ holds kcilib
 
 from kcilib import repo_root
 
 ROOT = repo_root()
-# Import kernelci-core from THIS checkout, never from some other deployment
-# that happened to be hardcoded here: a hardcoded path made a fresh clone's
-# verify results silently depend on the machine it was run from.
+# Import kernelci-core from THIS checkout, never from a hardcoded path: that
+# made a fresh clone's verify results depend on the machine it ran on.
 sys.path.insert(0, os.path.join(ROOT, "kernelci-core"))
-# The body under test is kcilib.run.callback.lava_body and the verdicts it is fed
-# are kcilib.run.judge's: the worker imports them from the library instead of
-# defining them (they used to live in riscv_pull_worker.py, which this script
-# loaded by path).  Same body, same parser, same expectations - and scripts/ is
-# on the path here, so kcilib resolves from any CWD.
+# The body under test is kcilib.run.callback.lava_body and the verdicts are
+# kcilib.run.judge's; scripts/ is on the path, so kcilib resolves from any CWD.
 from kcilib.core import config
 from kcilib.run import callback, judge
 from kernelci.runtime.lava import Callback
@@ -36,10 +34,8 @@ FAIL_LOG = os.path.join(FIXTURES, "tuxrun-fail.log")
 def check(condition, message):
     """A guard that also holds under `python3 -O` / PYTHONOPTIMIZE=1.
 
-    These checks used to be `assert` statements.  run.sh fails the `verify`
-    gate on a non-zero exit, but -O strips every assert, so a broken check
-    printed "ALL PARSER CHECKS PASSED" and exited 0: the gate reported
-    success precisely when it had verified nothing.
+    These used to be `assert`s, and -O strips those: a broken check exited 0
+    and the gate reported success precisely when it had verified nothing.
     """
     if not condition:
         print(f"FAIL: {message}", file=sys.stderr)
@@ -49,9 +45,8 @@ def check(condition, message):
 def fake_config():
     """The two callback-metadata names lava_body() reads, off a real RunConfig.
 
-    lava_body() takes a kcilib.core.config.RunConfig since phase 4 instead of an
-    argparse namespace; the values - and therefore every body checked below -
-    are exactly the ones the namespace carried.
+    lava_body() takes a config.RunConfig, not an argparse namespace; the values
+    are the ones the namespace used to carry.
     """
     return config.RunConfig(api_config_name="docker-host",
                             storage_config_name="docker-host")
@@ -92,10 +87,8 @@ def run_case(tag, log_path, returncode, expect_status):
 
 
 def run_kselftest_tap_cases():
-    """The bug this guards: tuxrun exits 0 even when selftests fail, so a
-    LAVA body built from the exit code alone would report a PASS node and
-    drop every per-test result.  With the TAP wired in, the same run must
-    produce per-test child results and a job-level 'fail'."""
+    """tuxrun exits 0 even when selftests fail: with the TAP wired in, the run
+    must still produce per-test results and a job-level 'fail'."""
     output = (
         "2026-09-08T00:00:00 lava-dispatcher, installed at version: 2026.05\n"
         "start: 0 validate\n"
@@ -148,9 +141,8 @@ def run_kselftest_tap_cases():
 
 
 def run_no_tap_case():
-    """A kselftest job whose tuxrun run failed before any test ran (no TAP
-    lines, e.g. artifacts the dispatcher cannot reach) must NOT become a
-    pass node: no TAP -> suite fail, JobError -> infrastructure."""
+    """tuxrun failed before any test ran: no TAP -> suite fail, never a pass
+    node; JobError -> infrastructure."""
     print("\n===== kselftest no-TAP + JobError -> incomplete/infra =====")
     output = (
         "2026-09-08T00:00:00 Resource not available: Connection refused\n"
@@ -173,8 +165,8 @@ def run_no_tap_case():
 
 
 def run_infra_case():
-    """An infrastructure failure (tuxrun exit 2, e.g. unknown test class)
-    must surface as error_type=Infrastructure on the job node."""
+    """An infra failure (tuxrun exit 2, e.g. unknown test class) must surface
+    as error_type=Infrastructure on the job node."""
     print("\n===== infra error: rc=2 -> incomplete + Infrastructure =====")
     output = ("usage: tuxrun [options]\ntuxrun: error: argument --tests: "
               "invalid choice: 'kselftest-riscv'\n")

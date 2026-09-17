@@ -3,20 +3,12 @@
 #
 """Artifact transfer shared by the pull-lab worker and the fetch-and-run script.
 
-Two rules this module exists to keep in one place, because both were bugs once:
-
-* a partial transfer is never lost and never trusted blindly.  The bytes land in
-  <dest>.part beside a sidecar naming the URL they came from, so a later attempt
-  - even a later run of the same command - resumes with a Range request instead
-  of downloading a 144MB rootfs from zero again;
-* a file is only reused once it has been PROVEN complete.  os.path.exists()
-  adopted an Image that an interrupted run had left truncated and handed it to
-  tuxrun as a kernel; a .part whose sidecar already records its own size used to
-  be resumed from that total, which the server answered with 416 "Requested
-  Range Not Satisfiable" until somebody deleted the file by hand.
-
-Nothing here swallows a failure: a transfer that cannot be shown complete raises,
-or keeps its partial data on purpose.
+Two rules, both of which were bugs once: a partial transfer lands in
+<dest>.part beside a sidecar naming its URL, so a later attempt resumes with a
+Range request instead of starting a 144MB rootfs over; and a file is reused only
+once PROVEN complete - os.path.exists() once adopted a truncated Image as a
+kernel, and a .part already at its own recorded total drew 416 forever.
+Nothing here swallows a failure.  Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
 import json
@@ -29,17 +21,13 @@ import requests
 # 4 GiB per download; rootfs tarballs fit easily.
 MAX_DOWNLOAD_SIZE = 4 << 30
 
-# A KernelCI artifact URL names the build it belongs to in the first path
-# segment after the host: /<job-name>-<build-id>/<file>, where the id is a
-# 24-character kcidb node id (kbuild-gcc-14-riscv-6aa3689720239ade90209d50).
-# A pull-lab job definition carries no build id of its own - only artifact
-# URLs - so this is where the worker's ledger takes "which build did this run
-# test" from, instead of inventing a parallel identity.
+# A KernelCI artifact URL names its build: /<job-name>-<build-id>/<file>, the id
+# a 24-character kcidb node id.  A job definition carries no build id of its own,
+# so this is where the ledger's "which build did this run test" comes from.
 BUILD_ID_RE = re.compile(r"/([^/?\s]+?)-([0-9a-f]{24})(?:[/?]|$)")
 
-# Read in this order so the answer never depends on dict order: the kernel
-# first (the artifact that decides what was booted), then the test and module
-# tarballs, then the config.
+# Fixed order, so the answer never depends on dict order: the kernel first (the
+# artifact that decides what was booted), then the test and module tarballs.
 BUILD_ID_ARTIFACT_KEYS = (
     "kernel", "kselftest_tar_xz", "kselftest", "modules", "_config",
 )
@@ -48,10 +36,8 @@ BUILD_ID_ARTIFACT_KEYS = (
 def build_id_from_artifacts(artifacts):
     """The kbuild node id a job definition's artifacts came from, or "".
 
-    Returns "" when no artifact URL names a build: a job whose kernel is
-    served from a local mirror (the local stack seeds exactly that) has no id
-    to take, and a caller must decide what to file the run under rather than
-    getting a fabricated one from here.
+    "" when no artifact URL names a build (a locally mirrored kernel), so the
+    caller decides what to file the run under instead of getting a made-up id.
     """
     for key in BUILD_ID_ARTIFACT_KEYS:
         url = (artifacts or {}).get(key) or ""
@@ -59,21 +45,19 @@ def build_id_from_artifacts(artifacts):
         if match:
             return match.group(2)
     return ""
-# Per-read gap, not a total budget: artifact hosts (storage.kernelci.org,
-# files.kernelci.org) go quiet mid-transfer often enough that the old 300s
-# meant "hang for five minutes, then retry".  60s of silence is a stalled
-# connection; a slow-but-moving download is unaffected.
+# Per-read gap, not a total budget: artifact hosts go quiet mid-transfer, so the
+# old 300s meant "hang five minutes, then retry".  A slow-but-moving download is
+# unaffected.
 DOWNLOAD_TIMEOUT = 60
 
 
 def _resume_offset(part_path, meta_path, url):
     """Bytes already on disk for *url* from an earlier attempt (0 = start over).
 
-    production storage truncates big transfers routinely (a 144MB rootfs
-    arriving as 1.3MB is ordinary), and restarting from zero each time means a
-    flaky link never finishes.  The partial file is only trusted when its
-    sidecar says it belongs to *url* and does not already exceed the expected
-    size - otherwise a stale partial would be prepended to good data."""
+    Storage truncates big transfers routinely, so restarting from zero each time
+    means a flaky link never finishes.  The partial is trusted only when its
+    sidecar names *url* and it does not exceed the expected size - otherwise a
+    stale partial would be prepended to good data."""
     try:
         with open(meta_path) as handle:
             meta = json.load(handle)
@@ -101,26 +85,16 @@ def _write_resume_meta(meta_path, url, total):
 def publish_complete_part(path, url=None, max_size=MAX_DOWNLOAD_SIZE):
     """Publish the .part at *path* when its sidecar proves it complete.
 
-    Returns the number of bytes published, or 0 when *path* is not provably
-    complete (still short, or its sidecar missing/corrupt).  `path` is the
-    `<dest>.part` file: the finished name and the sidecar are derived from it,
-    exactly as download() writes them.
+    Returns the bytes published, or 0 when *path* is not provably complete
+    (short, or its sidecar missing/corrupt).  Only a sidecar that names *url*
+    and a size exactly equal to the recorded total makes a partial publishable:
+    a short file is a normal resume and a long one is not trustworthy.
 
-    A crash between the last byte and `os.replace` leaves the full file under
-    `<dest>.part` beside a sidecar recording that exact size.  The old code
-    resumed from that offset instead of publishing it, so every attempt asked
-    for `bytes=<total>-` and the server answered 416 "Requested Range Not
-    Satisfiable" three times before raising: that artifact stayed
-    undownloadable, and every job needing it reported Infrastructure, until
-    somebody deleted the `.part` by hand (#7).
-
-    Only a sidecar that names *url* and a size that is exactly the recorded
-    total makes a partial publishable - a short file is a normal resume and a
-    long one is not trustworthy at all.  Without *url* there is nothing to
-    compare the sidecar against, so a caller that knows the URL passes it."""
+    A crash between the last byte and os.replace leaves the full file under
+    .part, and resuming from its own total asked for `bytes=<total>-` and drew
+    416 "Requested Range Not Satisfiable" until the .part was deleted by hand."""
     part_path = path
-    # The finished name and the sidecar are derived from the .part path exactly
-    # as download() builds them, so a caller only ever has to name the file.
+    # Derived exactly as download() builds them, so a caller only names the file.
     dest = path.removesuffix(".part")
     meta_path = f"{part_path}.json"
     try:
@@ -149,8 +123,8 @@ def publish_complete_part(path, url=None, max_size=MAX_DOWNLOAD_SIZE):
 def _discard_partial(part_path, meta_path):
     """Drop a partial transfer whose bytes cannot be trusted (a refused range).
 
-    Appending to it would hand the caller a file that is silently corrupt, so
-    the transfer restarts from zero instead of risking that."""
+    Appending to it would hand the caller a silently corrupt file, so the
+    transfer restarts from zero instead."""
     for path in (part_path, meta_path):
         try:
             os.unlink(path)
@@ -175,11 +149,10 @@ def _content_range_total(response):
 def download(url, dest, max_size=MAX_DOWNLOAD_SIZE):
     """Stream *url* to *dest*, verifying size and resuming partial transfers.
 
-    The bytes land in `<dest>.part` and are only renamed into place once the
-    full length has arrived, so *dest* is never a half file.  A truncated or
-    stalled attempt keeps its partial data (with a sidecar recording which URL
-    it belongs to), and the next attempt - even a later run of the same
-    command - asks the server for the remainder with a Range request."""
+    The bytes land in `<dest>.part` and are renamed into place only once the
+    full length arrived, so *dest* is never a half file.  An interrupted attempt
+    keeps its partial data plus a URL sidecar, and the next attempt - even a
+    later run of the same command - asks for the remainder with a Range."""
     print(f"Downloading {url}")
     last_error = None
     parent = os.path.dirname(dest)
@@ -187,9 +160,8 @@ def download(url, dest, max_size=MAX_DOWNLOAD_SIZE):
         os.makedirs(parent, exist_ok=True)
     part_path = f"{dest}.part"
     meta_path = f"{dest}.part.json"
-    # A .part that an earlier run left complete (crash between the last write
-    # and the rename) is published here, before any range request is built:
-    # resuming from its own total is what produced the permanent 416 (#7).
+    # Published BEFORE any range request is built: resuming from a .part's own
+    # total is what produced the permanent 416.
     completed = publish_complete_part(part_path, url=url, max_size=max_size)
     if completed:
         print(f"           -> {dest} ({completed} bytes, completed by an "
@@ -210,20 +182,15 @@ def download(url, dest, max_size=MAX_DOWNLOAD_SIZE):
                         f"refusing redirect for {url}"
                     )
                 if offset and response.status_code == 200:
-                    # Server ignored the Range header: start from scratch
-                    # rather than appending to a file it knows nothing about.
+                    # Range ignored: restart rather than append to a file the
+                    # server knows nothing about.
                     print("  server ignored the Range request; restarting")
                     offset = 0
                     headers = {}
                 elif offset and response.status_code == 416:
-                    # The server refuses bytes=<offset>-: the partial file is
-                    # not what its sidecar claims, or the artifact changed
-                    # under us.  Trust the server's own total - when it says
-                    # the offset IS the whole file, the transfer was complete
-                    # all along; otherwise the stored bytes are unusable, so
-                    # drop them and restart from zero.  This is the state that
-                    # used to raise after three 416s and wedge the artifact
-                    # for good (#7).
+                    # The server refuses bytes=<offset>-: the total equals the
+                    # offset means the file was complete all along; otherwise the
+                    # bytes are unusable, so drop them and restart.
                     refused_total = _content_range_total(response)
                     if refused_total == offset:
                         os.replace(part_path, dest)
@@ -287,10 +254,9 @@ def download(url, dest, max_size=MAX_DOWNLOAD_SIZE):
 def gzip_isize(path):
     """Uncompressed size from a gzip member's 4-byte trailer, or None.
 
-    A complete *download* is not proof of a complete *gunzip*: the kernel is
+    A complete download is not proof of a complete gunzip: the kernel is
     decompressed into its final name, so a run killed mid-gunzip leaves a
-    truncated Image that still exists and is still non-empty.  The trailer is
-    the only size a finished .gz carries, and reading 4 bytes costs nothing."""
+    truncated Image that still exists and is still non-empty."""
     try:
         with open(path, "rb") as handle:
             handle.seek(-4, os.SEEK_END)
@@ -302,8 +268,8 @@ def gzip_isize(path):
 def looks_complete(dest):
     """True when *dest* can be a complete decompression of dest + ".gz".
 
-    Only consulted for a file with NO manifest record, i.e. the one case where
-    a cache hit would otherwise adopt a file on trust (#13)."""
+    Only consulted for a file with no manifest record - the one case where a
+    cache hit would otherwise adopt a file on trust."""
     gz = dest + ".gz"
     if not os.path.exists(gz):
         return True

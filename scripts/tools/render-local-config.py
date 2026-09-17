@@ -1,24 +1,15 @@
 #!/usr/bin/env python3
 """Render a tracked config template into the runtime file a deployment uses.
 
-Why: kernelci loads its settings with a plain ``toml.load()`` that does not
-expand environment variables, so a tracked file cannot say "the config next to
-me" or "whatever API port this deployment picked" - it has to carry absolute
-values.  Carrying them meant every clone silently read another deployment's
-paths, and a second isolated stack could not even be told apart from the first.
+kernelci's plain ``toml.load()`` expands no environment variables, so the
+settings file has to carry absolute values.  Placeholders are ``@NAME@``,
+filled from ``--var NAME=VALUE`` plus ``KCI_ROOT`` - never from the ambient
+environment, and a name with no value is an error, not something left in place.
 
-Placeholders are written ``@NAME@`` and are replaced from ``--var NAME=VALUE``
-plus ``KCI_ROOT`` (this checkout).  Values are NOT taken from the ambient
-environment on purpose: an inherited variable of the same name would silently
-satisfy a placeholder, and a template comment mentioning ``@SOMETHING@`` got
-substituted from the environment during testing - which is exactly the kind of
-invisible wrong value this script exists to prevent.  A name with no value is
-an error, never something left in place.
+Rationale: docs/code-notes/W2d-tools.md.
 
-    python3 scripts/tools/render-local-config.py \\
-        --template config/local-callback.toml \\
-        --output work/local-callback.toml \\
-        --var KCI_ROOT=/srv/kernelci-riscv
+    python3 scripts/tools/render-local-config.py --template config/local-callback.toml \\
+        --output work/local-callback.toml --var KCI_ROOT=/srv/kernelci-riscv
 """
 import argparse
 import os
@@ -30,10 +21,10 @@ sys.path.insert(0, os.path.dirname(HERE))  # scripts/ holds kcilib
 
 from kcilib import repo_root
 
-# Walked up to run.sh, never counted: this file moved into scripts/tools/, and
-# `ROOT = os.path.dirname(HERE)` then rendered every @KCI_ROOT@ as .../scripts -
-# so the stack's settings pointed at scripts/kernelci-pipeline/data/ssh/... and
-# every job node came back submit_error.  See kcilib.repo_root().
+# Walked up to run.sh, never counted: this file lives in scripts/tools/, and a
+# counted root rendered every @KCI_ROOT@ as .../scripts, so the stack's settings
+# pointed at scripts/kernelci-pipeline/data/ssh/... and every job node came back
+# submit_error.  See kcilib.repo_root().
 ROOT = repo_root()
 TOKEN_RE = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 

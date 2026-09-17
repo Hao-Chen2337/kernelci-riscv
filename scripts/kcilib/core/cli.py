@@ -2,18 +2,10 @@
 #
 """The worker's command line: the flags, their defaults, and nothing else.
 
-Moved VERBATIM out of scripts/riscv_pull_worker.py (phase 4): the same
-add_argument calls, in the same order, with the same help strings, so
-"riscv_pull_worker.py --help" and every argparse error are byte for byte what
-they were.  Only the default VALUES now come from kcilib/core/config.py - the two
-config dataclasses are where "what the worker defaults to" lives, and a parser
-that hard-coded its own copies could drift away from the config a programmatic
-caller gets.
-
-The one thing that is not a flag definition is the --min-timeout/--max-timeout
-sanity check: it must stay in parse_args() so that it keeps reporting itself the
-way it always did (argparse's usage on stderr, exit status 2).  Raising it from
-the config layer would have changed those bytes.
+Defaults come from kcilib/core/config.py, so the parser cannot drift from the
+config a programmatic caller gets.  Flag order, help strings and the fact that
+--min-timeout/--max-timeout is refused by parser.error() (usage on stderr, exit
+2) are frozen.  Rationale: docs/code-notes/W2c-kcilib.md.
 """
 import argparse
 
@@ -186,9 +178,8 @@ def build_parser():
 def parse_args(argv=None):
     """Parse the worker's command line and apply its one cross-flag check.
 
-    A --min-timeout above --max-timeout is refused here, with parser.error():
-    otherwise clamp_timeout() would quietly return the floor and the "upper
-    bound" would mean nothing.
+    A --min-timeout above --max-timeout is refused here, or clamp_timeout()
+    would quietly return the floor and the "upper bound" would mean nothing.
     """
     parser = build_parser()
     args = parser.parse_args(argv)

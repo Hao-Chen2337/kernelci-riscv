@@ -3,45 +3,15 @@
 #
 """Guest rootfs baking: nfsroot tar.xz -> bootable ext4 image, plus its cache.
 
-Moved VERBATIM out of scripts/riscv_pull_worker.py, which owned it until now:
-``bake_rootfs_image()`` turns the nfsroot tar.xz artifact into an ext4 image
-tuxrun can boot (``mkfs.ext4 -d``: no loop mount, no root) and bakes
-modules.tar.xz into /lib/modules with a modules-load.d conf so ``modprobe kvm``
-works at boot; ``baked_rootfs_image()`` puts a cache in front of it, keyed on
-the exact bake inputs.  Both the worker and scripts/fetch-and-run-latest.py need
-exactly this code - the fetch script carries an inlined copy of it - so this
-module is also the deduplication of that copy.
+bake_rootfs_image() turns the nfsroot tar.xz artifact into an ext4 image tuxrun
+can boot (mkfs.ext4 -d: no loop mount, no root) and bakes modules.tar.xz into
+/lib/modules with a modules-load.d conf so modprobe kvm works at boot;
+baked_rootfs_image() puts a cache in front of it, keyed on the exact bake inputs.
 
-HOW THE ROOT IS DERIVED.  ``bake_cache_dir()`` defaults to
-``<repo>/work/env/baked`` and takes ``<repo>`` from THIS file's location - never
-from the CWD, never from a hardcoded absolute path - exactly as ledger.py takes
-``work/results`` from its own location and as the worker did with its own
-``__file__``.  That is the ONE expression that had to change when the code
-moved: the worker sits at ``scripts/riscv_pull_worker.py`` and needed two
-``dirname()``s to reach the repository root, while this file sits one directory
-deeper at ``scripts/kcilib/run/bake.py`` and needs three.  Both spellings resolve to
-the same directory::
-
-    worker: dirname(dirname(realpath(scripts/riscv_pull_worker.py)))
-    here:   dirname(dirname(dirname(realpath(scripts/kcilib/run/bake.py))))
-
-``realpath`` rather than abspath is kept on purpose (see bake_cache_dir): a
-symlinked launcher must not place the multi-GB cache next to the symlink,
-outside the gitignored work/.
-
-TWO SEAMS the moved code reaches for by name, both module attributes so a caller
-can re-bind them exactly as the worker's guard tests re-bind
-``artifacts.requests``:
-
-  * ``stamp()`` - the ``[HH:MM:SS] `` progress printer, byte-identical to the
-    worker's own stamp(); every line a bake prints goes through it;
-  * ``download()`` - ``kcilib.run.artifacts.download``, the transfer the worker's
-    own ``download()`` wrapper delegates to (that wrapper only re-binds
-    ``artifacts.requests`` first, so it is the same transfer and the same
-    printed lines).
-
-Importing this module has no side effects: nothing here reads the environment,
-touches the filesystem or prints until a function is called.
+Two seams are reached for by name and are re-bindable module attributes, as the
+guard tests expect: ``stamp()`` (the [HH:MM:SS] progress printer) and
+``download()`` (kcilib.run.artifacts.download).  Importing this module has no
+side effects.  Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
 import hashlib
@@ -60,47 +30,34 @@ from kcilib.run.artifacts import MAX_DOWNLOAD_SIZE, download
 def stamp(message):
     """Progress line with a clock.
 
-    Added after a `worker --once` run took 17m42s where the internal notes
-    promised ~7 minutes, and ~14 of those minutes sat between two jobs with no
-    way to tell where they went: every line looked alike and the only clock was
-    the log file's.  The two phases that can take minutes - preparing the guest
-    (download + baking a 4GB ext4 per job) and tuxrun itself - now report their
-    own duration, so the next report can attribute the time instead of guessing.
-
-    Moved here with the bake machinery - same f-string, same flush=True - so
-    every line a bake prints stays byte-identical to the worker's.  The worker
-    keeps its own stamp() for its non-bake lines, and a caller may re-bind
-    ``kcilib.run.bake.stamp`` just as it re-binds this module's ``download``.
+    A run that took 17m42s against a promised ~7 left 14 minutes between two
+    jobs with nothing to attribute them to, so each phase reports its own
+    duration.  A caller may re-bind ``kcilib.run.bake.stamp`` as it re-binds
+    ``download``.
     """
     print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
 DISK_SIZE = "4G"  # ext4 image size; unrelated to QEMU memory
-# Baked-image cache limits (see baked_rootfs_image): each entry is a full
-# DISK_SIZE image, so the cache is bounded by entry count.  Two or three
-# entries cover the real input sets (kselftest-riscv bakes no modules,
-# kselftest-kvm bakes modules.tar.xz, a different rootfs is a third).
+# Each entry is a full DISK_SIZE image, so the cache is bounded by entry count;
+# three cover the real input sets (no modules, modules, another rootfs).
 BAKE_CACHE_MAX_ENTRIES = 3
 BAKE_CACHE_TMP_AGE_S = 3600  # a killed bake's .tmp is ignored, then aged out
 
 
 def _safe_member(member):
     """Reject archive members that could escape the extraction directory:
-    absolute member paths and ``..`` components.  Symlinks with absolute
-    targets are ALLOWED - rootfs tarballs legitimately ship them
-    (./init -> /usr/lib/systemd/systemd, ./dev/stdout -> /proc/self/fd/1);
-    extraction only stores the link text, the link is meaningful inside the
-    guest image, and nothing on the host follows it.  Hardlink targets stay
-    strict: tarfile resolves them with os.link() on the host at extraction
-    time, so an absolute target would genuinely escape."""
+    absolute paths and ``..`` components.  Symlinks with absolute targets are
+    ALLOWED - rootfs tarballs legitimately ship them (./init -> /usr/lib/
+    systemd/systemd) and extraction only stores the link text.  Hardlink
+    targets stay strict: tarfile resolves them with os.link() on the host."""
     name = member.name.replace("\\", "/")
     if name in ("", ".") or name.startswith("/"):
         return False
     if any(part == ".." for part in name.split("/")):
         return False
     target = getattr(member, "linkname", "") or ""
-    # Hardlinks only: extraction resolves them on the host with os.link(),
-    # so their targets stay strict.  Symlinks are just stored text.
+    # Hardlinks only: they are resolved on the host with os.link().
     if member.issym() or not target:
         return True
     return not (
@@ -112,11 +69,9 @@ def _safe_member(member):
 def _extract(archive, dest_dir):
     """Extract a tarball under *dest_dir*, then unwrap a single top dir.
 
-    Device/FIFO members are skipped: rootfs tarballs ship /dev nodes and
-    mknod fails for an unprivileged lab user (trixie-full.rootfs.tar.xz
-    reproduces this), while mkfs.ext4 -d populates them from the tree
-    anyway.  Members that could escape *dest_dir* (path traversal) are
-    skipped too."""
+    Device/FIFO members are skipped: mknod fails for an unprivileged lab user,
+    and mkfs.ext4 -d populates /dev from the tree anyway.  Members that could
+    escape *dest_dir* are skipped too."""
     os.makedirs(dest_dir, exist_ok=True)
     with tarfile.open(archive) as tf:
         for member in tf.getmembers():
@@ -136,20 +91,15 @@ def bake_rootfs_image(
     """Turn the nfsroot tar.xz artifact into an ext4 image tuxrun can boot
     (mkfs.ext4 -d: no loop mount, no root).
 
-    boot_modules: a /etc/modules-load.d/kernelci.conf is dropped into the
-    tree before mkfs.ext4, so the guest modprobes those modules at boot.
-    modules_url (kselftest-kvm): the modules.tar.xz is ALSO unpacked under
-    /lib/modules before mkfs.ext4 - the --modules LAVA overlay is delivered
-    only after boot and never lands in /lib/modules, so without baking them
-    in, modprobe kvm at boot finds nothing and every kvm test skips with
-    "Cannot open '/dev/kvm'".  kselftest/modules are otherwise injected by
-    tuxrun as LAVA overlays instead of being baked in.
+    boot_modules drops a modules-load.d conf into the tree so the guest
+    modprobes them at boot.  modules_url (kselftest-kvm) also unpacks
+    modules.tar.xz under /lib/modules: the --modules LAVA overlay arrives only
+    after boot, so without baking them in every kvm test skips with "Cannot
+    open '/dev/kvm'".
 
-    image_path: where the ext4 file is written (default <workspace>/rootfs.ext4).
-    Callers that publish the image somewhere else (the baked-image cache, whose
-    temporary file must sit in the cache directory so the publish is a rename)
-    pass it explicitly.  Everything else - tarball, extracted tree - still
-    lives under *workspace* and is discarded with it.
+    image_path is where the ext4 file goes (default <workspace>/rootfs.ext4);
+    the cache passes its own so the publish is a rename.  The tarball and the
+    extracted tree always live under *workspace*.
     """
     tar_path = os.path.join(workspace, "rootfs.tar")
     download(rootfs_url, tar_path, max_size=max_size)
@@ -157,15 +107,12 @@ def bake_rootfs_image(
     if modules_url:
         mod_tar = os.path.join(workspace, "modules.tar")
         download(modules_url, mod_tar, max_size=max_size)
-        # modules.tar.xz ships lib/modules/<version>/, so extracting at the
-        # tree root puts them exactly where modprobe/uname -r looks.
+        # It ships lib/modules/<version>/, i.e. exactly where uname -r looks.
         _extract(mod_tar, root_dir)
     if boot_modules:
         conf_dir = os.path.join(root_dir, "etc", "modules-load.d")
-        # Refuse to write through a symlink (tar-slip via symlink): the
-        # realpath must stay exactly where the lexical path is, inside the
-        # extracted tree - absolute-target symlinks in the tarball are fine
-        # as image content, but our own writes must never follow them.
+        # Refuse to write through a symlink (tar-slip): our own writes must
+        # stay inside the extracted tree, whatever the tarball links to.
         os.makedirs(conf_dir, exist_ok=True)
         if os.path.realpath(conf_dir) != os.path.abspath(conf_dir):
             raise OSError(f"refusing to write through symlink: {conf_dir}")
@@ -208,44 +155,31 @@ def _human_size(count):
 def bake_cache_dir():
     """Where baked guest images are cached.
 
-    Default ``work/env/baked/``: ``work/`` is gitignored and already the
-    documented home of the multi-GB guest testbed (``work/env/rootfs-kvm.ext4``),
-    so the big regenerable files stay in one place that no one commits.  A
-    separate *subdirectory* rather than that exact path, because
-    ``work/env/rootfs-kvm.ext4`` is a different artifact owned by
-    ``./run.sh provision`` and its ``work/env/.manifest.json``: two writers on
-    one file would race, and one fixed filename cannot hold the several
-    distinct input sets a worker sees (kselftest-riscv bakes no modules,
-    kselftest-kvm bakes modules.tar.xz, a lab may point --rootfs elsewhere).
+    Default ``work/env/baked/``, a subdirectory of the gitignored work/ that
+    already holds the multi-GB guest testbed - a separate directory, because
+    ``work/env/rootfs-kvm.ext4`` belongs to ./run.sh provision and one filename
+    cannot hold the several input sets a worker sees.
 
-    Override with KCI_BAKE_CACHE_DIR; disable with KCI_BAKE_CACHE=0 (then every
-    job bakes into its own workspace, as before).  Returns "" when disabled."""
+    Override with KCI_BAKE_CACHE_DIR; disable with KCI_BAKE_CACHE=0 (every job
+    then bakes into its own workspace, as before).  Returns "" when disabled."""
     if os.environ.get("KCI_BAKE_CACHE", "").strip().lower() in ("0", "off",
                                                                "no", "false"):
         return ""
     override = os.environ.get("KCI_BAKE_CACHE_DIR", "").strip()
     if override:
         return override
-    # realpath, not abspath: a symlinked launcher (a wrapper script in /tmp, a
-    # symlink in ~/bin) would otherwise place the multi-GB cache next to the
-    # symlink - outside the gitignored work/ - and silently stop reusing it
-    # whenever the two entry points are invoked differently.
-    # kcilib.repo_root() walks up to run.sh.  The three dirname()s that used to
-    # be here counted from scripts/kcilib/run/bake.py; after the package move this
-    # file sits one level deeper, so the cache would have landed in
-    # scripts/work/env/baked - a multi-GB directory nobody would ever clean.
+    # repo_root() walks up to run.sh: a fixed dirname() count put the cache in
+    # scripts/work/env/baked.  realpath, not abspath, so a symlinked launcher
+    # does not place a multi-GB cache next to the symlink.
     return os.path.join(repo_root(), "work", "env", "baked")
 
 
 def cache_dir_writable(cachedir):
     """True when a file can actually be created in *cachedir*.
 
-    ``os.makedirs(exist_ok=True)`` succeeds on a directory that exists but is
-    not writable - a read-only mount, or ``work/env/baked`` left root-owned by
-    a single ``sudo`` run - and ``os.access`` is unreliable for root and ACLs,
-    so probe by writing.  Without this probe the bake was aimed into such a
-    directory and ``mkfs.ext4`` failed the whole job, making an optional
-    optimisation able to break jobs that worked before it existed.
+    os.makedirs(exist_ok=True) succeeds on an existing but unwritable directory
+    and os.access is unreliable for root and ACLs, so probe by writing -
+    otherwise mkfs.ext4 fails the job on a cache that is only an optimisation.
     """
     if not cachedir:
         return False
@@ -262,11 +196,9 @@ def cache_dir_writable(cachedir):
 def bake_cache_inputs(rootfs_url, modules_url, boot_modules):
     """The complete input set of a bake, as one comparable string.
 
-    Everything mkfs.ext4's result depends on: the rootfs tarball, the modules
-    tarball, the modules-load.d list baked into the tree and the image size.
-    A key that omitted any of these would hand a job an image built from other
-    inputs, so the test for "changed URL must not reuse" is exactly this
-    serialisation."""
+    Everything mkfs.ext4's result depends on - both tarballs, the modules-load.d
+    list and the image size; omitting any would hand a job an image built from
+    other inputs."""
     return json.dumps(
         {
             "rootfs": rootfs_url,
@@ -291,12 +223,10 @@ def _cache_path(cachedir, key, suffix):
 def cached_rootfs_image(cachedir, inputs):
     """The cached image baked from exactly *inputs*, or "" on a miss.
 
-    A hit requires ALL of: a regular file that is not a symlink and resolves
-    inside the cache directory (a symlink could otherwise hand tuxrun an
-    unrelated disk outside it), a sidecar recording byte-identical *inputs*,
-    and an image whose size is both the recorded size and the size mkfs.ext4
-    was asked to write.  The sidecar is published LAST, so an interrupted bake
-    leaves an entry that is simply never trusted."""
+    A hit requires all of: a regular file, not a symlink, resolving inside the
+    cache directory (a symlink could hand tuxrun an unrelated disk), a sidecar
+    recording byte-identical *inputs*, and an image of the expected size.  The
+    sidecar is published LAST, so an interrupted bake is never trusted."""
     if not cachedir:
         return ""
     key = bake_cache_key(inputs)
@@ -323,9 +253,8 @@ def cached_rootfs_image(cachedir, inputs):
 def _write_cache_sidecar(cachedir, key, record):
     """Write the entry's sidecar atomically (tmp + rename, like save_manifest).
 
-    Written only after the image is in place: a crash in between leaves an
-    image nobody trusts rather than a sidecar promising a file that is not
-    there."""
+    Written only after the image is in place, so a crash in between leaves an
+    image nobody trusts rather than a sidecar promising a missing file."""
     path = _cache_path(cachedir, key, ".json")
     tmp = f"{path}.tmp{os.getpid()}"
     with open(tmp, "w") as handle:
@@ -339,16 +268,13 @@ def prune_bake_cache(cachedir, keep_key, max_entries=BAKE_CACHE_MAX_ENTRIES):
     """Bound the cache: drop the least recently published entries and any
     leftover temporary file from a bake that was killed.
 
-    Each entry is a full-size image (~4GB), so an unbounded cache fills a disk
-    one input change at a time.  Only files this module creates are touched:
-    ``<key>.ext4`` + ``<key>.json`` pairs and ``<key>.<suffix>.tmp<pid>``.
+    Each entry is a ~4GB image, so an unbounded cache fills a disk one input
+    change at a time.  Only this module's own files are touched: ``<key>.ext4``
+    plus ``<key>.json`` and ``<key>.<suffix>.tmp<pid>``.
 
-    Enumerated from BOTH file kinds: a publish that wrote the image and then
-    failed to write its sidecar used to be invisible here (only ``*.json`` was
-    listed), so each occurrence parked another ~4GB forever.  Such an image is
-    unusable for reuse, so it is counted against the cap and removed once it is
-    older than the publish window - younger ones may belong to a publish that is
-    still running (image renamed, sidecar next)."""
+    Enumerated from BOTH kinds, because an image whose sidecar write failed is
+    unusable for reuse: it counts against the cap, and is dropped once it is
+    older than the publish window (a younger one may belong to a live publish)."""
     try:
         names = sorted(os.listdir(cachedir))
     except OSError:
@@ -394,9 +320,8 @@ def prune_bake_cache(cachedir, keep_key, max_entries=BAKE_CACHE_MAX_ENTRIES):
             continue
         entries.append((mtime, key))
     entries.sort(reverse=True)
-    # keep_key counts towards the cap (it is one of the entries on disk); it is
-    # only exempt from *eviction*.  Skipping it while counting could leave
-    # max_entries + 1 entries behind after a long bake raced another publisher.
+    # keep_key counts towards the cap, it is only exempt from *eviction* -
+    # otherwise a long bake racing another publisher leaves max_entries + 1.
     evictable = [key for _, key in entries if key != keep_key]
     overflow = len(entries) - max_entries
     for key in evictable[:max(0, overflow)]:
@@ -408,10 +333,8 @@ def prune_bake_cache(cachedir, keep_key, max_entries=BAKE_CACHE_MAX_ENTRIES):
             except OSError:
                 pass
     for name in names:
-        # Only this module's own leftovers: "<key>.ext4.tmp<pid>" from a bake
-        # and "<key>.json.tmp<pid>" from a sidecar write.  A fresh one may
-        # belong to a bake still running (the age test is what protects it, not
-        # the key), and an old one is what a killed process left behind.
+        # Only this module's own leftovers.  A fresh one may belong to a bake
+        # still running - the age test protects it, not the key.
         if ".tmp" not in name:
             continue
         path = os.path.join(cachedir, name)
@@ -428,11 +351,9 @@ def publish_baked_image(cachedir, key, inputs, image, baked_s):
     """Move a freshly baked image into the cache.
 
     The bake wrote ``<key>.ext4.tmp<pid>`` inside the cache directory, so
-    publishing is one rename on one filesystem: a reader sees either the
-    previous entry or the complete new image, never a half-written one, and a
-    bake that is killed mid-way (leaving only the .tmp) cannot poison the
-    entry.  The size is checked before the rename - mkfs.ext4 is handed
-    DISK_SIZE, so anything else means the file in hand is not the image."""
+    publishing is one rename on one filesystem: a reader sees the previous entry
+    or the complete new image, never a half-written one.  The size is checked
+    before the rename - anything but DISK_SIZE is not the image."""
     expected = disk_size_bytes()
     size = os.path.getsize(image)
     if size != expected:
@@ -465,21 +386,14 @@ def baked_rootfs_image(
     """A bootable ext4 image for these inputs: reused from the cache when one
     was baked from exactly the same ones, otherwise baked and cached.
 
-    A real batch spent ``kselftest-riscv: guest prepared in 144.4s`` and
-    ``kselftest-kvm: guest prepared in 180.9s`` re-downloading the same ~144MB
-    nfsroot tarball and re-baking the same 4GB ext4 image per job, while
-    ``boot: guest prepared in 0.0s`` showed what a job costs without that step.
-    The bake is a function of the inputs in bake_cache_inputs(), so the second
-    job with the same ones gets the image from disk.
+    Without it a batch re-downloaded the same ~144MB nfsroot tarball and
+    re-baked the same 4GB image per job; the bake is a function of the inputs in
+    bake_cache_inputs(), so a second job with the same ones gets it from disk.
 
-    The key is the *URL*, not the bytes: content that is replaced behind an
-    unchanged URL is not noticed (adversarial review demonstrated it).  The
-    production artifact URLs embed the build id
-    (``/kbuild-gcc-14-riscv-<id>/``) or a rootfs version directory, so they are
-    immutable in practice; if you ever repoint a URL at different content, run
-    with ``KCI_BAKE_CACHE=0`` or ``rm -rf work/env/baked``.  Checking the bytes
-    would mean downloading them, which is exactly what the cache exists to
-    avoid."""
+    The key is the *URL*, not the bytes: content replaced behind an unchanged
+    URL is not noticed.  Production URLs embed the build id or a rootfs version
+    directory, so they are immutable in practice - if you repoint one at
+    different content, run with ``KCI_BAKE_CACHE=0`` or ``rm -rf work/env/baked``."""
     inputs = bake_cache_inputs(rootfs_url, modules_url, boot_modules)
     cachedir = bake_cache_dir()
     key = bake_cache_key(inputs)
@@ -495,8 +409,7 @@ def baked_rootfs_image(
         try:
             os.makedirs(cachedir, exist_ok=True)
         except OSError as error:
-            # An unusable cache directory must not fail the job: bake into the
-            # workspace exactly as before and report the reason once.
+            # An unusable cache must not fail the job: bake as before, without it.
             stamp(f"{label}: bake cache unusable ({error}); baking without it")
             cachedir = ""
     if cachedir and not cache_dir_writable(cachedir):
@@ -504,9 +417,8 @@ def baked_rootfs_image(
               "baking without it")
         cachedir = ""
     if cachedir:
-        # In the cache directory, so publish_baked_image is a same-filesystem
-        # rename even when the workspace sits on another mount (the worker's
-        # default workspace base is /tmp).
+        # In the cache directory, so the publish is a same-filesystem rename
+        # even when the workspace sits on another mount (the default is /tmp).
         target = _cache_path(cachedir, key, f".ext4.tmp{os.getpid()}")
 
     def _bake_into(image_path):
@@ -522,17 +434,11 @@ def baked_rootfs_image(
     try:
         image = _bake_into(target)
     except Exception as error:
-        # Deliberately broad: every cache-specific failure (disk full, the
-        # directory turned read-only between the probe and mkfs, a publish that
-        # cannot rename) must fall back to the pre-cache behaviour instead of
-        # failing the run.
+        # Deliberately broad: any cache-specific failure (disk full, a directory
+        # turned read-only, a failed rename) falls back to the pre-cache
+        # behaviour - and the retry cannot loop, it writes into the workspace.
         if not target:
             raise
-        # Cache-specific failures (disk full, the directory turned read-only
-        # between the probe and mkfs, a publish that cannot rename) fall back to
-        # the pre-cache behaviour instead of failing the run.  Only reachable
-        # when a cache target was set, so the retry cannot loop: the second bake
-        # writes into the workspace.
         stamp(f"{label}: baking into the cache failed ({error}); retrying "
               "without the cache")
         try:
@@ -557,12 +463,9 @@ def baked_rootfs_image(
     try:
         published = publish_baked_image(cachedir, key, inputs, image, baked_s)
     except OSError as error:
-        # Caching is an optimisation: if the image cannot be moved into the
-        # cache (a rename that fails, a full disk, a sidecar that cannot be
-        # written), report it and hand tuxrun the image that WAS baked instead
-        # of failing the job.  A published image without its sidecar is
-        # unusable for reuse, so it counts against the cap and prune ages it
-        # out (see prune_bake_cache).
+        # Caching is an optimisation: report a failed publish and hand tuxrun
+        # the image that WAS baked, instead of failing the job.  An image
+        # without its sidecar is never reused and prune ages it out.
         stamp(f"{label}: could not publish the baked image to the cache "
               f"({error}); using it from the workspace instead")
         return image
