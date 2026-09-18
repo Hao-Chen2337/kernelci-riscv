@@ -83,7 +83,7 @@ def test_of(definition):
     """A job definition -> the test name its record is filed under.
 
     ``tests[0].type``, then ``tests[0].id``, then ``"boot"``.  The name is part of
-    the layout below, so the rule lives with it: kcilib.table.jobspec.test_of and
+    the layout below, so the rule lives with it: kcilib.model.jobs.Job.definition and
     the run path (kcilib.run.jobrun.record_result) both call this one, instead of
     keeping a copy each.
 

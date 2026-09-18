@@ -57,10 +57,10 @@ class Policy:
     # the pull-labs runtime's own timeout.  run.sh's 1200 is a caller override.
     seconds_max_job_timeout: int = 7200
     # seconds: the timeout a test gets when seconds_test_timeouts has no entry for
-    # it (jobspec.JobSpec.__post_init__'s inline fallback).
+    # it (Job.__init__'s inline fallback in kcilib/model/jobs.py).
     seconds_test_timeout_default: int = 1800
     # seconds per test: boot only starts the kernel, the two kselftest sets are
-    # long runs (jobspec.TEST_TIMEOUTS, where the inline 1800 also appears).
+    # long runs (Job.definition() renders them; the table below is their one owner).
     seconds_test_timeouts: Mapping[str, int] = MappingProxyType({
         "boot": 600,
         "kselftest-riscv": 1800,
@@ -88,10 +88,10 @@ class Policy:
 
     # --- what this deployment runs as: the CLI flag defaults ---
     # the platform name: config.DEFAULT_PLATFORM (--platform, and the poll filter)
-    # and jobspec.PLATFORM (environment.platform of every definition) are one
+    # and the platform every definition's environment names are one
     # platform, so the table spells it once.
     platform: str = "qemu-riscv64"
-    # the guest architecture in every definition's environment (jobspec.ARCH).
+    # the guest architecture in every definition's environment.
     arch: str = "riscv"
     # the lab filter: config.DEFAULT_RUNTIME, the runtime the claimed jobs carry.
     runtime: str = "pull-labs-riscv"
@@ -107,7 +107,7 @@ class Policy:
     # disk for a boot job that has none (config.DEFAULT_ROOTFS).
     rootfs_override: str = ""
     # the guest rootfs the offline table boots from: the pinned nfsroot tar.xz the
-    # production pull_labs template injects as "rootfs" (jobspec.ROOTFS_URL).
+    # production pull_labs template injects as "rootfs" (Job.definition()).
     rootfs_url: str = (
         "https://storage.kernelci.org/images/rootfs/debian/"
         "trixie-kselftest/20260606.0/riscv64/full.rootfs.tar.xz"

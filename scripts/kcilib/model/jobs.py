@@ -114,7 +114,7 @@ VERDICT_PASS = "pass"
 VERDICT_ERROR = "error"
 EXIT_ERROR = 3
 
-# Timeout for a test kcilib.table.jobspec.TEST_TIMEOUTS does not name.
+# Timeout for a test policy.POLICY.seconds_test_timeouts does not name.
 DEFAULT_TIMEOUT = 600
 
 # Origins whose builds came from a KernelCI API, i.e. the table layer's
