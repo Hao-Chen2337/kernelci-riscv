@@ -59,7 +59,11 @@ def test_layers_import_downward_only():
       * core -> run / table / source: core is the bottom layer - api.py, source.py
         and run/ all stand on it;
       * api -> anything in the package, and source -> run: the API client is the
-        lowest thing there is, and a source says WHAT to run, never how.
+        lowest thing there is, and a source says WHAT to run, never how;
+      * kcilib -> kci: the interface layer (scripts/kci, one level beside this
+        package) sits ABOVE it and is written against it, so the implementation
+        may not import back.  Checked both ways round: kci does import kcilib
+        (that is its implementation layer), kcilib never imports kci.
     """
     import ast
     import glob
@@ -68,6 +72,23 @@ def test_layers_import_downward_only():
 
     root = kcilib.repo_root()
     package = os.path.join(root, "scripts", "kcilib")
+    interface = os.path.join(root, "scripts", "kci")
+
+    def imports_of(path):
+        """Every module name *path* imports, with the line that imports it."""
+        with open(path, encoding="utf-8") as handle:
+            tree = ast.parse(handle.read(), filename=path)
+        found = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            elif isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            else:
+                continue
+            found.extend((name, node.lineno) for name in names)
+        return found
+
     rules = {
         # api.py is the lowest thing in the package: it may not import kcilib at
         # all.  Naming the four submodules would let `from kcilib import
@@ -77,35 +98,52 @@ def test_layers_import_downward_only():
         os.path.join(package, "core"): ("kcilib.run", "kcilib.table",
                                         "kcilib.source"),
         os.path.join(package, "run"): ("kcilib.table", "kcilib.source"),
+        # The interface layer is above this package: no module of the
+        # implementation - at any depth, which is why this one globs the whole
+        # tree - may import kci or anything under it.
+        os.path.join(package, "**"): ("kci",),
     }
     scanned, offenders = 0, []
     for target, banned in rules.items():
-        paths = ([target] if target.endswith(".py")
-                 else sorted(glob.glob(os.path.join(target, "*.py"))))
+        if target.endswith(".py"):
+            paths = [target]
+        elif target.endswith("**"):
+            paths = sorted(glob.glob(os.path.join(target[:-3], "**", "*.py"),
+                                     recursive=True))
+        else:
+            paths = sorted(glob.glob(os.path.join(target, "*.py")))
         check(paths, f"no module found under {os.path.relpath(target, root)}; "
                      "the layering check would pass by scanning nothing")
         for path in paths:
             scanned += 1
-            with open(path, encoding="utf-8") as handle:
-                tree = ast.parse(handle.read(), filename=path)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom) and node.module:
-                    names = [node.module]
-                elif isinstance(node, ast.Import):
-                    names = [alias.name for alias in node.names]
-                else:
-                    continue
-                for name in names:
-                    for module in banned:
-                        if name == module or name.startswith(module + "."):
-                            offenders.append(
-                                f"{os.path.relpath(path, root)}:{node.lineno} "
-                                f"imports {name}")
+            for name, lineno in imports_of(path):
+                for module in banned:
+                    if name == module or name.startswith(module + "."):
+                        offenders.append(
+                            f"{os.path.relpath(path, root)}:{lineno} "
+                            f"imports {name}")
     check(scanned >= 15, f"only {scanned} modules scanned; the glob is wrong")
     check(not offenders,
           "a layer imports upward (see docs/ARCHITECTURE.md's dependency table); "
           "move the shared thing down instead of reaching up: "
           + ", ".join(offenders))
+
+    # The kcilib -> kci rule is one-way, and both halves of it are pinned: the
+    # interface layer DOES import kcilib (the one layer it is allowed to stand
+    # on), while kcilib never imports it back.  Without the first half this
+    # rule would pass on an interface package that had copied the
+    # implementation instead of calling it.
+    interface_modules = sorted(glob.glob(os.path.join(interface, "**", "*.py"),
+                                         recursive=True))
+    check(interface_modules,
+          f"no module found under {os.path.relpath(interface, root)}; the "
+          "kcilib -> kci rule would be guarding a tree that is not there")
+    downward = [path for path in interface_modules
+                if any(name == "kcilib" or name.startswith("kcilib.")
+                       for name, _lineno in imports_of(path))]
+    check(downward,
+          "no module of the interface layer imports kcilib: either it moved, "
+          "or it has grown an implementation of its own")
     print("test_layers_import_downward_only OK")
 
 

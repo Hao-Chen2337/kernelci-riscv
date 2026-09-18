@@ -24,6 +24,7 @@ the riscv regression history is just starting to accumulate.
 |---|---|
 | `docs/RUNBOOK.md` | Run commands and operating notes |
 | `scripts/` | All code: worker, drift, trend, fetch, results, verify, stack |
+| `scripts/kci/` | The interface layer: the classes entry points call (`KbuildPuller`, `Kbuilds`, `Jobs`, `Stack`, `Dashboard`, `Results`) |
 | `config/` | PR1 config patch + tuxlava/bullseye/nginx patches |
 | `kernelci-*/` | Upstream clones (gitignored, created by `./run.sh setup`) |
 | `work/` | Runtime workspace (gitignored, regenerable) |

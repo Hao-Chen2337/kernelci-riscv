@@ -6,7 +6,9 @@ from . import (
     callbacks,
     config_drift_parser,
     downloads,
+    interface_checks,
     jobrun_checks,
+    model_checks,
     poll_checks,
     ports,
     references,
@@ -25,6 +27,17 @@ def main():
     ansi_tap_judge.test_lava_body_cap_and_boot_guard()
     jobrun_checks.test_build_command_validation()
     jobrun_checks.test_build_command_argv()
+    model_checks.test_outcome_is_dict_shaped_for_old_readers()
+    model_checks.test_job_run_matches_the_table_line()
+    model_checks.test_jobs_runs_a_row_and_records_it()
+    model_checks.test_job_run_refuses_an_unknown_delivery_and_files_its_source()
+    model_checks.test_job_run_local_server_delivery()
+    interface_checks.test_stack_argv_matches_the_entry_point()
+    interface_checks.test_stack_status_reads_a_stopped_stack()
+    interface_checks.test_dashboard_argv_and_banner()
+    interface_checks.test_results_reads_the_ledger_and_its_report()
+    interface_checks.test_interface_package_imports_nothing_from_scripts()
+    interface_checks.test_interface_exports_its_public_names()
     jobrun_checks.test_run_node_never_raises_on_a_malformed_definition()
     poll_checks.test_iso_ago()
     callbacks.test_post_result_classification()

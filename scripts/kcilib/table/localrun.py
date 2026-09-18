@@ -1,17 +1,19 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-r"""Views and execution: table rows become a real run, and runs are looked up again.
+r"""Views over the table: what has run, and what is still to run.
 
-Which builds exist (BuildIndex) plus what ran (ledger) feed todo(), which feeds
-run_job(); ran_tests() and todo() are pure reads that need no network.
-run_job() is a thin shell over run_node, which already owns every step.
-No callback URL means ledger only - the local "make your own job" mode.
+Which builds exist (BuildIndex) plus what ran (ledger) feed todo(); ran_tests()
+and todo() are pure reads that need no network.
+
+No run lives here any more.  This module used to carry run_job() and
+outcome_from(), the old shell over kcilib.run.jobrun.run_node; the interface
+layer (kci.Jobs and Job.run) took that over on 2026-09-18, and the shell was
+left behind with no caller but a guard, so it was deleted when the object
+layer moved out to scripts/kci/ - rather than kept as dead weight in the
+implementation.
 """
 
-import os
-
-from kcilib.core import config, ledger
-from kcilib.run.jobrun import SOURCE_TABLE, run_node
+from kcilib.core import ledger
 from kcilib.table.jobspec import DEFAULT_TESTS, jobs_from_build
 
 
@@ -47,58 +49,3 @@ def todo(index, tests=None):
                 continue
             specs.append(spec)
     return specs, skipped, len(builds)
-
-
-def outcome_from(body):
-    """run_node's (url, token, body) -> RunOutcome with its verdict and record path.
-
-    The verdict is derived from the body, never re-parsed from the console: the
-    ledger and the upstream callback must carry the same conclusion.
-    """
-    from kcilib.run.callback import verdict_from_body
-    verdict, exit_code, detail = verdict_from_body(body)
-    return {
-        "verdict": verdict,
-        "exit_code": exit_code,
-        "detail": detail,
-        "status": body.get("status"),
-    }
-
-
-def run_job(definition, run_config=None, node_id=None):
-    """Run one job definition -> RunOutcome. All execution is run_node's.
-
-    Without a callback section run_node still runs, archives and records, and
-    nobody is notified. The (callback_url, token, body) triple is the only source
-    of a callback and travels intact in outcome["report"], else None.
-    """
-    run_config = run_config or config.RunConfig()
-    # source="table": tells the ledger which writer filed the row; jobrun used to
-    # hardcode "worker", so every table run was misfiled.
-    callback_url, token, body = run_node(definition, run_config, node_id,
-                                         source=SOURCE_TABLE)
-    outcome = outcome_from(body)
-    outcome["callback_url"] = callback_url
-    outcome["record"] = _record_path(definition, node_id)
-    outcome["report"] = (callback_url, token, body) if callback_url else None
-    return outcome
-
-
-def _record_path(definition, node_id):
-    """The ledger file this run actually landed in, or None.
-
-    The path is recomputed from the definition's artifact URLs, so it is a
-    prediction, not a receipt; os.path.exists turns it into a fact.
-
-    It mirrors kcilib.run.jobrun.record_result's naming exactly, node-id fallback
-    included: without that fallback a run whose artifact URLs name no build id was
-    recorded under the node id while this returned None, so the record existed and
-    the table printed nothing.
-    """
-    from kcilib.run.artifacts import build_id_from_artifacts
-    artifacts = definition.get("artifacts") or {}
-    build_id = build_id_from_artifacts(artifacts) or node_id or ""
-    if not build_id:
-        return None
-    path = ledger.result_path(build_id, ledger.test_of(definition))
-    return path if os.path.exists(path) else None

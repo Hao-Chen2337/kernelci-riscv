@@ -21,6 +21,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+from kci import ORIGIN_API, ORIGIN_HANDMADE, Job, Jobs, Kbuild, Outcome
+from kci.jobs import EXIT_ERROR, VERDICT_ERROR
 from kcilib import api, sink
 from kcilib.core import ledger
 from kcilib.source import get_source
@@ -203,6 +205,32 @@ def _last_runs(ran, count):
     return rows[:count]
 
 
+def _origin_of(source):
+    """The table's source column -> the object layer's origin (and back)."""
+    return ORIGIN_API if source == "official" else ORIGIN_HANDMADE
+
+
+def _job_for_spec(spec, callback_url=None):
+    """One table row -> the object layer's Job, its Kbuild card included.
+
+    The card carries the row's identity, artifacts and revision, so the Job
+    renders the definition through kcilib.table.jobspec exactly as the table
+    does for the same row (compared byte for byte), and the same artifacts feed
+    both the card and the job. *callback_url* is the same switch job_definition
+    takes: it decides whether the run reports back or only writes the ledger.
+    """
+    row = spec.build
+    artifacts = dict(row.artifacts)
+    origin = _origin_of(row.source)
+    card = Kbuild(row.build_id, artifacts, tree=row.tree, branch=row.branch,
+                 commit=row.commit, describe=row.describe, created=row.created,
+                 node_id=row.node_id, origin=origin)
+    return Job(spec.build_id, spec.test, timeout_s=spec.timeout_s,
+               artifacts=artifacts,
+               callback={"url": callback_url} if callback_url else None,
+               origin=origin, build=card)
+
+
 def cmd_run(args):
     """Run: the source decides what runs; the executor is always the same run_node.
 
@@ -237,36 +265,44 @@ def cmd_run(args):
         print("nothing to run")
         return 0
     print(f"-> running {len(planned)} job(s), one at a time")
-    # Build the definitions first: the sink comes from the definition, not from
+    # Kbuild the definitions first: the sink comes from the definition, not from
     # argparse. Every job in a trip shares one sink (the same --callback-url).
     definitions = [(spec, job_definition(spec, callback_url=args.callback_url))
                    for spec in planned]
     sinks = sink.sinks_for(definitions[0][1])
     if not sink.has_callback(sinks):
         print("   no --callback-url: results go to the local ledger only")
-    results = []
-    for spec, definition in definitions:
+    # The execution itself is the object layer's: one Kbuild card + one Job per
+    # row, held in Jobs and run one at a time. The definitions above stay the
+    # sink's input - that read point does not change.
+    jobs = Jobs([_job_for_spec(spec, args.callback_url) for spec in planned])
+    outcomes = []
+    # Not Jobs.run(): its failure path prints "Warning: <id> <test> could not
+    # be run (...)"; this loop has printed its own line for that case since
+    # before the object layer existed, and ./run.sh run's output is pinned.
+    for (spec, definition), job in zip(definitions, jobs):
         print(f"\n=== {spec.build_id} / {spec.test} "
               f"({spec.build.tree or '?'} {(spec.build.describe or '')[:36]})")
         try:
-            outcome = localrun.run_job(definition, node_id=spec.build.build_id)
+            outcome = job.run()
         except Exception as error:  # noqa: BLE001 - one job must not stop the batch
             print(f"  run failed before a verdict: {error}")
-            results.append((spec, {"verdict": "error", "detail": str(error)}))
+            outcomes.append(Outcome(VERDICT_ERROR, EXIT_ERROR,
+                                    detail=str(error), job=job))
             continue
-        results.append((spec, outcome))
+        outcomes.append(outcome)
         print(f"  verdict: {outcome['verdict']} "
               f"(exit {outcome['exit_code']}) {outcome['detail'][:60]}")
         # The sink decides delivery: for the ledger sink it is the record the executor
         # just wrote (kcilib.run.jobrun.record_result), for the callback sink the report
-        # triple run_job puts in outcome["report"] (None without a callback section).
+        # triple the outcome carries (None without a callback section).
         delivered = sink.deliver(sinks, definition, outcome=outcome,
                                  report=outcome.get("report"))
         record = delivered.get(sink.LEDGER)
         if record:
             print(f"  record: {os.path.relpath(record)}")
-    failed = [spec for spec, out in results if out.get("verdict") != "pass"]
-    print(f"\n{len(results)} run(s): {len(results) - len(failed)} pass, "
+    failed = [out for out in outcomes if out.get("verdict") != "pass"]
+    print(f"\n{len(outcomes)} run(s): {len(outcomes) - len(failed)} pass, "
           f"{len(failed)} not pass")
     return 0
 

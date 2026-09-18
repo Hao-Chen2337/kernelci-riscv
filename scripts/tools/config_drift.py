@@ -58,14 +58,6 @@ def _non_negative(value):
     return number
 
 
-def api_headers():
-    """Optional Authorization header: every request here is a public GET, so a
-    token is only attached when one is configured - and never to production,
-    where a local admin JWT means nothing (regression_tracker.py's rule)."""
-    token = os.environ.get("KCI_API_TOKEN")
-    if not token or is_production():
-        return {}
-    return {"Authorization": f"Bearer {token}"}
 
 
 def _client():
