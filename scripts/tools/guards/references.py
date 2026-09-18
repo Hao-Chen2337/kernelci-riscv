@@ -60,10 +60,11 @@ def test_layers_import_downward_only():
         and run/ all stand on it;
       * api -> anything in the package, and source -> run: the API client is the
         lowest thing there is, and a source says WHAT to run, never how;
-      * kcilib -> kci: the interface layer (scripts/kci, one level beside this
-        package) sits ABOVE it and is written against it, so the implementation
-        may not import back.  Checked both ways round: kci does import kcilib
-        (that is its implementation layer), kcilib never imports kci.
+      * anything -> kcilib.model: the model (the cards and the objects a caller
+        holds) sits on top of every other module here, so nothing below it may
+        import back.  It used to be a separate top-level package (scripts/kci),
+        which made every consumer of it import kcilib as well - two packages,
+        one vocabulary, and no module that was the only face.
     """
     import ast
     import glob
@@ -72,7 +73,6 @@ def test_layers_import_downward_only():
 
     root = kcilib.repo_root()
     package = os.path.join(root, "scripts", "kcilib")
-    interface = os.path.join(root, "scripts", "kci")
 
     def imports_of(path):
         """Every module name *path* imports, with the line that imports it."""
@@ -98,10 +98,19 @@ def test_layers_import_downward_only():
         os.path.join(package, "core"): ("kcilib.run", "kcilib.table",
                                         "kcilib.source"),
         os.path.join(package, "run"): ("kcilib.table", "kcilib.source"),
-        # The interface layer is above this package: no module of the
-        # implementation - at any depth, which is why this one globs the whole
-        # tree - may import kci or anything under it.
-        os.path.join(package, "**"): ("kci",),
+        # The model is above everything else in this package: api, core, run,
+        # table and the two single-file modules may not import it back.  The
+        # model itself is free to import any of them (it is the layer a caller
+        # holds), which is why the rule names the subtrees rather than globbing
+        # the whole package the way the old kci rule did.
+        os.path.join(package, "api.py"): ("kcilib.model",),
+        os.path.join(package, "source.py"): ("kcilib.run", "kcilib.model"),
+        os.path.join(package, "sink.py"): ("kcilib.model",),
+        os.path.join(package, "core"): ("kcilib.run", "kcilib.table",
+                                        "kcilib.source", "kcilib.model"),
+        os.path.join(package, "run"): ("kcilib.table", "kcilib.source",
+                                       "kcilib.model"),
+        os.path.join(package, "table"): ("kcilib.model",),
     }
     scanned, offenders = 0, []
     for target, banned in rules.items():
@@ -127,23 +136,6 @@ def test_layers_import_downward_only():
           "a layer imports upward (see docs/ARCHITECTURE.md's dependency table); "
           "move the shared thing down instead of reaching up: "
           + ", ".join(offenders))
-
-    # The kcilib -> kci rule is one-way, and both halves of it are pinned: the
-    # interface layer DOES import kcilib (the one layer it is allowed to stand
-    # on), while kcilib never imports it back.  Without the first half this
-    # rule would pass on an interface package that had copied the
-    # implementation instead of calling it.
-    interface_modules = sorted(glob.glob(os.path.join(interface, "**", "*.py"),
-                                         recursive=True))
-    check(interface_modules,
-          f"no module found under {os.path.relpath(interface, root)}; the "
-          "kcilib -> kci rule would be guarding a tree that is not there")
-    downward = [path for path in interface_modules
-                if any(name == "kcilib" or name.startswith("kcilib.")
-                       for name, _lineno in imports_of(path))]
-    check(downward,
-          "no module of the interface layer imports kcilib: either it moved, "
-          "or it has grown an implementation of its own")
     print("test_layers_import_downward_only OK")
 
 

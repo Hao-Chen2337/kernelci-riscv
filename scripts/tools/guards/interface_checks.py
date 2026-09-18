@@ -16,11 +16,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-import kci.dashboard as dashboard_module
-import kci.stack as stack_module
 import kcilib
-from kci import Dashboard, Record, Results, Stack
+import kcilib.model.dashboard as dashboard_module
+import kcilib.model.stack as stack_module
 from kcilib.core import ledger
+from kcilib.model import Dashboard, Record, Results, Stack
 
 from .support import check
 
@@ -374,8 +374,10 @@ def test_interface_package_imports_nothing_from_scripts():
     """
     root = Path(kcilib.repo_root())
     modules = sorted(glob.glob(
-        os.path.join(root, "scripts", "kci", "**", "*.py"), recursive=True))
-    check(len(modules) >= 3, f"only {len(modules)} modules under scripts/kci")
+        os.path.join(root, "scripts", "kcilib", "model", "**", "*.py"),
+                                 recursive=True))
+    check(len(modules) >= 3,
+          f"only {len(modules)} modules under scripts/kcilib/model")
     allowed = set(sys.stdlib_module_names) | {"kcilib", "kci"}
     imported, offenders = 0, []
     for path in modules:
@@ -404,25 +406,25 @@ def test_interface_package_imports_nothing_from_scripts():
 
 
 def test_interface_exports_its_public_names():
-    """`from kci import ...` is the interface, and __all__ is its list.
+    """`from kcilib.model import ...` is the model, and __all__ is its list.
 
     The classes added for the stack, the page and the ledger - and the classes
     the project's one-line usage needs - must be exported, and every
     exported name has to exist on the package: a name in __all__ that does
-    not breaks `from kci import *` for every caller at once.
+    not breaks `from kcilib.model import *` for every caller at once.
     """
-    import kci
+    from kcilib import model as kci
 
     for name in ("Kbuild", "Dashboard", "Job", "Jobs", "Kbuilds", "Outcome",
                  "Record", "Results", "Stack"):
         check(name in kci.__all__, f"{name} is not exported: {kci.__all__}")
         check(hasattr(kci, name),
-              f"kci.__all__ names {name}, which does not exist")
+              f"kcilib.model.__all__ names {name}, which does not exist")
     check(len(kci.__all__) == len(set(kci.__all__)),
           f"duplicate names in __all__: {kci.__all__}")
     check(len(kci.__all__) >= 16, f"__all__ shrank to {len(kci.__all__)}")
     for name in ("Dashboard", "Record", "Results", "Stack"):
         module = getattr(kci, name).__module__
-        check(module.startswith("kci."),
+        check(module.startswith("kcilib.model."),
               f"{name} is not defined in kci: {module}")
     print("test_interface_exports_its_public_names OK")

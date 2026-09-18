@@ -21,10 +21,10 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from kci import ORIGIN_API, ORIGIN_HANDMADE, Job, Jobs, Kbuild, Outcome
-from kci.jobs import EXIT_ERROR, VERDICT_ERROR
 from kcilib import api, sink
 from kcilib.core import ledger
+from kcilib.model import ORIGIN_API, ORIGIN_HANDMADE, Job, Jobs, Kbuild, Outcome
+from kcilib.model.jobs import EXIT_ERROR, VERDICT_ERROR
 from kcilib.source import get_source
 from kcilib.table import localrun
 from kcilib.table.buildindex import BuildIndex

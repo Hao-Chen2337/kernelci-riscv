@@ -23,8 +23,9 @@ import json
 import os
 import tempfile
 
-import kci.jobs as kci_jobs
-from kci import (
+import kcilib.model.jobs as kci_jobs
+from kcilib.core import ledger
+from kcilib.model import (
     DELIVERY_IN_CONTAINER,
     DELIVERY_LOCAL_SERVER,
     ORIGIN_API,
@@ -35,7 +36,6 @@ from kci import (
     Kbuilds,
     Outcome,
 )
-from kcilib.core import ledger
 from kcilib.table import buildref, jobspec
 
 from .support import check
@@ -146,7 +146,7 @@ def test_job_run_matches_the_table_line():
         seen.append((json.dumps(definition, sort_keys=True), node_id, source))
         return "http://cb", "tok", {"status": 2, "results": {}}
 
-    import kci.jobs as kci_jobs
+    import kcilib.model.jobs as kci_jobs
     real_run_node = kci_jobs._jobrun.run_node
     kci_jobs._jobrun.run_node = fake_run_node
     try:
@@ -184,7 +184,7 @@ def test_jobs_runs_a_row_and_records_it():
     with tempfile.TemporaryDirectory() as tmp:
         real_env = os.environ.get(ledger.RESULTS_DIR_ENV)
         os.environ[ledger.RESULTS_DIR_ENV] = os.path.join(tmp, "results")
-        import kci.jobs as kci_jobs
+        import kcilib.model.jobs as kci_jobs
         real_run = kci_jobs._jobrun.run_node
         calls = []
 

@@ -9,7 +9,7 @@ No run lives here any more.  This module used to carry run_job() and
 outcome_from(), the old shell over kcilib.run.jobrun.run_node; the interface
 layer (kci.Jobs and Job.run) took that over on 2026-09-18, and the shell was
 left behind with no caller but a guard, so it was deleted when the object
-layer moved out to scripts/kci/ - rather than kept as dead weight in the
+layer moved out to kcilib/model/ - rather than kept as dead weight in the
 implementation.
 """
 

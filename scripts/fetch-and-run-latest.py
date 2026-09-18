@@ -29,7 +29,9 @@ from urllib.parse import unquote, urlparse
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _SCRIPT_DIR)
 
-from kci import (
+from kcilib import repo_root
+from kcilib.core import config, layout
+from kcilib.model import (
     DELIVERY_LOCAL_SERVER,
     SOURCE_FETCH,
     Job,
@@ -37,8 +39,6 @@ from kci import (
     Kbuilds,
     KernelCINode,
 )
-from kcilib import repo_root
-from kcilib.core import config, layout
 from kcilib.run import artifacts, bake, delivery, judge
 from kcilib.table import jobspec
 

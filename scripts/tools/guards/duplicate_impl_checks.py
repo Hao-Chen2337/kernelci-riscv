@@ -74,7 +74,7 @@ _RUN_CALLERS = (
     # kci/jobs.py: the one-shot line's console seam (_fetch_console) and its
     # command step (_oneshot_run_command).  Two call sites, one executor: both
     # call the owner's function, and neither assembles an argv of its own.
-    os.path.join(_SCRIPTS, "kci", "jobs.py"),
+    os.path.join(_SCRIPTS, "kcilib", "model", "jobs.py"),
 )
 _POST_RESULT_CALLERS = (os.path.join(_SCRIPTS, "kcilib", "sink.py"),)
 _WRITE_RESULT_CALLERS = (
@@ -82,7 +82,7 @@ _WRITE_RESULT_CALLERS = (
     os.path.join(_SCRIPTS, "kcilib", "run", "jobrun.py"),
     # The interface layer's naming of a run (kci.Job.record), which is how the
     # fetch entry point files its record without writing the ledger itself.
-    os.path.join(_SCRIPTS, "kci", "jobs.py"),
+    os.path.join(_SCRIPTS, "kcilib", "model", "jobs.py"),
 )
 
 # Dotted spellings of the ONE function behind each symbol, as a call site
