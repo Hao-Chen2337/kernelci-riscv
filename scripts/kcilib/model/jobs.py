@@ -338,8 +338,8 @@ def _is_definition(definition: object) -> bool:
 def _definition_timeout(definition: dict) -> int | None:
     """tests[0].timeout_s, or None when the definition carries none.
 
-    None means "take TEST_TIMEOUTS for the test", the same default a locally
-    listed job gets from JobSpec.
+    None means "take policy's timeout for the test", the same default a locally
+    listed job gets (Job.__init__ reads the same table).
     """
     first = (definition.get("tests") or [{}])[0]
     timeout = first.get("timeout_s")
