@@ -137,7 +137,7 @@ def _run_config(overrides: dict[str, object]) -> _config.RunConfig:
 
 
 def _source_for(origin: str) -> str:
-    """The BuildRef *source* column for a Job's origin."""
+    """The index's coarse *source* column for a Job's origin."""
     return "official" if origin in _OFFICIAL_ORIGINS else "local"
 
 
