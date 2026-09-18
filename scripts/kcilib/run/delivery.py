@@ -22,15 +22,15 @@ import urllib.request
 from urllib.parse import unquote, urlparse
 
 from kcilib import repo_root
-from kcilib.core import ports
+from kcilib.core import layout, ports
 from kcilib.run import artifacts
 
 # Repo layout from this file's own location: walk up to run.sh
 # (kcilib.repo_root), never count dirname() levels - a stale count puts
 # downloads and the artifact server's document root under scripts/.
 ROOT = repo_root()
-WORK_ENV = os.path.join(ROOT, "work", "env")
-WORK_SERVE = os.path.join(ROOT, "work", "serve")
+WORK_ENV = os.fspath(layout.env())
+WORK_SERVE = os.fspath(layout.serve())
 MANIFEST_PATH = os.path.join(WORK_ENV, ".manifest.json")
 
 BUILD_ID_FILE = "build-id.json"

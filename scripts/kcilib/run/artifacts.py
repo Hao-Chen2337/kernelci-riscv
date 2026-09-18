@@ -306,8 +306,8 @@ def kselftest_cache_dir():
     so a per-build tarball is downloaded once and reused across re-runs.  Lives
     in the gitignored work/ tree, in its own subdirectory beside the bake cache.
     """
-    from kcilib import repo_root
-    return os.path.join(repo_root(), "work", "env", "kselftest")
+    from kcilib.core import layout
+    return os.fspath(layout.kselftest_cache())
 
 
 def kselftest_kvm_tests(url, cache_dir=None, max_size=MAX_DOWNLOAD_SIZE):

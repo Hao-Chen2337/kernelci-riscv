@@ -8,6 +8,7 @@ from . import (
     downloads,
     interface_checks,
     jobrun_checks,
+    layout_policy_checks,
     model_checks,
     poll_checks,
     ports,
@@ -67,7 +68,11 @@ def main():
     references.test_layers_import_downward_only()
     retention_checks.test_retention_plan_and_prune()
     references.test_shell_scripts_reference_live_modules()
+    layout_policy_checks.test_retention_numbers_come_from_policy()
     config_drift_parser.test_config_drift_parser()
     worker_lock.test_worker_lock()
+    # Last on purpose: check() exits on the first failure, and this one has a
+    # whole-tree scope, so a red verdict here must not hide the checks above.
+    layout_policy_checks.test_new_writes_go_through_layout()
     print("\nALL GUARD CHECKS PASSED")
     return 0

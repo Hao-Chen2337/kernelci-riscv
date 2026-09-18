@@ -31,7 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from kcilib import api, repo_root
-from kcilib.core import ledger
+from kcilib.core import layout, ledger
 from kcilib.table import localrun
 from kcilib.table.buildindex import BuildIndex
 from kcilib.table.jobspec import DEFAULT_TESTS
@@ -137,7 +137,7 @@ def _config_drift(builds):
     each side's commit.  None when there are not two files to compare.  Pure and
     read-only: the dashboard never downloads a config itself.
     """
-    root = os.path.join(repo_root(), "work", "downloads")
+    root = os.fspath(layout.downloads())
     if not os.path.isdir(root):
         return None
     commit_of = {b.build_id: (b.commit or "")[:12] for b in builds}
@@ -582,7 +582,7 @@ def _spawn_action(name, arg):
         command += [f"--{flag}", arg]
     Handler._action_seq += 1
     ident = f"{name}-{int(time.time())}-{Handler._action_seq}"
-    log_dir = os.path.join(repo_root(), "work", "logs", "actions")
+    log_dir = os.path.join(layout.logs(), "actions")
     os.makedirs(log_dir, exist_ok=True)
     rel_log = os.path.join("work", "logs", "actions", f"{ident}.log")
     with open(os.path.join(repo_root(), rel_log), "wb") as handle:

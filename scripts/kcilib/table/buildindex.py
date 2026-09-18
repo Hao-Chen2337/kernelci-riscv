@@ -14,11 +14,12 @@ import os
 import sqlite3
 
 from kcilib import repo_root
+from kcilib.core import layout
 from kcilib.table.buildref import ARTIFACT_KEYS, BuildRef
 
 # Walked up from the package (kcilib.repo_root), never a fixed dirname() depth.
 ROOT = repo_root()
-DEFAULT_PATH = os.path.join(ROOT, "work", "builds.db")
+DEFAULT_PATH = os.fspath(layout.index())
 
 _COLUMNS = ("build_id", "tree", "branch", "commit", "describe", "created",
             "node_id", "source", "artifacts")

@@ -20,6 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))  # scripts/ holds kcilib
 
 from kcilib import repo_root
+from kcilib.core import layout
 
 # Walked up to run.sh, never counted: this file lives in scripts/tools/, and a
 # counted root rendered every @KCI_ROOT@ as .../scripts, so the stack's settings
@@ -77,7 +78,7 @@ def main():
     )
     parser.add_argument(
         "--output",
-        default=os.path.join(ROOT, "work", "local-callback.toml"),
+        default=os.fspath(layout.generated("local-callback.toml")),
         help="rendered file (default: work/local-callback.toml)",
     )
     parser.add_argument(

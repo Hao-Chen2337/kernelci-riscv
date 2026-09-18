@@ -23,7 +23,8 @@ import tarfile
 import time
 from datetime import datetime, timezone
 
-from kcilib import repo_root
+from kcilib.core import layout
+from kcilib.core.policy import POLICY
 from kcilib.run.artifacts import MAX_DOWNLOAD_SIZE, download
 
 
@@ -39,10 +40,13 @@ def stamp(message):
 
 
 DISK_SIZE = "4G"  # ext4 image size; unrelated to QEMU memory
-# Each entry is a full DISK_SIZE image, so the cache is bounded by entry count;
-# three cover the real input sets (no modules, modules, another rootfs).
-BAKE_CACHE_MAX_ENTRIES = 3
-BAKE_CACHE_TMP_AGE_S = 3600  # a killed bake's .tmp is ignored, then aged out
+# Both numbers are the policy table's (Policy.baked_images_keep and
+# Policy.seconds_bake_tmp_age), re-exported under the names callers and the
+# guard suite read.  Each entry is a full DISK_SIZE image, so the cache is
+# bounded by entry count; three cover the real input sets (no modules, modules,
+# another rootfs).
+BAKE_CACHE_MAX_ENTRIES = POLICY.baked_images_keep
+BAKE_CACHE_TMP_AGE_S = POLICY.seconds_bake_tmp_age  # a killed bake's .tmp is ignored, then aged out
 
 
 def _safe_member(member):
@@ -168,10 +172,11 @@ def bake_cache_dir():
     override = os.environ.get("KCI_BAKE_CACHE_DIR", "").strip()
     if override:
         return override
-    # repo_root() walks up to run.sh: a fixed dirname() count put the cache in
-    # scripts/work/env/baked.  realpath, not abspath, so a symlinked launcher
-    # does not place a multi-GB cache next to the symlink.
-    return os.path.join(repo_root(), "work", "env", "baked")
+    # layout.cache() is the one owner of this path, and its root() goes through
+    # repo_root(), which walks up to run.sh: a fixed dirname() count put the
+    # cache in scripts/work/env/baked.  realpath, not abspath, so a symlinked
+    # launcher does not place a multi-GB cache next to the symlink.
+    return os.fspath(layout.cache())
 
 
 def cache_dir_writable(cachedir):

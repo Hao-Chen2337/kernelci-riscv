@@ -35,10 +35,14 @@ import shutil
 import sys
 import time
 
+from kcilib.core.policy import POLICY
+
 # The newest builds kept when the caller does not say.  run.sh's --keep is the
 # caller-facing spelling and must stay >= 1: the newest build is the one a local
-# stack serves.
-DEFAULT_KEEP = 5
+# stack serves.  The number is core.policy's decision, not this module's: only
+# its source changed, and the name stays DEFAULT_KEEP because run.sh, the tests
+# and the policy table's own comment refer to it by that name.
+DEFAULT_KEEP = POLICY.downloads_keep
 
 
 def served_build(build_env):

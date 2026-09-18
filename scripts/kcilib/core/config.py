@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from kcilib import repo_root
+from kcilib.core import layout
+from kcilib.core.policy import POLICY
 
 __all__ = [
     "BASE_URI", "DEFAULT_MAX_TIMEOUT", "DEFAULT_PLATFORM", "DEFAULT_RUNTIME",
@@ -29,31 +31,35 @@ __all__ = [
 # dependency table, and the reason "does core depend on the execution layer?" had
 # a yes answer.  kcilib.run.jobrun imports them from here and keeps re-exporting
 # the same names, so jobrun.MIN_TIMEOUT / jobrun.LOG_ARCHIVE_KEEP still resolve.
-MIN_TIMEOUT = 60  # floor: below this tuxrun cannot even boot a guest
-LOG_ARCHIVE_KEEP = 200  # newest archived consoles kept in LOG_DIR
+# The numbers themselves are NOT decided here any more: they are read from
+# core.policy, the one owner of "how many / how big / how long" (the values are
+# unchanged; only their source is).  Re-exporting the same names is what keeps
+# jobrun's re-export and the guards that read them working.
+MIN_TIMEOUT = POLICY.seconds_min_job_timeout  # floor: below this tuxrun cannot even boot a guest
+LOG_ARCHIVE_KEEP = POLICY.console_logs_keep  # newest archived consoles kept in LOG_DIR
 
 # The repository root, not the CWD, so "the logs are in work/logs" holds
 # whatever directory the worker was started from.
 REPO_ROOT = repo_root()
-LOG_DIR = os.path.join(REPO_ROOT, "work", "logs")
+LOG_DIR = os.fspath(layout.logs())
 
 BASE_URI = "https://api.kernelci.org"
-DEFAULT_PLATFORM = "qemu-riscv64"
-DEFAULT_RUNTIME = "pull-labs-riscv"
-DEFAULT_TUXRUN = "tuxrun"
+DEFAULT_PLATFORM = POLICY.platform
+DEFAULT_RUNTIME = POLICY.runtime
+DEFAULT_TUXRUN = POLICY.tuxrun_bin
 DEFAULT_STATE_FILE = "riscv-pull-worker-state.json"
 # Ceiling for a job definition's timeout_s, matching the pull-labs runtime's own
 # timeout; the floor is MIN_TIMEOUT above.
-DEFAULT_MAX_TIMEOUT = 7200
+DEFAULT_MAX_TIMEOUT = POLICY.seconds_max_job_timeout
 DEFAULT_MIN_TIMEOUT = MIN_TIMEOUT
-MAX_DOWNLOAD_MB = 4096
-DEFAULT_POLL_PERIOD = 30
-DEFAULT_MAX_RETRIES = 5
-DEFAULT_CONTAINER_RUNTIME = ""
-DEFAULT_ROOTFS = ""
-DEFAULT_CPU = "rv64,v=true,ssnpm=true"
-DEFAULT_API_CONFIG_NAME = "docker-host"
-DEFAULT_STORAGE_CONFIG_NAME = "docker-host"
+MAX_DOWNLOAD_MB = POLICY.bytes_max_download >> 20
+DEFAULT_POLL_PERIOD = POLICY.seconds_poll_period
+DEFAULT_MAX_RETRIES = POLICY.poll_retries_max
+DEFAULT_CONTAINER_RUNTIME = POLICY.container_runtime
+DEFAULT_ROOTFS = POLICY.rootfs_override
+DEFAULT_CPU = POLICY.cpu
+DEFAULT_API_CONFIG_NAME = POLICY.api_config_name
+DEFAULT_STORAGE_CONFIG_NAME = POLICY.storage_config_name
 
 
 def default_cpu():

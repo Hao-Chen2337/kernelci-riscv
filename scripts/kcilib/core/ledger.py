@@ -19,12 +19,16 @@ import os
 import time
 
 from kcilib import repo_root
+from kcilib.core import layout
 
 # Derived from this file's own location, never a hardcoded path: work/ is
 # gitignored and regenerable.  repo_root() walks up to run.sh - a fixed
 # dirname() count landed in scripts/.
 ROOT = repo_root()
-RESULTS_DIR = os.path.join(ROOT, "work", "results")
+# layout owns where records live; RESULTS_DIR is that answer with the override
+# left out, because a module constant is frozen at import and has never followed
+# $KCI_RESULTS_DIR - the call-time answer is results_dir() below.
+RESULTS_DIR = os.fspath(layout.default_results())
 
 # Overridable for testing, not deployment: ./run.sh verify drives a real
 # run_node() that would otherwise leave records in the repository's work/ tree.
@@ -34,7 +38,10 @@ RESULTS_DIR_ENV = "KCI_RESULTS_DIR"
 
 def results_dir():
     """The directory records live in: work/results, or $KCI_RESULTS_DIR."""
-    return os.environ.get(RESULTS_DIR_ENV) or RESULTS_DIR
+    # layout.results() is the one owner of that path and reads the same variable.
+    # A set override is returned as it was given rather than pathlib-normalised,
+    # so this function's value is byte for byte what it has always been.
+    return os.environ.get(RESULTS_DIR_ENV) or os.fspath(layout.results())
 
 # The one place the record's key set is defined: write_result() fills what a
 # caller leaves out and refuses anything else, so a typo cannot drop a field.
