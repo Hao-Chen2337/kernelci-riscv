@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Fetch the newest production riscv kbuild and run it locally with tuxrun.
 
-No local stack, node or token needed: the build comes from the production API and
-kcilib.run.delivery owns how its artifacts reach tuxrun.
+No local stack, node or token needed: the build is discovered on the production
+API through the interface layer and the run itself is one kci.Job.run() call
+whose "local_server" delivery is this line's - kcilib.run.delivery owns how the
+artifacts reach tuxrun (downloaded and size-checked here, then served to the
+container from this host) and kcilib.run.judge owns the verdict.
 Exit status IS the verdict (0 pass, 1 test failure, 3 infrastructure error) and
-every outcome is recorded in work/results/<build-id>/<test>.json.
+every outcome is recorded in work/results/<build-id>/<test>.json with
+source="fetch".
 Rationale: docs/code-notes/W2b-entrypoints.md.
 """
 
@@ -13,25 +17,35 @@ import json
 import os
 import shlex
 import shutil
-import socket
 import sys
 import tempfile
 import time
 from urllib.parse import unquote, urlparse
 
-API = "https://api.kernelci.org"
-JOB = "kbuild-gcc-14-riscv"
-TESTS = {"boot": [], "kselftest-riscv": ["kselftest-riscv"], "kselftest-kvm": ["kselftest-kvm"]}
-
-# Everything this path and the pull-lab worker MUST agree on lives in
-# scripts/kcilib/ (TAP parser, tuxrun command line, artifact transfers, ledger).
-# Resolved through this file's own directory, so any CWD works.
+# The interface layer (scripts/kci) is what this entry point is written
+# against; everything below it - the transfers, the bake, the tuxrun command
+# line, the judgement and the ledger - is kcilib's.  Resolved through this
+# file's own directory, so any CWD works.
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _SCRIPT_DIR)
 
-from kcilib.api import KernelCI
-from kcilib.core import config, ledger, params
-from kcilib.run import artifacts, bake, delivery, judge, runner
+from kci import (
+    DELIVERY_LOCAL_SERVER,
+    SOURCE_FETCH,
+    Job,
+    KbuildPuller,
+    Kbuilds,
+    KernelCINode,
+)
+from kcilib import repo_root
+from kcilib.core import config, layout
+from kcilib.run import artifacts, bake, delivery, judge
+from kcilib.table import jobspec
+
+API = "https://api.kernelci.org"
+JOB = "kbuild-gcc-14-riscv"
+# The --test choices, in the order --help lists them (sorted).
+TESTS = ("boot", "kselftest-kvm", "kselftest-riscv")
 
 TUXRUN = os.environ.get("TUXRUN_BIN", shutil.which("tuxrun")
                         or os.path.expanduser("~/.local/bin/tuxrun"))
@@ -49,51 +63,46 @@ DEFAULT_SERVE_IMAGE = os.path.join(WORK_SERVE, "Image")
 # Rootfs for --provision-only (./run.sh provision).  Kernel and modules are NOT
 # pinned here but discovered from the newest production kbuild node: storage
 # prunes old builds (a pinned hash served modules.tar.xz but 404'd on its Image).
-DEFAULT_ROOTFS_URL = (
-    "https://storage.kernelci.org/images/rootfs/debian/"
-    "trixie-kselftest/20260606.0/riscv64/full.rootfs.tar.xz")
+# The URL has one owner - the artifact the job definitions carry themselves.
+DEFAULT_ROOTFS_URL = jobspec.ROOTFS_URL
 
 # The verdict vocabulary is kcilib.run.judge's - exit statuses (0 pass, 1 test
 # failure, 3 infrastructure), the TAP parser, the timeout detail and the boot
 # evidence - so this record and the worker's callback are one verdict.
 
 
-def pick_newest(job, api):
-    """Newest done/pass kbuild node (the API pages old-first: widen the window)."""
+def newest_node(job: str, api: str) -> KernelCINode:
+    """The newest done/pass kbuild node of *job*, or exit 1 when there is none.
+
+    The API pages old-first, so the window widens 3 -> 7 -> 30 -> 180 days: an
+    empty page is not "no build".  kci.KbuildPuller asks the API (the same
+    filters this line has always sent); the done/pass filter --job has to keep
+    and the newest-by-created pick are this line's.
+    """
+    puller = KbuildPuller(api)
     for days in (3, 7, 30, 180):
-        since = (time.strftime(
-            "%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - days * 86400)))
-        items = [node for node in KernelCI(api).nodes(
-            kind="kbuild", name=job, created__gte=since, limit=200)
-            if node.get("state") == "done" and node.get("result") == "pass"]
-        if items:
-            items.sort(key=lambda i: i.get("created") or "", reverse=True)
-            return items[0]
+        since = time.strftime("%Y-%m-%dT%H:%M:%S",
+                              time.gmtime(time.time() - days * 86400))
+        found = [node for node in puller.find(kind="kbuild", name=job,
+                                              created__gte=since, limit=200)
+                 if node.state == "done" and node.result == "pass"]
+        if found:
+            return max(found, key=lambda node: node.created)
     sys.exit(f"no passing kbuild nodes for {job}")
 
 
-def default_build_artifacts(job, api):
-    """Kernel + modules URLs from the newest passing production kbuild node.
+def revision_of(node: KernelCINode) -> dict:
+    """The node's data.kernel_revision as the API served it ({} when it has none).
 
-    Both come from the SAME node on purpose: modprobe matches /lib/modules by
-    kernel release, so mixing builds makes every kvm test skip with "Cannot open
-    /dev/kvm".  Discovered, not pinned - storage prunes old builds.
+    build.env needs version, patchlevel and commit_tags and the ledger records
+    the whole revision (dashboard.py reads commit and branch out of it); a
+    build card keeps only what running a test needs of a build, so this reads
+    the node the way this line always has.
     """
-    node = pick_newest(job, api)
-    artifacts = node.get("artifacts") or {}
-    kernel_url = artifacts.get("kernel")
-    if not kernel_url:
-        sys.exit(f"newest {job} node {node.get('id')} carries no kernel artifact")
-    revision = (node.get("data") or {}).get("kernel_revision") or {}
-    print(f"newest {job}: {revision.get('describe', '?')} "
-          f"({(revision.get('commit') or '')[:12]}) id={node.get('id')}")
-    # The revision travels with the URLs: returning them alone let the seed keep
-    # its own hardcoded revision, so every node (and every ./run.sh report line)
-    # named a build nothing had booted.
-    return kernel_url, artifacts.get("modules"), revision
+    return (node.raw().get("data") or {}).get("kernel_revision") or {}
 
 
-# The nfsroot -> ext4 bake machinery is kcilib.run.bake now (imported, so its
+# The nfsroot -> ext4 bake machinery is kcilib.run.bake (imported, so its
 # guards and mkfs.ext4 command line cannot drift from the worker's); the manifest
 # cache shared with the kernel artifact entries is kcilib.run.delivery's.
 
@@ -157,10 +166,20 @@ def provision_only(args):
                   or DEFAULT_ROOTFS_URL)
     revision = {}
     if not kernel_url:
-        # No pinned build hash: take kernel + modules from the newest passing build.
-        kernel_url, discovered_modules, revision = default_build_artifacts(
-            args.job, args.api_url)
-        modules_url = modules_url or discovered_modules
+        # No pinned build hash: take kernel + modules from the newest passing
+        # build.  Both come from the SAME node on purpose: modprobe matches
+        # /lib/modules by kernel release, so mixing builds makes every kvm test
+        # skip with "Cannot open /dev/kvm".
+        node = newest_node(args.job, args.api_url)
+        if not node.artifact("kernel"):
+            sys.exit(f"newest {args.job} node {node.node_id} carries no "
+                     f"kernel artifact")
+        card = Kbuilds().add(node)
+        kernel_url = card.kernel
+        modules_url = modules_url or card.modules
+        revision = revision_of(node)
+        print(f"newest {args.job}: {revision.get('describe', '?')} "
+              f"({(revision.get('commit') or '')[:12]}) id={node.node_id}")
     else:
         # A pinned kernel URL has no node to read a revision from: the caller
         # states it, or the seed has nothing to label its nodes with.
@@ -181,7 +200,8 @@ def provision_only(args):
     # including the revision: run-local-stack.sh seeds jobs from this file, so the
     # served kernel, the baked modules and the job definition cannot drift apart.
     build_dir = kernel_url.rsplit("/", 1)[0]
-    build_env = os.path.join(WORK_ENV, "build.env")
+    # The path is kcilib.core.layout's (it owns what lives in work/env).
+    build_env = os.fspath(layout.deployment_env())
     version = revision.get("version")
     if not isinstance(version, dict):
         # Either {"version": N, "patchlevel": N} or a bare int (N10): .get() on
@@ -229,133 +249,43 @@ def provision_only(args):
     return 0
 
 
-# Deliberately no local strip_ansi()/parse_tap() any more: that second, weaker
-# copy could look green when nothing had run (#23).  TAP parsing is
-# kcilib.run.judge.tap_summary(), reached through judge_run() below.
+# The judgement itself is kcilib.run.judge's, reached through the run this entry
+# point hands to kci: judge_run() over the console the run archived, so the
+# printed verdict, the record and the process status are one verdict.
 
 
+def print_tap(outcome, test):
+    """The TAP summary this line has always printed, off the run's own verdict.
 
-
-def write_result(node, test, verdict, exit_code, detail, out, summary):
-    """Record one (build, test, verdict) under work/results/<build>/<test>.json.
-
-    Written for EVERY outcome - a failed run is exactly the one worth having a
-    record of.  The file itself (path layout, tmp file + rename, fsync, the key
-    set) is kcilib.core.ledger's; the payload below is this script's naming.
+    The counts and the per-test results are kcilib.run.judge's reading of the
+    console this run archived (kci's local_server delivery judges it), so
+    nothing here reads the console a second time; this only lays them out.
     """
-    return ledger.write_result(node["id"], test, {
-        "build_created": node.get("created"),
-        "job": node.get("name") or "",
-        "source": "fetch",
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "verdict": verdict,
-        "exit_code": exit_code,
-        "detail": detail,
-        "revision": (node.get("data") or {}).get("kernel_revision") or {},
-        "artifacts_dir": os.path.relpath(out, ROOT),
-        "log": os.path.relpath(os.path.join(out, "tuxrun.log"), ROOT),
-        "results": summary,
-    })
+    print(f"\n=== TAP summary ({test}) ===")
+    if outcome.per_test:
+        for name, result in outcome.per_test.items():
+            print(f"  {result:4s}  {name}")
+        summary = outcome.summary
+        print(f"  {summary['total']} test(s): "
+              f"{summary['total'] - summary['failed'] - summary['skipped']} pass, "
+              f"{summary['failed']} fail, {summary['skipped']} skip")
+    else:
+        tail = "\n".join((outcome.output or "").strip().splitlines()[-12:])
+        print("no TAP results; log tail:\n", tail)
 
 
-def run_once(args, run_config, node, out, record, rootfs):
-    """Download/verify this build's artifacts, serve them and run tuxrun once.
+def record_error(job, out, fields, detail):
+    """File the "error" record of a run that produced no verdict.
 
-    Returns the outcome dict (verdict, exit_code, detail, summary, per_test, log,
-    output).  Anything that prevents a verdict raises and the caller records it.
+    The key set, the layout and the write are kcilib.core.ledger's and the file
+    is written for every outcome - a failed run is exactly the one worth having
+    a record of.  A write that fails is reported and costs only the record.
     """
-    arts = node.get("artifacts") or {}
-    kernel_gz = os.path.join(out, "Image.gz")
-    kernel = os.path.join(out, "Image")
-    delivery.ensure_kernel_image(arts["kernel"], kernel_gz, kernel, record)
-    delivery.ensure_artifact(arts["kselftest_tar_xz"],
-                             os.path.join(out, "kselftest.tar.xz"), record,
-                             "kselftest.tar.xz", "kselftest")
-    modules = None
-    if args.test == "kselftest-kvm":
-        modules = os.path.join(out, "modules.tar.xz")
-        delivery.ensure_artifact(arts["modules"], modules, record,
-                                 "modules.tar.xz", "modules")
-    delivery.ensure_artifact(arts["_config"], os.path.join(out, ".config"),
-                             record, ".config", "kernel config")
-    delivery.save_artifact_record(out, record)
-    with open(os.path.join(out, "node.json"), "w") as f:
-        json.dump({k: node[k] for k in ("id", "name", "created", "data")}, f,
-                  indent=1)
-
-    # The default rootfs used to be a hand-made 4GB file nothing generated: bake
-    # it on first use.  An explicit --rootfs is used verbatim, never generated.
-    if args.rootfs is None and not os.path.exists(rootfs):
-        rootfs_url = (args.rootfs_url or os.environ.get("KCI_ROOTFS_URL")
-                      or DEFAULT_ROOTFS_URL)
-        manifest = delivery.load_manifest()
-        provision_rootfs(rootfs_url, arts.get("modules"), rootfs, manifest)
-        delivery.save_manifest(manifest)
-
-    gateway = args.gateway
-    if not gateway:
-        try:
-            gateway = socket.gethostbyname("host.docker.internal")
-        except OSError:
-            gateway = "172.17.0.1"
-    base = f"http://{gateway}:{args.serve_port}"
     try:
-        server = delivery.start_artifact_server(out, args.serve_port, node,
-                                                kernel)
-    except delivery.ArtifactServerError as error:
-        # The library raises; only an entry point decides a process exit status.
-        # sys.exit(str(error)) is exactly what delivery.py used to do, so the
-        # stderr text, the infra record main() writes and status 1 are unchanged.
-        sys.exit(str(error))
-    log_path = os.path.join(out, "tuxrun.log")
-    try:
-        # kcilib.core.params.cpu_for(): the KVM jobs need the H extension.
-        parameters = [f"cpu={params.cpu_for(run_config.cpu, args.test)}"]
-        if args.test != "boot":
-            parameters.append(f"KSELFTEST={base}/kselftest.tar.xz")
-            # Exclusion, not an allow-list: everything the build's kselftest
-            # tarball ships minus KVM_SKIP_TESTS, listed from the tarball already
-            # fetched into out/ above.  --kvm-full skips this (whole collection,
-            # no TST_CASENAME).
-            if (args.test == "kselftest-kvm" and modules
-                    and not run_config.kvm_full):
-                names = params.kvm_tests_to_run(
-                    artifacts.tarball_executables(
-                        os.path.join(out, "kselftest.tar.xz"), subdir="kvm"))
-                if names:
-                    parameters.append(
-                        "TST_CASENAME=" + " ".join(f"kvm:{n}" for n in names))
-        argv = runner.build_tuxrun_argv(
-            tuxrun_bin=run_config.tuxrun_bin,
-            runtime=run_config.container_runtime, device="qemu-riscv64",
-            kernel=f"{base}/Image", boot_args="rw",
-            rootfs=f"file://{os.path.abspath(rootfs)}",
-            modules=modules and f"{base}/modules.tar.xz",
-            tests=TESTS[args.test], parameters=parameters)
-        print("running:", " ".join(argv))
-        # cwd and stream_separator are part of the console this writes: tuxrun runs
-        # from the caller's directory and its stdout/stderr are concatenated with
-        # NOTHING between them, unlike the worker's archived consoles.
-        proc = runner.run_tuxrun(argv, timeout=judge.TUXRUN_TIMEOUT,
-                                 log_path=log_path, cwd=None,
-                                 stream_separator="")
-        returncode = proc.returncode
-        output = proc.stdout
-    finally:
-        delivery.stop_artifact_server(server)
-    # One verdict, from kcilib.run.judge - the same TAP parser and exit statuses
-    # the worker's callback reports.
-    verdict, exit_code, detail, summary, per_test = judge.judge_run(
-        returncode, output, args.test)
-    return {
-        "verdict": verdict,
-        "exit_code": exit_code,
-        "detail": detail,
-        "summary": summary,
-        "per_test": per_test,
-        "log": log_path,
-        "output": output,
-    }
+        job.record(out, verdict=judge.VERDICT_ERROR, exit_code=judge.EXIT_INFRA,
+                   detail=detail, source=SOURCE_FETCH, fields=fields)
+    except OSError as write_error:
+        print(f"Warning: could not write {job.record_path()}: {write_error}")
 
 
 def main():
@@ -412,59 +342,83 @@ def main():
     rootfs = args.rootfs or DEFAULT_ROOTFS
     # The run-scoped half of this command line, in the SAME object the worker
     # passes around (kcilib.core.config.RunConfig): the two entry points cannot
-    # describe the same run differently field by field.
+    # describe the same run differently field by field.  --rootfs is handed over
+    # as the file:// URL tuxrun gets, and --out-dir is the run's workspace root.
     run_config = config.RunConfig(
         tuxrun_bin=TUXRUN,
         cpu=args.cpu,
         kvm_full=args.kvm_full,
         container_runtime=args.container_runtime,
-        rootfs=args.rootfs or "",
+        rootfs=f"file://{os.path.abspath(rootfs)}",
         output_dir=args.out_dir,
     )
 
-    node = pick_newest(args.job, args.api_url)
-    kr = (node.get("data") or {}).get("kernel_revision") or {}
-    print(f"newest {args.job}: {kr.get('describe', '?')} "
-          f"({kr.get('commit', '')[:12]}) {node.get('created')} id={node['id']}")
+    node = newest_node(args.job, args.api_url)
+    revision = revision_of(node)
+    print(f"newest {args.job}: {revision.get('describe', '?')} "
+          f"({revision.get('commit', '')[:12]}) {node.created} id={node.node_id}")
 
-    out = args.out_dir or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "work", "downloads", node["id"])
+    # The per-build download/serve directory.  Spelled the way this line has
+    # always printed it ("<repo>/scripts/../work/downloads/<id>", the same
+    # directory kcilib.core.layout names as work/downloads): people read that
+    # line and compare it, so the root comes from kcilib.repo_root() and the
+    # rest is unchanged.
+    out = args.out_dir or os.path.join(repo_root(), "scripts", "..", "work",
+                                       "downloads", node.node_id)
     os.makedirs(out, exist_ok=True)
-    record = delivery.load_artifact_record(out)
-    result_path = ledger.result_path(node["id"], args.test)
+    # The node as the API served it: kcilib.core.retention reads this file to
+    # tell which build a download directory holds, and no card carries the whole
+    # node.
+    raw = node.raw()
+    with open(os.path.join(out, "node.json"), "w") as handle:
+        json.dump({key: raw[key] for key in ("id", "name", "created", "data")},
+                  handle, indent=1)
 
+    card = Kbuilds().add(node)
+    # The default rootfs used to be a hand-made 4GB file nothing generated: bake
+    # it on first use (the run layer bakes a tarball rootfs, not this one).  An
+    # explicit --rootfs is used verbatim, never generated.
+    if args.rootfs is None and not os.path.exists(rootfs):
+        rootfs_url = (args.rootfs_url or os.environ.get("KCI_ROOTFS_URL")
+                      or DEFAULT_ROOTFS_URL)
+        manifest = delivery.load_manifest()
+        provision_rootfs(rootfs_url, card.modules, rootfs, manifest)
+        delivery.save_manifest(manifest)
+
+    # One test on one build: kcilib.run.jobrun runs it, kcilib.run.delivery
+    # serves its artifacts and kcilib.run.judge decides it - this line only says
+    # which build, which test and whose record it is.
+    job = Job(card.build_id, args.test, artifacts=dict(card.artifacts),
+              build=card)
+    fields = {
+        "job": node.name,
+        "build_created": node.created,
+        "revision": revision,
+    }
     try:
-        outcome = run_once(args, run_config, node, out, record, rootfs)
+        outcome = job.run(config=run_config, delivery=DELIVERY_LOCAL_SERVER,
+                          source=SOURCE_FETCH, node_id=node.node_id,
+                          serve_port=args.serve_port, gateway=args.gateway,
+                          out_dir=out, record_fields=fields)
     except BaseException as error:
-        # Anything that stops the run before a verdict (stale artifact server,
-        # truncated download, Ctrl-C) is recorded too: a failed run needs its record.
-        try:
-            write_result(node, args.test, judge.VERDICT_ERROR,
-                         judge.EXIT_INFRA,
-                         f"{type(error).__name__}: {error}", out, None)
-        except OSError as write_error:
-            print(f"Warning: could not write {result_path}: {write_error}")
+        # Anything that stops the run before a verdict (a truncated download, a
+        # bake that failed, Ctrl-C) is recorded too: a failed run needs its
+        # record.
+        record_error(job, out, fields, f"{type(error).__name__}: {error}")
         raise
+    if not outcome.started:
+        # The artifact server refused to start, so no run happened: that is not
+        # a verdict.  This line has always put that text on stderr with status
+        # 1, and filed it as an infra "error" under the SystemExit that carried
+        # it - the wording below is that record's.
+        record_error(job, out, fields, f"SystemExit: {outcome.detail}")
+        sys.exit(outcome.detail)
 
-    print(f"\n=== TAP summary ({args.test}) ===")
-    if outcome["per_test"]:
-        for name, result in outcome["per_test"].items():
-            print(f"  {result:4s}  {name}")
-        summary = outcome["summary"]
-        print(f"  {summary['total']} test(s): "
-              f"{summary['total'] - summary['failed'] - summary['skipped']} pass, "
-              f"{summary['failed']} fail, {summary['skipped']} skip")
-    else:
-        tail = "\n".join(outcome["output"].strip().splitlines()[-12:])
-        print("no TAP results; log tail:\n", tail)
-
-    write_result(node, args.test, outcome["verdict"],
-                 outcome["exit_code"], outcome["detail"], out,
-                 outcome["summary"])
-    print(f"\nverdict: {outcome['verdict'].upper()} - {outcome['detail']}")
+    print_tap(outcome, args.test)
+    print(f"\nverdict: {outcome.verdict.upper()} - {outcome.detail}")
     print(f"log kept at: {out}")
-    print(f"result record: {result_path}")
-    return outcome["exit_code"]
+    print(f"result record: {outcome.record}")
+    return outcome.exit_code
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from . import (
     callbacks,
     config_drift_parser,
     downloads,
+    duplicate_impl_checks,
     interface_checks,
     jobrun_checks,
     layout_policy_checks,
@@ -74,5 +75,10 @@ def main():
     # Last on purpose: check() exits on the first failure, and this one has a
     # whole-tree scope, so a red verdict here must not hide the checks above.
     layout_policy_checks.test_new_writes_go_through_layout()
+    # The same reason, three times over: each of these reads the whole tree, so
+    # they run after every check that reads behaviour.
+    duplicate_impl_checks.test_tuxrun_has_one_command_line_and_one_executor()
+    duplicate_impl_checks.test_results_leave_by_one_exit()
+    duplicate_impl_checks.test_ledger_has_one_writer()
     print("\nALL GUARD CHECKS PASSED")
     return 0

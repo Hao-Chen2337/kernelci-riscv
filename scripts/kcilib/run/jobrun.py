@@ -455,7 +455,12 @@ def run_node(node, run_config, node_id=None, source=SOURCE_WORKER):
         error_msg=error_msg,
     )
     # Filed next to the one-shot runner's rows, before the caller posts, so a
-    # callback that never lands still leaves a record of what ran.
+    # callback that never lands still leaves a record of what ran.  The one-shot
+    # runner then re-files it under its own line's names (kci.jobs.Job.record):
+    # its verdict comes from kcilib.run.judge over the console, not from this
+    # body, so it cannot be told before the run and cannot be one write.  Both
+    # writes go through kcilib.core.ledger.write_result - one recorder, two
+    # namings, and only the one-shot line re-files (guarded).
     record = record_result(node, node_id, body, tap, archived, source=source)
     if record:
         stamp(f"{node_id or 'job'}: recorded in {_relative_to_repo(record)}")

@@ -6,6 +6,12 @@ A sink is a name + a switch (wants) + one delivery (deliver); sinks_for() is the
 only place that decides, and it decides from the job definition.  The ledger is
 unconditional, the callback only when the definition carries callback.url.
 
+deliver() hands one result to a set of sinks; deliver_report() is the same for
+the worker line (kcilib.run.poll), whose result already exists when it is handed
+over and may not be dropped - its docstring is where that one difference is
+spelled out.  Both lines reach post_result() through CallbackSink, so neither
+caller holds an idea of its own about where a result goes.
+
 Rationale: docs/code-notes/A-sink-source-dashboard.md.
 """
 
@@ -111,3 +117,46 @@ def deliver(sinks, definition, outcome=None, report=None):
         delivered[item.name] = item.deliver(
             definition, outcome=outcome, report=report)
     return delivered
+
+
+def deliver_report(report, definition=None):
+    """Deliver one run's report (callback_url, token, body): the worker's line.
+
+    kcilib.run.poll's entry point, and the one thing it does beyond deliver():
+    a report that no chosen sink took is handed to the callback sink anyway.
+    The sink set is still sinks_for(*definition*) - the decision stays there -
+    and the callback sink is added only when it is not in it, which is exactly
+    the case "the definition carries no callback.url".  The ledger sink is first
+    and unchanged, as everywhere in this module: its delivery is the record
+    kcilib.run.jobrun.record_result wrote before run_node() returned this very
+    report, so that record is on disk before the callback is attempted - the
+    order this module promises.  (A worker report carries no record path, so
+    that delivery answers None here; it never writes a second time.)
+
+    Why that case may not be a skip here: a worker run has ALREADY happened by
+    the time its result is delivered, so the report is the only copy of it, and
+    the callback sink is the sink that can say why it cannot be posted - its own
+    post_result() raises CallbackMissingURLError, a CallbackTransientError -
+    which is what keeps the result pending and the node unseen.  Leaving the
+    sink out (what sinks_for() alone does for such a definition) would let the
+    worker stamp "result posted to the callback" for a result that went nowhere
+    and would mark the node seen.  No failure policy is decided here: 4xx and
+    5xx/network verdicts are post_result's and raise out of this unchanged.
+
+    *definition* is the job definition when the caller still has it (the run
+    that just finished).  A result re-posted from the state file has none, and
+    none is fetched for it - a re-post is not a re-run - so the report's own URL
+    is what the callback sink posts to: it is the value callback.callback_url()
+    read from that definition when the run happened.
+
+    The table line (scripts/local-jobs.py) is the other way round on purpose: a
+    run there without --callback-url is a ledger-only run, so it calls
+    sinks_for() and deliver() itself.
+
+    Returns deliver()'s {sink name: delivery result}.
+    """
+    sinks = (sinks_for(definition) if definition is not None
+             else (LedgerSink(),))
+    if report is not None and not has_callback(sinks):
+        sinks = (*sinks, CallbackSink())
+    return deliver(sinks, definition, report=report)

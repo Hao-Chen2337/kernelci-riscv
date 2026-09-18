@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-"""The poll loop: events API -> handle_event -> run_node -> post the result.
+"""The poll loop: events API -> handle_event -> run_node -> sink delivers.
 
 THIS IS THE ONLY LAYER ON THE RUN PATH THAT TALKS TO THE EVENTS API; running one
 is not its business, and neither is state.  The loop is handed the run function
@@ -11,12 +11,13 @@ the run path testable: a test injects a stub run_node rather than patching an
 import.
 
 StateFile owns the state file (cursor, seen set, pending reports: one document,
-written atomically after EVERY event); callback owns the post and the pending
-round trip; bake.stamp owns the progress lines.  "Result posted" is printed only
-after post_result() returned without raising, i.e. after a real 2xx, and the
-cursor advances only once a whole batch succeeded - --since seeds a state file
-that has no cursor, --ignore-state-cursor forces it.  The token is never
-persisted.  Nothing here reads a command line.
+written atomically after EVERY event); kcilib.sink owns where a result goes and
+the post that gets it there, so nothing here posts anything itself; callback
+owns the pending round trip; bake.stamp owns the progress lines.  "Result
+posted" is printed only after sink.deliver_report() returned without raising,
+i.e. after a real 2xx, and the cursor advances only once a whole batch succeeded
+- --since seeds a state file that has no cursor, --ignore-state-cursor forces
+it.  The token is never persisted.  Nothing here reads a command line.
 Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
@@ -26,13 +27,13 @@ from datetime import datetime, timedelta
 
 import requests
 
+from kcilib import sink
 from kcilib.core.state import StateFile
 from kcilib.run.bake import stamp
 from kcilib.run.callback import (
     CallbackPermanentError,
     CallbackTransientError,
     pending_entry,
-    post_result,
     report_from_pending,
 )
 
@@ -144,9 +145,11 @@ def handle_event(event, poll_config, run_config, reports, run_node):
 
     cached = reports.get(node_id)
     if cached:
-        callback_url, callback_token, body = cached
         try:
-            post_result(callback_url, callback_token, body)
+            # Re-posting, not re-running: the definition is not fetched again,
+            # so the sink layer is asked about the report's own URL - the one
+            # the definition named when the run happened.
+            sink.deliver_report(cached)
             del reports[node_id]
             print(f"{node_id}: cached result posted on retry")
             return True
@@ -183,9 +186,12 @@ def handle_event(event, poll_config, run_config, reports, run_node):
         traceback.print_exc()
         return True  # run_node converts its own failures; give up on the rest
 
-    callback_url, callback_token, body = report
     try:
-        post_result(callback_url, callback_token, body)
+        # The run's result goes where the sink layer says, from the definition
+        # it just ran (kcilib.sink.deliver_report): the ledger is already on
+        # disk - run_node wrote it before returning - and the callback carries
+        # a real 2xx or raises, so "posted" below cannot mean anything else.
+        sink.deliver_report(report, definition=job)
         stamp(f"{node_id}: result posted to the callback")
         return True
     except CallbackPermanentError as error:

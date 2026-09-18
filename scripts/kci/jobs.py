@@ -14,6 +14,13 @@ then serves them to the container over HTTP).  Which mode a run used, and
 which ledger source its record is filed under, are run() arguments, so the
 worker's line, the table's and the one-shot fetch line are one call with three
 answers.
+
+local_server is the one-shot line's mode, and it carries that line's own
+conventions with it: tuxrun is announced as "running:", run from the caller's
+directory, and judged by kcilib.run.judge - a one-shot run posts no callback,
+so its console is the evidence and its verdict is what its process status and
+its ledger record report.  A caller whose line names its records its own way
+passes record_fields, and the record on disk is then that line's record.
 """
 
 from __future__ import annotations
@@ -26,10 +33,12 @@ from dataclasses import replace as _replace
 
 from kcilib.core import config as _config
 from kcilib.core import ledger as _ledger
+from kcilib.core import params as _params
 from kcilib.run import artifacts as _artifacts
 from kcilib.run import callback as _callback
 from kcilib.run import delivery as _delivery
 from kcilib.run import jobrun as _jobrun
+from kcilib.run import judge as _judge
 from kcilib.run import runner as _runner
 from kcilib.table import buildref as _buildref
 from kcilib.table import jobspec as _jobspec
@@ -56,7 +65,7 @@ RUN_OVERRIDES = (
 # served from), not what the run is.  Jobs.run() forwards them to every job.
 RUN_ARGUMENTS = (
     "config", "delivery", "source", "node_id", "serve_port", "gateway",
-    "out_dir",
+    "out_dir", "record_fields",
 )
 
 # The two ways artifacts reach the guest, as kcilib.run.delivery names them.
@@ -219,6 +228,68 @@ def _fetch_console(argv, timeout=None, log_path=None, *, cwd=None,
                               cwd=cwd, stream_separator="")
 
 
+def _oneshot_run_command(captured: list):
+    """kcilib.run.jobrun.run_command as the one-shot line has always run it.
+
+    A replacement for the run layer's own command step, which prints
+    "Running:", works from the job's workspace and gives tuxrun the job's
+    timeout plus a grace.  The one-shot line has always printed "running:",
+    run tuxrun from the caller's directory and bounded it by
+    kcilib.run.judge.TUXRUN_TIMEOUT, because its console is read by people and
+    two runs of the same job must look the same (the definition's timeout is
+    the queue's, and this line has no queue).  The separator is not repeated
+    here: the runner it calls is the _fetch_console seam, which owns it.
+
+    *captured* receives the CompletedProcess, so this layer can judge the very
+    console the run archived (see _judged): what run_tuxrun returned is exactly
+    what it wrote to work/downloads/<node id>/tuxrun.log.
+    """
+    def run_command(cmd, timeout_s, workspace):
+        log_path = os.path.join(workspace, "tuxrun.log")
+        print("running:", " ".join(cmd))
+        proc = _jobrun.run_tuxrun(cmd, timeout=_judge.TUXRUN_TIMEOUT,
+                                  log_path=log_path, cwd=None)
+        captured.append(proc)
+        return proc.returncode, proc.stdout
+    return run_command
+
+
+def _judged(captured: list, test: str) -> tuple:
+    """The one-shot line's (verdict tuple, console), or (None, None).
+
+    kcilib.run.judge.judge_run over the console this run just captured: that
+    function is the one-shot line's judgement (its exit statuses, its detail
+    wording and its TAP), and a served run posts no report for the caller to
+    read instead.  Nothing to judge when no console was captured - a caller
+    that replaced the executor, a run that never reached it - and then the
+    report body is what is left to read.
+    """
+    if not captured:
+        return None, None
+    proc = captured[-1]
+    return _judge.judge_run(proc.returncode, proc.stdout, test), proc.stdout
+
+
+def _quiet(_message: str) -> None:
+    """The one-shot line's progress printer: it prints none.
+
+    kcilib.run.bake.stamp announces every stage as "[HH:MM:SS] <what>" - the
+    worker's and the table's console.  The one-shot line has never had those
+    lines (its own are the "running:", "log kept at:" and "result record:"
+    ones), and jobrun's docstring names the printer as re-bindable, so
+    local_server re-binds it for the length of its own run.
+    """
+
+
+def _repo_relative(path: str) -> str:
+    """*path* relative to the repository root, the way ledger rows spell paths.
+
+    The one-shot line has always filed "work/downloads/<id>" rather than an
+    absolute path, and kcilib.core.ledger's rows are relative to the same root.
+    """
+    return os.path.relpath(path, _ledger.ROOT)
+
+
 def _keep_console(archived: str | None, console: str) -> str | None:
     """Keep a run's console under both names, and return the one to report.
 
@@ -326,6 +397,7 @@ class Job:
             serve_port: int | None = None,
             gateway: str | None = None,
             out_dir: str | None = None,
+            record_fields: Mapping[str, object] | None = None,
             **overrides: object) -> Outcome:
         """Run this job once and report what came back.
 
@@ -341,7 +413,8 @@ class Job:
         "source" column, written verbatim, and *node_id* the name this run's
         console is archived under and the id run_node labels its lines with
         (the build id unless the caller names another one).  serve_port,
-        gateway and out_dir belong to local_server; in_container ignores them.
+        gateway, out_dir and record_fields belong to local_server; in_container
+        ignores them.
 
         Nothing here decides a process status: an Outcome is what the entry
         point turns into one.
@@ -352,7 +425,8 @@ class Job:
         definition = self._definition()
         if mode == DELIVERY_LOCAL_SERVER:
             return self._run_served(definition, run_config, source, named,
-                                    serve_port, gateway, out_dir)
+                                    serve_port, gateway, out_dir,
+                                    record_fields)
         url, token, body = _jobrun.run_node(
             definition, run_config, named, source=source)
         return self._outcome(
@@ -361,23 +435,32 @@ class Job:
 
     def _run_served(self, definition: dict, run_config: _config.RunConfig,
                     source: str, node_id: str, serve_port: int | None,
-                    gateway: str | None, out_dir: str | None) -> Outcome:
+                    gateway: str | None, out_dir: str | None,
+                    record_fields: Mapping[str, object] | None = None,
+                    ) -> Outcome:
         """Run once with the artifacts served from this host (local_server).
 
         Everything but the run is kcilib.run.delivery's: the downloads and the
         size each one is proven against, the server that is shown to serve
         THIS build before tuxrun starts, and stopping it again.  The
-        definition's URLs are the only thing rewritten - the run, the verdict
-        and the ledger record stay run_node's, exactly as in in_container, so
-        the two modes differ in one place.
+        definition's URLs are the only thing rewritten - the run and the record
+        run_node files for it stay its own, exactly as in in_container, so the
+        two modes differ in one place.
+
+        This is the one-shot line's mode, so it also carries that line's
+        console and its judgement: the runner is reached through _fetch_console
+        (nothing between tuxrun's stdout and stderr) and the command step is
+        _oneshot_run_command ("running:", the caller's directory, the line's
+        own timeout), while kcilib.run.judge judges the console the run
+        archived - a one-shot run has no callback to post a body to, so its
+        console is the evidence its verdict comes from.
 
         A server that cannot start is an "error" Outcome and not a traceback:
         kcilib.run.delivery raises ArtifactServerError because a resident
         caller exists, and turning a failure into a process status is an entry
         point's job, not this layer's (docs/REFACTOR-C-BRIEF.md §1.3).
         """
-        out = out_dir or os.path.join(_delivery.ROOT, "work", "downloads",
-                                      self.build_id)
+        out = self._out_dir(out_dir)
         os.makedirs(out, exist_ok=True)
         if not _artifacts_of(definition).get("kernel"):
             # No kernel URL means nothing to serve and no server worth
@@ -388,7 +471,8 @@ class Job:
             return self._outcome(
                 body, url, token,
                 log=_existing(self._log_path(run_config, node_id)),
-                record=self._record_path(definition, node_id))
+                record=self._record_path(definition, node_id),
+                out_dir=out, source=source, record_fields=record_fields)
         port = serve_port or DEFAULT_SERVE_PORT
         base = f"http://{_gateway(gateway)}:{port}"
         # A one-shot run keeps its console beside what it downloaded, never in
@@ -398,27 +482,120 @@ class Job:
         try:
             kernel = self._download(definition, out)
             server = _delivery.start_artifact_server(
-                out, port, self._server_node(definition, node_id), kernel)
+                out, port,
+                self._server_node(definition, node_id, record_fields), kernel)
         except _delivery.ArtifactServerError as error:
             return Outcome(VERDICT_ERROR, EXIT_ERROR, detail=str(error),
                            job=self)
+        # Which kvm tests to run is read off the tarball this run already
+        # downloaded, before run_node builds the argv (see _kvm_tests).
+        run_config = self._kvm_tests(definition, run_config, out)
         served = _served(definition, base)
+        captured: list = []
         try:
             # The console this line archives is the concatenation it always
-            # was, not the worker's newline-joined one (see _fetch_console).
+            # was, run by the command step it always ran: both seams are put
+            # back after the run, whatever the run did.
             real_runner = _jobrun.run_tuxrun
+            real_command = _jobrun.run_command
+            real_stamp = _jobrun.stamp
             _jobrun.run_tuxrun = _fetch_console
+            _jobrun.run_command = _oneshot_run_command(captured)
+            _jobrun.stamp = _quiet
             try:
                 url, token, body = _jobrun.run_node(
                     served, run_config, node_id, source=source)
             finally:
                 _jobrun.run_tuxrun = real_runner
+                _jobrun.run_command = real_command
+                _jobrun.stamp = real_stamp
         finally:
             _delivery.stop_artifact_server(server)
         console = _keep_console(self._log_path(run_config, node_id),
                                 os.path.join(out, CONSOLE_NAME))
+        judged, output = _judged(captured, self.test)
         return self._outcome(body, url, token, log=console,
-                             record=self._record_path(served, node_id))
+                             record=self._record_path(served, node_id),
+                             judged=judged, output=output, source=source,
+                             out_dir=out, record_fields=record_fields)
+
+    def _kvm_tests(self, definition: Mapping[str, object],
+                   run_config: _config.RunConfig,
+                   out: str) -> _config.RunConfig:
+        """*run_config* with the kvm tests this build has, read off its tarball.
+
+        A kselftest-kvm run excludes the tests the kernel never built by listing
+        the kvm/ entries of the build's kselftest tarball (kcilib.run.artifacts
+        and kcilib.core.params own both halves).  The one-shot line lists the
+        tarball it already downloaded for this run; the run layer would
+        otherwise download a second, cached copy of it
+        (work/env/kselftest/<key>.tar.xz) and announce that transfer on a
+        console that has never carried it.  --kvm-full is the whole collection
+        and an explicit kvm_tests is the caller's own list: both are left
+        alone, as is a run whose tarball is not on disk.
+        """
+        artifacts = _artifacts_of(definition)
+        if (self.test != "kselftest-kvm" or run_config.kvm_full
+                or run_config.kvm_tests or not artifacts.get("modules")):
+            return run_config
+        tarball = os.path.join(out, "kselftest.tar.xz")
+        if not os.path.isfile(tarball):
+            return run_config
+        names = _params.kvm_tests_to_run(
+            _artifacts.tarball_executables(tarball, subdir="kvm"))
+        return _replace(run_config, kvm_tests=names) if names else run_config
+
+    def _out_dir(self, out_dir: str | None) -> str:
+        """Where a one-shot run keeps its artifacts, console and server log.
+
+        The caller's directory when it named one (the one-shot line always
+        does: it prints that path), else this build's own download directory.
+        """
+        return out_dir or os.path.join(_delivery.ROOT, "work", "downloads",
+                                       self.build_id)
+
+    def record(self, out_dir: str | None = None, *, verdict: str,
+               exit_code: int, detail: str,
+               results: Mapping[str, object] | None = None,
+               source: str = SOURCE_TABLE,
+               fields: Mapping[str, object] | None = None) -> str:
+        """File this job's ledger record and return the path written.
+
+        kcilib.core.ledger owns the record's key set and its layout; this fills
+        the columns the run itself owns - the build and test identity, the
+        source, the verdict, the console kept beside the artifacts
+        (out_dir/tuxrun.log, the one-shot line's own console name) and the
+        directory the artifacts were downloaded into - and takes the rest from
+        *fields*, the columns only the caller's line can know: the kbuild it
+        pulled, when that build was made, the revision it built.
+
+        run_node files its own record for every run it makes, and that record
+        stays (the table's and the worker's readers rely on it); a caller whose
+        line names its records its own way re-files the run under those names,
+        so the file on disk is that line's record.  An OSError from the write
+        is the caller's to report, as it always was.
+        """
+        out = self._out_dir(out_dir)
+        payload = dict(fields or {})
+        payload.update({
+            "source": source,
+            "verdict": verdict,
+            "exit_code": exit_code,
+            "detail": detail,
+            "results": results,
+            "log": _repo_relative(os.path.join(out, CONSOLE_NAME)),
+            "artifacts_dir": _repo_relative(out),
+        })
+        return _ledger.write_result(self.build_id, self.test, payload)
+
+    def record_path(self) -> str:
+        """Where this job's ledger record goes (kcilib.core.ledger's rule).
+
+        The path is the one a record is written to and read back from whether
+        or not the write succeeded, so a caller can name the record it could
+        not file.
+        """
+        return _ledger.result_path(self.build_id, self.test)
 
     def _download(self, definition: Mapping[str, object], out: str) -> str:
         """Download this run's artifacts into *out*; returns the kernel path.
@@ -454,32 +631,54 @@ class Job:
         return kernel
 
     def _server_node(self, definition: Mapping[str, object],
-                     node_id: str) -> dict:
+                     node_id: str,
+                     record_fields: Mapping[str, object] | None = None) -> dict:
         """The node the artifact server records in its build-id.json.
 
         kcilib.run.delivery verifies one field of it - the id it serves
         against the one it was asked for; the name and the creation time are
-        the operator's evidence, and this layer's build card is where they
-        live (a definition carries a name only when the pipeline rendered
-        one).
+        the operator's evidence.  A pulled definition carries a name of its
+        own; a caller that names its records passes the same two facts there
+        (the kbuild it pulled and when that build was made), and its
+        build-id.json has always recorded those.
         """
         build = self.build
-        name = definition.get("name")
+        fields = record_fields or {}
+        name = fields.get("job") or definition.get("name")
+        created = fields.get("build_created")
         return {
             "id": node_id,
             "name": name if isinstance(name, str) else "",
-            "created": build.created if build is not None else None,
+            "created": created if created is not None else (
+                build.created if build is not None else None),
         }
 
     def _outcome(self, body: dict, url: str | None, token: str | None, *,
-                 log: str | None, record: str | None) -> Outcome:
+                 log: str | None, record: str | None,
+                 judged: tuple | None = None, output: str | None = None,
+                 source: str = SOURCE_TABLE, out_dir: str | None = None,
+                 record_fields: Mapping[str, object] | None = None) -> Outcome:
         """The Outcome for one run_node report body.
 
         The verdict is read out of the body kcilib.run.jobrun built, never
         recomputed from the console here: the record, the pipeline and this
-        object are then one verdict instead of three opinions.
+        object are then one verdict instead of three opinions.  *judged* is
+        the one-shot line's exception to that, and its reason: a served run
+        posts no report, so verdict, detail and TAP come from
+        kcilib.run.judge over the console the run archived (see _judged).
+
+        *record_fields* re-files the record under the caller's line's own
+        names, when it has any (see record()).
         """
-        verdict, exit_code, detail = _callback.verdict_from_body(body)
+        summary = per_test = None
+        if judged is None:
+            verdict, exit_code, detail = _callback.verdict_from_body(body)
+        else:
+            verdict, exit_code, detail, summary, per_test = judged
+        if record_fields is not None:
+            record = self.record(out_dir, verdict=verdict, exit_code=exit_code,
+                                 detail=detail, results=summary,
+                                 source=source, fields=record_fields)
         status = body.get("status")
         return Outcome(
             verdict, exit_code,
@@ -489,6 +688,9 @@ class Job:
             record=record,
             report=(url, token, body),
             job=self,
+            summary=summary,
+            per_test=per_test,
+            output=output,
         )
 
     def _record_path(self, definition: Mapping[str, object],
@@ -682,9 +884,14 @@ class Outcome:
     def __init__(self, verdict: str, exit_code: int, *, detail: str = "",
                  status: int | None = None, log: str | None = None,
                  record: str | None = None, report: tuple | None = None,
-                 job: Job | None = None) -> None:
+                 job: Job | None = None,
+                 summary: Mapping[str, object] | None = None,
+                 per_test: Mapping[str, object] | None = None,
+                 output: str | None = None) -> None:
         # verdict: pass/fail/infra/error; exit_code: 0/1/3; report is the
-        # (callback_url, token, body) tuple run_node returned.
+        # (callback_url, token, body) tuple run_node returned.  summary,
+        # per_test and output are kcilib.run.judge's reading of the console a
+        # served run judged, and None for a run that was read from its body.
         self._verdict: str = verdict
         self._exit_code: int = exit_code
         self._detail: str = detail
@@ -693,6 +900,9 @@ class Outcome:
         self._record: str | None = record
         self._report: tuple | None = report
         self._job: Job | None = job
+        self._summary: Mapping[str, object] | None = summary
+        self._per_test: Mapping[str, object] | None = per_test
+        self._output: str | None = output
 
     @property
     def verdict(self) -> str:
@@ -725,6 +935,37 @@ class Outcome:
     @property
     def job(self) -> Job | None:
         return self._job
+
+    @property
+    def summary(self) -> Mapping[str, object] | None:
+        """The TAP counts of this run's console (None: no TAP, or no console).
+
+        A served run judges its own console, so the counts, the per-test
+        results and the console text are all kcilib.run.judge's - the one-shot
+        line prints its TAP summary from these instead of reading the console a
+        second time.
+        """
+        return self._summary
+
+    @property
+    def per_test(self) -> Mapping[str, object] | None:
+        """The per-test TAP results ({} when the console carried no TAP)."""
+        return self._per_test
+
+    @property
+    def output(self) -> str | None:
+        """The merged console this run produced, or None when it left none."""
+        return self._output
+
+    @property
+    def started(self) -> bool:
+        """True when the run reached the executor and produced a report.
+
+        A local_server run whose artifact server refused to start is the one
+        Outcome that is a failure OF the run instead of a result from it:
+        there is no report, so no verdict can be read out of one.
+        """
+        return self._report is not None
 
     def is_pass(self) -> bool:
         """True only for a passing run; an infra error is not a failure."""

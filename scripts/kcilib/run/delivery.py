@@ -46,6 +46,7 @@ SERVE_READY_TIMEOUT = 15.0
 def download(url, dest):
     """Download *url* to *dest*, checking the size against Content-Length.
 
+    Second path, called only by ensure_artifact(): it must not spread.
     A truncated 144MB rootfs must fail loudly, not boot half an image. Kept
     as its own single-shot transfer on purpose: artifacts.download() resumes
     .part files and prints different lines, changing the console contract.
