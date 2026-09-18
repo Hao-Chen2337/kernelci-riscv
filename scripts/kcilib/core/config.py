@@ -15,14 +15,22 @@ from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from kcilib import repo_root
-from kcilib.core.params import KVM_TEST_SUBSET
-from kcilib.run.jobrun import LOG_ARCHIVE_KEEP, MIN_TIMEOUT
 
 __all__ = [
     "BASE_URI", "DEFAULT_MAX_TIMEOUT", "DEFAULT_PLATFORM", "DEFAULT_RUNTIME",
     "DEFAULT_STATE_FILE", "LOG_ARCHIVE_KEEP", "LOG_DIR", "MAX_DOWNLOAD_MB",
     "MIN_TIMEOUT", "Configs", "PollConfig", "RunConfig", "from_args",
 ]
+
+# The floor a job's timeout_s is raised to, and the console-archive cap.  They
+# live next to the defaults and the flags that carry them because core/ is what
+# every line stands on: they used to be defined in kcilib.run.jobrun, so this
+# module imported the run layer - the one inverted edge (core -> run) of the
+# dependency table, and the reason "does core depend on the execution layer?" had
+# a yes answer.  kcilib.run.jobrun imports them from here and keeps re-exporting
+# the same names, so jobrun.MIN_TIMEOUT / jobrun.LOG_ARCHIVE_KEEP still resolve.
+MIN_TIMEOUT = 60  # floor: below this tuxrun cannot even boot a guest
+LOG_ARCHIVE_KEEP = 200  # newest archived consoles kept in LOG_DIR
 
 # The repository root, not the CWD, so "the logs are in work/logs" holds
 # whatever directory the worker was started from.
@@ -35,7 +43,7 @@ DEFAULT_RUNTIME = "pull-labs-riscv"
 DEFAULT_TUXRUN = "tuxrun"
 DEFAULT_STATE_FILE = "riscv-pull-worker-state.json"
 # Ceiling for a job definition's timeout_s, matching the pull-labs runtime's own
-# timeout; the floor is kcilib.run.jobrun.MIN_TIMEOUT.
+# timeout; the floor is MIN_TIMEOUT above.
 DEFAULT_MAX_TIMEOUT = 7200
 DEFAULT_MIN_TIMEOUT = MIN_TIMEOUT
 MAX_DOWNLOAD_MB = 4096
@@ -81,8 +89,9 @@ class RunConfig:
     max_timeout: int = DEFAULT_MAX_TIMEOUT
     min_timeout: int = DEFAULT_MIN_TIMEOUT
     max_download_size: int = MAX_DOWNLOAD_MB << 20
-    # argparse's --kvm-tests default; build_command() copies it.
-    kvm_tests: list = field(default_factory=lambda: KVM_TEST_SUBSET)
+    # argparse's --kvm-tests override; None means "everything the build shipped
+    # minus the exclusion list" (kcilib.core.params.kvm_tests_to_run).
+    kvm_tests: list | None = None
     kvm_full: bool = False
     keep_workspace: bool = False
     api_config_name: str = field(default_factory=default_api_config_name)

@@ -20,9 +20,12 @@ import requests
 # scripts/kcilib/ resolved through this file's own directory (any CWD).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from kcilib.api import KernelCI
+from kcilib.api import KernelCI, local_api_url
 
-API_URL = os.environ.get("KCI_API_URL", "http://localhost:8001").rstrip("/")
+# One owner for "where is the local API": KCI_API_URL first, else kcilib.api's
+# LOCAL_API.  This file used to default to "localhost", which resolves to ::1 on
+# a dual-stack host while the local stack publishes IPv4 only.
+API_URL = local_api_url().rstrip("/")
 # api.kernelci.org serves under /latest and the local API accepts both, so
 # always target the canonical /latest base.
 API_LATEST = API_URL if API_URL.endswith("/latest") else f"{API_URL}/latest"

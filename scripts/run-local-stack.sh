@@ -240,7 +240,14 @@ else
   require_port_free "$SERVE_PORT" "artifact server" KCI_SERVE_PORT
   rotate_log "/tmp/fs$SERVE_PORT.log"
   (cd "$SERVE_DIR" && setsid nohup python3 -m http.server $SERVE_PORT --bind 0.0.0.0 >/tmp/fs$SERVE_PORT.log 2>&1 < /dev/null &) >/dev/null 2>&1
-  sleep 2
+  # Bounded wait, the same shape as the API probe above: the wait ends as soon as
+  # the service answers, so the bound only costs time when it is genuinely broken
+  # - a fixed `sleep 2` here turned a slow start on a loaded machine into
+  # "artifact server failed" with nothing in the log tail yet.
+  for i in $(seq 1 20); do
+    curl -s -m 3 -o /dev/null "http://127.0.0.1:$SERVE_PORT/Image" && break
+    sleep 1
+  done
   if curl -s -m 3 -o /dev/null "http://127.0.0.1:$SERVE_PORT/Image"; then
     ok "artifact server started (:$SERVE_PORT)"
     record_service "artifact server" "http\.server $SERVE_PORT"
@@ -267,7 +274,12 @@ else
   fi
   rotate_log "/tmp/cb$CB_PORT.log"
   (cd "$PIPE_DIR/src" && KCI_SETTINGS="$SETTINGS" KCI_API_TOKEN="$TOKEN" PYTHONPATH="$ROOT/kernelci-core" setsid nohup python3 -m uvicorn lava_callback:app --port $CB_PORT --host 0.0.0.0 >/tmp/cb$CB_PORT.log 2>&1 < /dev/null &) >/dev/null 2>&1
-  sleep 4
+  # uvicorn imports kernelci-core before it binds, so its start-up time is a
+  # function of the machine, not a constant: wait until it actually answers.
+  for i in $(seq 1 30); do
+    curl -s -m 3 -o /dev/null "http://127.0.0.1:$CB_PORT/" && break
+    sleep 1
+  done
   if curl -s -m 3 -o /dev/null "http://127.0.0.1:$CB_PORT/"; then
     ok "lava_callback started (:$CB_PORT)"
     record_service "lava_callback" "uvicorn lava_callback:app --port $CB_PORT"
@@ -314,6 +326,15 @@ open(sys.argv[1], "w").write(yaml.safe_dump(merge(a, b), sort_keys=False))
 PYEOF
   rotate_log "/tmp/sched-local.log"
   (cd "$KCFG" && KCI_SETTINGS="$SETTINGS" KCI_API_TOKEN="$TOKEN" KCI_INSTANCE_CALLBACK="http://127.0.0.1:$CB_PORT" PYTHONPATH="$ROOT/kernelci-core" setsid nohup python3 "$PIPE_DIR/src/scheduler.py" --yaml-config "$KCFG/config" --settings "$SETTINGS" loop --runtimes pull-labs-riscv --name local-full-stack --output /tmp/sched-output >/tmp/sched-local.log 2>&1 < /dev/null &) >/dev/null 2>&1
+  # Wait for it to appear, then let it settle before believing it: the process is
+  # visible to pgrep the instant it forks, while its failures are import errors a
+  # few seconds in.  The settle is 10s - the same grace the blind `sleep 10` used
+  # to give - so the crash window is not narrowed, while a slow start (the old
+  # false "scheduler failed") now only costs a longer wait.
+  for i in $(seq 1 30); do
+    pgrep -f "scheduler\.py.*--yaml-config $KCFG/" >/dev/null && break
+    sleep 1
+  done
   sleep 10
   if pgrep -f "scheduler\.py.*--yaml-config $KCFG/" >/dev/null; then
     ok "scheduler started (pull-labs-riscv, config $KCFG)"

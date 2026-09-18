@@ -2,7 +2,7 @@
 import os
 import tempfile
 
-from kcilib.core import cli, config, params
+from kcilib.core import cli, config, ledger
 from kcilib.run import artifacts, jobrun
 
 from .support import check
@@ -12,7 +12,7 @@ def test_build_command_validation():
     run_config = config.RunConfig(
         tuxrun_bin="tuxrun", platform="qemu-riscv64", rootfs="",
         cpu="rv64,v=true", container_runtime="",
-        kvm_tests=params.KVM_TEST_SUBSET,
+        kvm_tests=None,
         max_download_size=artifacts.MAX_DOWNLOAD_SIZE)
     job = {"artifacts": {"kernel": "http://x/Image"},
            "tests": [{"type": "kselftest-kvm; rm -rf /"}]}
@@ -65,9 +65,188 @@ def test_build_command_validation():
           and defaults.run.min_timeout == jobrun.MIN_TIMEOUT
           and defaults.poll.api_url == config.BASE_URI
           and defaults.poll.state_file == config.DEFAULT_STATE_FILE
-          and defaults.run.kvm_tests == params.KVM_TEST_SUBSET,
+          and defaults.run.kvm_tests is None,
           f"the CLI defaults drifted from the config defaults: {defaults}")
     print("test_build_command_validation OK")
+
+
+def test_build_command_argv():
+    """The tuxrun argv is a contract with no other guard: pin it, entry by entry.
+
+    Two entry points print this command line and this repository's archived
+    consoles quote it, but until now the only thing covered about build_command
+    was that an invalid test type is rejected - the flag ORDER, the
+    --rootfs/--modules/--tests omission rules and the one-entry-per-parameter rule
+    were prose in kcilib/run/runner.py.  A refactor that "tidied" any of them
+    would have passed ./run.sh verify and only shown up when a real job ran.
+
+    Everything below is stubbed that would download or bake (a 4GB mkfs.ext4, a
+    100MB kselftest tarball): this guard is about the argv, not the artifacts.
+    """
+    jobrun.baked_rootfs_image = lambda *_a, **_k: "/tmp/baked.ext4"
+    presented = ("memslot_modification_stress_test", "kvm_create_vm",
+                 "dirty_log_perf_test", "set_memory_region_test")
+    jobrun.kselftest_kvm_tests = lambda _url, max_size=None: presented
+
+    def run_config(**over):
+        fields = {
+            "tuxrun_bin": "tuxrun", "platform": "qemu-riscv64", "rootfs": "",
+            "cpu": "rv64", "container_runtime": "docker", "kvm_tests": None,
+            "kvm_full": False, "max_download_size": (1 << 20),
+        }
+        fields.update(over)
+        return config.RunConfig(**fields)
+
+    derived_subset = ("TST_CASENAME=kvm:kvm_create_vm "
+                      "kvm:set_memory_region_test")
+
+    head = ["tuxrun", "--runtime", "docker", "--device", "qemu-riscv64",
+            "--kernel", "http://x/Image", "--boot-args", "rw"]
+    kvm_head = head + ["--rootfs", "http://x/r.ext4", "--modules",
+                       "http://x/m.tar.xz"]
+    riscv_artifacts = {"kernel": "http://x/Image",
+                       "rootfs": "http://x/r.ext4",
+                       "kselftest": "http://x/ks.tar.xz"}
+    kvm_artifacts = dict(riscv_artifacts, modules="http://x/m.tar.xz")
+
+    for name, job, run_cfg, expected in (
+            # boot: no rootfs in the definition, so no --rootfs/--tests at all
+            # (tuxrun's built-in disk), and the parameters list is never empty.
+            ("boot", {"artifacts": {"kernel": "http://x/Image"},
+                      "tests": [{"type": "boot"}]}, run_config(),
+             head + ["--parameters", "cpu=rv64"]),
+            # a cpio ramdisk in the definition is not bootable by the qemu
+            # device: warned about, and NOT passed to tuxrun.
+            ("boot with a ramdisk",
+             {"artifacts": {"kernel": "http://x/Image",
+                            "ramdisk": "http://x/initrd"},
+              "tests": [{"type": "boot"}]}, run_config(),
+             head + ["--parameters", "cpu=rv64"]),
+            # kselftest: one --tests entry, KSELFTEST as its own parameter, and
+            # no --modules (only kvm needs the module tarball).
+            ("kselftest-riscv", {"artifacts": riscv_artifacts,
+                                 "tests": [{"type": "kselftest-riscv"}]},
+             run_config(),
+             head + ["--rootfs", "http://x/r.ext4", "--tests",
+                     "kselftest-riscv", "--parameters", "cpu=rv64",
+                     "KSELFTEST=http://x/ks.tar.xz"]),
+            # kvm: the cpu gains h=true, and a hand-named subset travels as ONE
+            # --parameters entry (a joined string is what the callers print).
+            ("kselftest-kvm with --kvm-tests",
+             {"artifacts": kvm_artifacts, "tests": [{"type": "kselftest-kvm"}]},
+             run_config(kvm_tests=["a", "b"]),
+             kvm_head + ["--tests", "kselftest-kvm", "--parameters",
+                         "cpu=rv64,h=true", "KSELFTEST=http://x/ks.tar.xz",
+                         "TST_CASENAME=kvm:a kvm:b"]),
+            # --kvm-full: the whole collection, so no TST_CASENAME (and no
+            # tarball read at all - that is the point of the flag).
+            ("kselftest-kvm --kvm-full",
+             {"artifacts": kvm_artifacts, "tests": [{"type": "kselftest-kvm"}]},
+             run_config(kvm_full=True),
+             kvm_head + ["--tests", "kselftest-kvm", "--parameters",
+                         "cpu=rv64,h=true", "KSELFTEST=http://x/ks.tar.xz"]),
+            # default: derived from the build's own tarball minus KVM_SKIP_TESTS,
+            # sorted; the stress/perf tests are in that skip list.
+            ("kselftest-kvm derived from the tarball",
+             {"artifacts": kvm_artifacts, "tests": [{"type": "kselftest-kvm"}]},
+             run_config(),
+             kvm_head + ["--tests", "kselftest-kvm", "--parameters",
+                         "cpu=rv64,h=true", "KSELFTEST=http://x/ks.tar.xz",
+                         derived_subset]),
+            # a tar rootfs is baked to ext4 and passed as file://; the modules
+            # are baked INTO it, so --modules must disappear again.
+            ("kselftest-kvm with a baked tar rootfs",
+             {"artifacts": dict(kvm_artifacts,
+                                rootfs="http://x/r.tar.xz"),
+              "tests": [{"type": "kselftest-kvm"}]}, run_config(),
+             head + ["--rootfs", "file:///tmp/baked.ext4", "--tests",
+                     "kselftest-kvm", "--parameters", "cpu=rv64,h=true",
+                     "KSELFTEST=http://x/ks.tar.xz", derived_subset]),
+    ):
+        argv, label = jobrun.build_command(job, run_cfg, "/tmp/fake-workspace")
+        check(argv == expected,
+              f"{name}: the tuxrun argv changed.\n  got      {argv}\n"
+              f"  expected {expected}")
+        check(label == job["tests"][0]["type"], (name, label))
+
+    # The omission rules are the half a reviewer cannot see in a passing run.
+    boot_argv, _ = jobrun.build_command(
+        {"artifacts": {"kernel": "http://x/Image"}, "tests": [{"type": "boot"}]},
+        run_config(), "/tmp/fake-workspace")
+    for flag in ("--rootfs", "--modules", "--tests"):
+        check(flag not in boot_argv,
+              f"boot must not pass {flag}: {boot_argv}")
+    print("test_build_command_argv OK")
+
+
+def test_run_node_never_raises_on_a_malformed_definition():
+    """run_node must produce a report for ANY definition shape - never raise.
+
+    Its own contract is "every failure inside becomes an infra-error LAVA body, so
+    a report is always produced", and poll.handle_event depends on it: an
+    exception escaping run_node is read as "handled", so the node is marked seen
+    and the run is never posted and never retried.  Two lookups read node["tests"]
+    OUTSIDE run_node's try - the timeout list and the ledger's naming - and an
+    entry that is not a dict ({"tests": ["boot"]} is a definition the API queues
+    too) raised AttributeError there.  This guard pins the behaviour, not the
+    symptom: five malformed shapes, each must come back as a report.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        real_results_env = os.environ.get(ledger.RESULTS_DIR_ENV)
+        os.environ[ledger.RESULTS_DIR_ENV] = os.path.join(tmp, "results")
+        saved = (jobrun.build_command, jobrun.run_command,
+                 jobrun.archive_console_log, jobrun.stamp)
+        jobrun.build_command = lambda *_a, **_k: (["tuxrun"], "boot")
+        jobrun.run_command = lambda *_a, **_k: (0, "")
+        jobrun.archive_console_log = lambda *_a, **_k: ""
+        jobrun.stamp = lambda *_a, **_k: None
+        run_config = config.RunConfig(
+            platform="qemu-riscv64", output_dir=os.path.join(tmp, "out"),
+            log_dir=os.path.join(tmp, "logs"), tuxrun_bin="tuxrun",
+            container_runtime="docker")
+        try:
+            for definition in (
+                    {"tests": ["boot"]},
+                    {"tests": [None]},
+                    {"tests": 5},
+                    {"tests": {"a": 1}},
+                    {"tests": [{"type": "boot"}], "artifacts": 5},
+                    {"tests": [{"type": "boot"}], "artifacts": {"kernel": 5}},
+                    {},  # no tests key at all
+            ):
+                try:
+                    report = jobrun.run_node(definition, run_config, "n1")
+                except Exception as error:  # noqa: BLE001 - that is the failure
+                    check(False,
+                          f"run_node raised {type(error).__name__} for "
+                          f"{definition!r}: an exception escaping it makes "
+                          "poll.handle_event mark the node seen, so the result "
+                          "is never posted and never retried")
+                    continue
+                check(isinstance(report, tuple) and len(report) == 3,
+                      f"run_node must return a (url, token, body) report, got "
+                      f"{report!r}")
+                check(isinstance(report[2], dict) and report[2].get("status"),
+                      f"the report for {definition!r} carries no body: {report!r}")
+                # ledger.test_of names the record for the same definition and must
+                # not raise either - it is called from inside record_result, which
+                # is itself outside run_node's try.
+                try:
+                    named = ledger.test_of(definition)
+                except Exception as error:  # noqa: BLE001 - that is the failure
+                    check(False, f"ledger.test_of raised {type(error).__name__} "
+                                 f"for {definition!r}: the record's name is read "
+                                 "outside run_node's try too")
+                    continue
+                check(named, (definition, named))
+        finally:
+            (jobrun.build_command, jobrun.run_command,
+             jobrun.archive_console_log, jobrun.stamp) = saved
+            if real_results_env is None:
+                os.environ.pop(ledger.RESULTS_DIR_ENV, None)
+            else:
+                os.environ[ledger.RESULTS_DIR_ENV] = real_results_env
+    print("test_run_node_never_raises_on_a_malformed_definition OK")
 
 
 def test_clamp_timeout():

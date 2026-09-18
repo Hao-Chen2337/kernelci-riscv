@@ -92,11 +92,6 @@ def sinks_for(definition):
     return tuple(chosen)
 
 
-def sink_names(sinks):
-    """The sink names, in delivery order (for printing and reporting)."""
-    return tuple(item.name for item in sinks)
-
-
 def has_callback(sinks):
     """Whether this set of sinks includes the callback (otherwise: ledger only)."""
     return any(item.name == CALLBACK for item in sinks)

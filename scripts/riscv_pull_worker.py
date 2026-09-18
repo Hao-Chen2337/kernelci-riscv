@@ -32,8 +32,9 @@ Job mapping (rendered by config/runtime/*-pull-labs.jinja2):
 
 Known gaps: kselftest-riscv needs the tuxlava class from
 config/tuxlava-kselftest-riscv.patch (without it tuxrun exits 2 -> infra);
-kselftest-kvm runs the curated KVM_TEST_SUBSET with kvm.ko loaded at boot
-(modules.tar.xz baked into the ext4 image + modules-load.d conf);
+kselftest-kvm runs everything the build's kselftest tarball ships minus the
+KVM_SKIP_TESTS exclusion list, with kvm.ko loaded at boot (modules.tar.xz
+baked into the ext4 image + modules-load.d conf);
 --api-config-name / --storage-config-name must match the deployment or the
 callback cannot find the node.
 

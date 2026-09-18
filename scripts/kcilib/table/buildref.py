@@ -26,7 +26,6 @@ REQUIRED_FOR = {
 }
 
 PRODUCTION_API = "https://api.kernelci.org"
-REQUEST_TIMEOUT = 60
 
 
 @dataclass

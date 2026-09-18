@@ -355,82 +355,19 @@ cmd_prune() {
   done
   [ "$want_keep" = 0 ] || die "prune: --keep needs a value"
   [ "$keep" -ge 1 ] || die "prune: --keep must be at least 1 - the newest build is the one ./run.sh stack --seed serves"
-  python3 - "$ROOT/work/downloads" "$keep" "$dry" "$ROOT/work/env/build.env" <<'PY'
-import json
-import os
-import re
-import shutil
-import sys
-import time
-
-downloads, keep, dry, build_env = (
-    sys.argv[1], int(sys.argv[2]), sys.argv[3] == "1", sys.argv[4]
-)
-if not os.path.isdir(downloads):
-    print(f"nothing to prune: {downloads} does not exist")
-    raise SystemExit(0)
-
-# The build this deployment serves, as ./run.sh provision recorded it.
-commit = build_dir_id = ""
-if os.path.exists(build_env):
-    text = open(build_env).read()
-    match = re.search(r"^KCI_BUILD_COMMIT=(\S+)", text, re.M)
-    commit = match.group(1) if match else ""
-    match = re.search(r"^KCI_BUILD_DIR=(\S+)", text, re.M)
-    build_dir_id = os.path.basename(match.group(1)) if match else ""
-
-entries = []
-for name in sorted(os.listdir(downloads)):
-    path = os.path.join(downloads, name)
-    if not os.path.isdir(path):
-        continue
-    size = 0
-    for root, _dirs, files in os.walk(path):
-        for filename in files:
-            try:
-                size += os.path.getsize(os.path.join(root, filename))
-            except OSError:
-                pass
-    entries.append((os.path.getmtime(path), name, path, size))
-entries.sort(reverse=True)
-
-def recorded_commit(path):
-    """Commit of the kbuild the directory was downloaded from (node.json)."""
-    try:
-        with open(os.path.join(path, "node.json")) as handle:
-            data = (json.load(handle).get("data") or {})
-        return (data.get("kernel_revision") or {}).get("commit") or ""
-    except (OSError, ValueError):
-        return ""
-
-newest = {name for _m, name, _p, _s in entries[:keep]}
-print(
-    f"work/downloads: {len(entries)} build(s); keeping the newest {keep}"
-    + (f" and the build.env build ({commit[:12]})" if commit else "")
-)
-removed = freed = 0
-for mtime, name, path, size in entries:
-    if name in newest:
-        why = "keep: newest"
-    elif name == build_dir_id or (commit and recorded_commit(path) == commit):
-        why = "keep: the build work/env/build.env records and work/serve/Image serves"
-    else:
-        why = "PRUNE"
-    print(
-        f"  {name}  {size / 1e6:8.1f} MB  "
-        f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime))}  {why}"
-    )
-    if why == "PRUNE":
-        removed += 1
-        freed += size
-        if not dry:
-            shutil.rmtree(path)
-print(
-    ("would remove" if dry else "removed")
-    + f" {removed} build(s), {freed / 1e6:.1f} MB"
-    + (" (dry run: nothing was deleted)" if dry else "")
-)
-PY
+  # The retention rule lives in kcilib.core.retention: it deletes user data with
+  # shutil.rmtree, and the guard suite imports kcilib only, so as 76 lines of
+  # Python inside a heredoc here it was the one code path nothing could test.
+  # $dry_flag is expanded UNQUOTED on purpose: it is "" or one literal flag, and
+  # an empty array expansion ("${arr[@]}") aborts under `set -u` on bash < 4.4
+  # (macOS ships 3.2), which would break `./run.sh prune --dry-run` there.
+  local dry_flag=""
+  [ "$dry" = 1 ] && dry_flag="--dry-run"
+  PYTHONPATH="$ROOT/scripts" python3 -m kcilib.core.retention \
+    --downloads "$ROOT/work/downloads" \
+    --keep "$keep" \
+    --build-env "$ROOT/work/env/build.env" \
+    $dry_flag
 }
 
 cmd_verify() {

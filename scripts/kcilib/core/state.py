@@ -49,8 +49,6 @@ class StateFile:
         state.load()                     # missing/corrupt file -> empty state
         state.cursor, state.seen, state.pending
         state.mark_seen(node_id)         # dedup, evicting past SEEN_LIMIT
-        state.add_pending(node_id, callback, body)
-        state.pop_pending(node_id)       # the entry, or None
         state.save()                     # atomic; no-op when nothing changed
 
     `seen` is the on-disk list (oldest first) and is what a caller reads and
@@ -157,20 +155,6 @@ class StateFile:
         if len(self._seen_set) != len(self.seen):
             self._seen_set = set(self.seen)
         return node_id in self._seen_set
-
-    def add_pending(self, node_id, callback, body):
-        """Remember a result body whose callback POST did not go through.
-
-        The body is stored exactly as it will be posted, so a later run can
-        re-post it without re-running the job that produced it."""
-        self.pending[node_id] = {"callback": callback, "body": body}
-
-    def pop_pending(self, node_id):
-        """Forget and return the pending entry for *node_id*, or None.
-
-        Called once posted, or once the callback failed permanently: a node must
-        never keep a body it can no longer post."""
-        return self.pending.pop(node_id, None)
 
     def _reset(self):
         """Back to the empty state, keeping only the accelerator consistent."""

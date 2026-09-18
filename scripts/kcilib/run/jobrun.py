@@ -27,9 +27,10 @@ import shutil
 import tempfile
 import time
 
-from kcilib.core import ledger
-from kcilib.core.params import KVM_TEST_SUBSET, cpu_for, kvm_allow_list
-from kcilib.run.artifacts import build_id_from_artifacts
+from kcilib.core import config, ledger
+from kcilib.core.params import cpu_for, kvm_tests_to_run
+from kcilib.run import callback
+from kcilib.run.artifacts import build_id_from_artifacts, kselftest_kvm_tests
 from kcilib.run.bake import baked_rootfs_image, stamp
 from kcilib.run.callback import lava_body, verdict_from_body
 from kcilib.run.judge import (
@@ -45,12 +46,15 @@ DEFAULT_TIMEOUT = 1800  # seconds, when the job def carries no timeout
 # Bounds applied to whatever the job definition asked for.  The clamp used to be
 # silent - a job killed early reported Infrastructure with nothing saying why -
 # so both bounds have a name, a CLI flag and a logged line (see clamp_timeout).
-MIN_TIMEOUT = 60  # floor: below this tuxrun cannot even boot a guest
+# Defined in kcilib.core.config (with the flags that carry them) and imported
+# here, so the run layer depends on core and not the other way round; the names
+# stay attributes of this module for the callers that patch them.
+MIN_TIMEOUT = config.MIN_TIMEOUT
 
 # Newest archived consoles kept in LOG_DIR.  The console lives inside the
 # per-job workspace and the workspace is deleted at the end of every job, so
 # without this the only local copy of a real run disappeared with it.
-LOG_ARCHIVE_KEEP = 200  # newest archived consoles kept in LOG_DIR
+LOG_ARCHIVE_KEEP = config.LOG_ARCHIVE_KEEP
 
 TAR_SUFFIXES = (".tar", ".tar.gz", ".tar.xz", ".tgz")
 TEST_TYPE_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
@@ -61,6 +65,23 @@ def runtime_name(run_config):
     if run_config.container_runtime:
         return run_config.container_runtime
     return "podman" if shutil.which("podman") else "docker"
+
+
+def _test_entries(node):
+    """A definition's dict test entries - the safe reading of ``node["tests"]``.
+
+    Returns [] for anything that is not a list of dicts.  Both lookups that read
+    this list OUTSIDE run_node's try use it (the timeout below, and
+    kcilib.core.ledger.test_of which names the record): a definition the API
+    queued with a string, a null, a number or no list at all must cost at most an
+    infra report, never an exception escaping run_node - poll.handle_event reads
+    an escaping exception as "handled" and marks the node seen, so the run is
+    never posted and never retried.
+    """
+    tests = node.get("tests")
+    if not isinstance(tests, (list, tuple)):
+        return []
+    return [test for test in tests if isinstance(test, dict)]
 
 
 def build_command(node, run_config, workspace):
@@ -118,21 +139,35 @@ def build_command(node, run_config, workspace):
         parameters.append(f"KSELFTEST={kselftest_url}")
         test_args = [test_type]
         if test_type == "kselftest-kvm":
-            # Curated subset, not the whole collection: LKFT hands TST_CASENAME
-            # to `run_kselftest.sh -t`.  Its "modules" test must NOT be used
+            # Exclusion, not an allow-list: LKFT hands TST_CASENAME to
+            # `run_kselftest.sh -t`.  The list is everything the build's own
+            # kselftest tarball ships minus KVM_SKIP_TESTS, so a test an older
+            # kernel never built is simply absent instead of failing the suite
+            # with "No such test".  LKFT's "modules" test must NOT be named
             # here - it unloads kvm again before kselftest runs.
             if run_config.kvm_full:
-                # whole collection: no allow-list; LKFT runs every kvm test.
+                # whole collection: no TST_CASENAME; LKFT runs every kvm test.
                 pass
-            else:
-                subset = list(run_config.kvm_tests or KVM_TEST_SUBSET)
+            elif run_config.kvm_tests:
+                # explicit override: a hand-named list, used verbatim.
                 parameters.append(
-                    "TST_CASENAME=" + (
-                        # the curated list itself is kcilib.core.params' business
-                        kvm_allow_list() if subset == KVM_TEST_SUBSET
-                        else " ".join(f"kvm:{name}" for name in subset)
-                    )
+                    "TST_CASENAME="
+                    + " ".join(f"kvm:{name}" for name in run_config.kvm_tests)
                 )
+            else:
+                present = kselftest_kvm_tests(
+                    kselftest_url, max_size=run_config.max_download_size)
+                to_run = kvm_tests_to_run(present)
+                if not to_run:
+                    # No kvm collection, or every test is excluded: run the whole
+                    # collection so the gap surfaces, rather than an empty -t.
+                    print("Warning: no runnable kvm tests in the build's "
+                          "kselftest tarball; running the whole collection")
+                else:
+                    parameters.append(
+                        "TST_CASENAME="
+                        + " ".join(f"kvm:{name}" for name in to_run)
+                    )
     # Flag order and the --rootfs/--modules/--tests omission rules live in
     # kcilib.run.runner.build_tuxrun_argv.
     argv = build_tuxrun_argv(
@@ -258,11 +293,18 @@ def record_result(node, node_id, body, tap, log_path, source=SOURCE_WORKER):
     or the node id when no URL names one (a made-up id would be worse).  The
     verdict comes from the callback BODY, not from a second look at the console,
     so record and pipeline cannot disagree.  A failed write is reported and
-    returned as "", never raised.
+    returned as "", never raised.  The test name is kcilib.core.ledger.test_of -
+    one owner, and it never raises, so a malformed definition cannot cost the node
+    its callback (see that function).
     """
-    tests = node.get("tests") or [{}]
-    test = tests[0].get("type") or tests[0].get("id") or "boot"
-    build_id = build_id_from_artifacts(node.get("artifacts")) or node_id or ""
+    test = ledger.test_of(node)
+    # The artifacts must be a mapping before the build id is parsed out of them:
+    # this is the other outside-the-try lookup, and a definition whose artifacts
+    # is a string or a number would raise here and cost the node its callback.
+    artifacts = node.get("artifacts")
+    build_id = (
+        build_id_from_artifacts(artifacts) if isinstance(artifacts, dict) else ""
+    ) or node_id or ""
     if not build_id:
         print("Warning: no build id in the job's artifacts and no node id; "
               "the run is NOT recorded in work/results")
@@ -309,15 +351,23 @@ def run_node(node, run_config, node_id=None, source=SOURCE_WORKER):
     the progress lines and names the archived console log."""
     environment = node.get("environment", {})
     system = environment.get("platform", run_config.platform)
-    callback = node.get("callback", {})
-    callback_url = callback.get("url")
-    # A "remote token" shared with the pipeline admins; the secret is in an env var.
-    callback_token = os.environ.get("PULL_LABS_CALLBACK_TOKEN")
+    # Both come from kcilib.run.callback, which owns "where does this result go":
+    # sink.CallbackSink.wants() reads the same URL helper, and the token is read
+    # from the environment by the same function for the first post and for every
+    # re-post from the state file.  The results are named report_* here because
+    # run_node used to hold a local named callback (the definition's callback
+    # section), which would shadow the module and defeat the call.
+    report_url = callback.callback_url(node)
+    report_token = callback.callback_token()
+    # Only dict entries are read, via the same safe reading as the ledger naming:
+    # this runs OUTSIDE the try below, so a tests entry that is a string or None
+    # (the API queues those too) used to raise AttributeError right here and cost
+    # the node its result.
     timeout_s = next(
         (
-            t.get("timeout_s")
-            for t in node.get("tests", [])
-            if t.get("timeout_s")
+            test.get("timeout_s")
+            for test in _test_entries(node)
+            if test.get("timeout_s")
         ),
         DEFAULT_TIMEOUT,
     )
@@ -409,4 +459,4 @@ def run_node(node, run_config, node_id=None, source=SOURCE_WORKER):
     record = record_result(node, node_id, body, tap, archived, source=source)
     if record:
         stamp(f"{node_id or 'job'}: recorded in {_relative_to_repo(record)}")
-    return callback_url, callback_token, body
+    return report_url, report_token, body

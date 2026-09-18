@@ -10,6 +10,7 @@ from the API's; a callback section decides report-back versus ledger only.
 
 from dataclasses import dataclass
 
+from kcilib.core import ledger
 from kcilib.table.buildref import build_ref_from_node
 
 # The three tests this configuration claims: the three runtime=pull-labs-riscv
@@ -25,6 +26,17 @@ TEST_TIMEOUTS = {
 
 PLATFORM = "qemu-riscv64"
 ARCH = "riscv"
+
+# The guest rootfs the local table boots from: the same nfsroot tar.xz the
+# production pull_labs template injects as "rootfs"
+# (kernelci-pipeline/config/runtime/kselftest-pull-labs.jinja2 ->
+# "{{ nfsroot }}/full.rootfs.tar.xz").  run_node bakes it per job, folding the
+# build's own modules.tar.xz into /lib/modules for kselftest-kvm, so every job
+# gets a rootfs even though the build index stores none (a kbuild node has no
+# rootfs artifact - the rootfs is a lab-owned image, not a build output).
+ROOTFS_URL = (
+    "https://storage.kernelci.org/images/rootfs/debian/"
+    "trixie-kselftest/20260606.0/riscv64/full.rootfs.tar.xz")
 
 
 @dataclass
@@ -77,11 +89,11 @@ def jobs_from_build(build, tests=None, timeout_s=None):
 def test_of(definition):
     """A definition -> the test it asks for (tests[0].type, then id, then boot).
 
-    One place owns "what is this job called": the ledger files rows under it.
+    The rule itself is kcilib.core.ledger.test_of - the name is a component of
+    the ledger's path layout, so it has exactly one owner; this keeps the
+    spelling the table layer has always used.
     """
-    tests = definition.get("tests") or [{}]
-    first = tests[0] if isinstance(tests[0], dict) else {}
-    return first.get("type") or first.get("id") or "boot"
+    return ledger.test_of(definition)
 
 
 def job_definition(spec, callback_url=None, token_name=None):
@@ -97,8 +109,13 @@ def job_definition(spec, callback_url=None, token_name=None):
             f"JobSpec {spec.build_id}/{spec.test} carries no build; specs come "
             "from jobs_from_build(), which keeps a reference to it")
     test = spec.test
+    artifacts = dict(build.artifacts, rootfs=ROOTFS_URL)
+    # The executor reads "kselftest", but the index stores the API's raw key
+    # "kselftest_tar_xz" - the same rename the production pull_labs template does.
+    artifacts["kselftest"] = (
+        artifacts.get("kselftest") or artifacts.get("kselftest_tar_xz") or "")
     definition = {
-        "artifacts": dict(build.artifacts),
+        "artifacts": artifacts,
         "tests": [{
             "id": test,
             "type": test,

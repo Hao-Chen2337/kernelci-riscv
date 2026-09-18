@@ -29,7 +29,10 @@ from kcilib.table.buildindex import BuildIndex
 from kcilib.table.buildref import BuildQuery, builds_from_production_api
 from kcilib.table.jobspec import DEFAULT_TESTS, job_definition, jobs_from_build
 
-LOCAL_API = os.environ.get("KCI_API_URL", "http://127.0.0.1:8001")
+# kcilib.api owns the local default and the KCI_API_URL override (a second
+# deployment moves the local API); spelling the fallback again here is how the
+# two spellings 127.0.0.1/localhost drifted apart.
+LOCAL_API = api.local_api_url()
 
 
 def _specs_for_build(build, tests):
@@ -221,8 +224,8 @@ def cmd_run(args):
             return 1
         planned, skipped, checked = _specs_for_build(build, tests or DEFAULT_TESTS)
     else:
-        source = get_source(args.source, db=args.db, tests=tests,
-                            job=args.job) if args.source == "table" \
+        source = get_source(args.source, db=args.db, tests=tests) \
+            if args.source == "table" \
             else get_source(args.source, job=args.job, tests=tests)
         planned, skipped, checked = source.jobs()
         print(f"   source: {args.source} ({checked} build(s) checked)")

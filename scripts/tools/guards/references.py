@@ -39,6 +39,76 @@ def test_no_repo_root_is_counted_with_dirname():
     print("test_no_repo_root_is_counted_with_dirname OK")
 
 
+def test_layers_import_downward_only():
+    """The dependency table is a rule, not a description of the code.
+
+    kcilib is layered - api, core (what every line stands on), run (one job),
+    table + source (the local job table) - and docs/ARCHITECTURE.md's dependency
+    table says which edges may exist.  Nothing enforced it: kcilib/core/config.py
+    imported kcilib.run.jobrun for two constants, so "does core depend on the
+    execution layer?" had a yes answer, and a new layer could import anything at
+    all with ./run.sh verify still green (ruff checks style, compileall checks
+    syntax, neither reads an import graph).  Read with ast, not a regex: these
+    modules explain the rules in docstrings that name the very modules they may
+    not import.
+
+    Forbidden, and why each is a cycle or a lie:
+      * run -> table / source: the execution layer is HANDED a job definition and
+        must not learn where it came from (jobspec.py's docstring: run_node cannot
+        tell ours from the API's);
+      * core -> run / table / source: core is the bottom layer - api.py, source.py
+        and run/ all stand on it;
+      * api -> anything in the package, and source -> run: the API client is the
+        lowest thing there is, and a source says WHAT to run, never how.
+    """
+    import ast
+    import glob
+
+    import kcilib
+
+    root = kcilib.repo_root()
+    package = os.path.join(root, "scripts", "kcilib")
+    rules = {
+        # api.py is the lowest thing in the package: it may not import kcilib at
+        # all.  Naming the four submodules would let `from kcilib import
+        # repo_root` through, i.e. the rule would not be what this docstring says.
+        os.path.join(package, "api.py"): ("kcilib",),
+        os.path.join(package, "source.py"): ("kcilib.run",),
+        os.path.join(package, "core"): ("kcilib.run", "kcilib.table",
+                                        "kcilib.source"),
+        os.path.join(package, "run"): ("kcilib.table", "kcilib.source"),
+    }
+    scanned, offenders = 0, []
+    for target, banned in rules.items():
+        paths = ([target] if target.endswith(".py")
+                 else sorted(glob.glob(os.path.join(target, "*.py"))))
+        check(paths, f"no module found under {os.path.relpath(target, root)}; "
+                     "the layering check would pass by scanning nothing")
+        for path in paths:
+            scanned += 1
+            with open(path, encoding="utf-8") as handle:
+                tree = ast.parse(handle.read(), filename=path)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    names = [node.module]
+                elif isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                else:
+                    continue
+                for name in names:
+                    for module in banned:
+                        if name == module or name.startswith(module + "."):
+                            offenders.append(
+                                f"{os.path.relpath(path, root)}:{node.lineno} "
+                                f"imports {name}")
+    check(scanned >= 15, f"only {scanned} modules scanned; the glob is wrong")
+    check(not offenders,
+          "a layer imports upward (see docs/ARCHITECTURE.md's dependency table); "
+          "move the shared thing down instead of reaching up: "
+          + ", ".join(offenders))
+    print("test_layers_import_downward_only OK")
+
+
 def test_shell_scripts_reference_live_modules():
     """A file that moves must not leave a shell caller on the old path.
 

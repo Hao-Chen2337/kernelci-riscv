@@ -10,6 +10,7 @@ from . import (
     poll_checks,
     ports,
     references,
+    retention_checks,
     sources,
     state_cursor,
     worker_lock,
@@ -23,6 +24,8 @@ def main():
     ansi_tap_judge.test_job_error()
     ansi_tap_judge.test_lava_body_cap_and_boot_guard()
     jobrun_checks.test_build_command_validation()
+    jobrun_checks.test_build_command_argv()
+    jobrun_checks.test_run_node_never_raises_on_a_malformed_definition()
     poll_checks.test_iso_ago()
     callbacks.test_post_result_classification()
     downloads.test_download_complete_part_and_416()
@@ -31,6 +34,7 @@ def main():
     jobrun_checks.test_clamp_timeout()
     jobrun_checks.test_archive_console_log()
     poll_checks.test_handle_event_non_json()
+    poll_checks.test_job_definition_failure_is_transient()
     callbacks.test_missing_callback_keeps_result_pending()
     callbacks.test_state_flushed_before_a_crash()
     poll_checks.test_poll_loop_persists_cursor_and_seen()
@@ -47,6 +51,8 @@ def main():
     sources.test_newest_source_reports_no_build()
     sources.test_get_source_unknown_name()
     references.test_no_repo_root_is_counted_with_dirname()
+    references.test_layers_import_downward_only()
+    retention_checks.test_retention_plan_and_prune()
     references.test_shell_scripts_reference_live_modules()
     config_drift_parser.test_config_drift_parser()
     worker_lock.test_worker_lock()

@@ -10,7 +10,6 @@ config a programmatic caller gets.  Flag order, help strings and the fact that
 import argparse
 
 from kcilib.core import config
-from kcilib.core.params import KVM_TEST_SUBSET
 
 
 def build_parser():
@@ -141,21 +140,21 @@ def build_parser():
     parser.add_argument(
         "--kvm-full",
         action="store_true",
-        help="Run the whole kvm collection (no TST_CASENAME allow-list). "
+        help="Run the whole kvm collection (no TST_CASENAME). "
         "perf/stress time out under TCG; timeouts are reported as "
-        "incomplete, never fail. Default: curated 8-test subset.",
+        "incomplete, never fail. Default: everything the build shipped "
+        "minus the exclusion list (kcilib.core.params.KVM_SKIP_TESTS).",
     )
     parser.add_argument(
         "--kvm-tests",
         nargs="+",
-        default=KVM_TEST_SUBSET,
+        default=None,
         metavar="NAME",
-        help="Curated kvm selftest names run via the LKFT "
-        "TST_CASENAME allow-list (default: the 8 tests "
-        "in KVM_TEST_SUBSET).  kvm.ko is loaded at boot "
-        "through the modules-load.d conf baked into "
-        "tar.xz rootfs; with a pre-built ext4 rootfs "
-        "the image must load kvm itself.",
+        help="Hand-named kvm selftests run via the LKFT TST_CASENAME list, "
+        "replacing the default exclusion.  Default: everything the build's "
+        "kselftest tarball ships minus KVM_SKIP_TESTS.  kvm.ko is loaded "
+        "at boot through the modules-load.d conf baked into the tar.xz "
+        "rootfs; with a pre-built ext4 rootfs the image must load kvm itself.",
     )
     parser.add_argument(
         "--api-config-name",

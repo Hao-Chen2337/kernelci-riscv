@@ -40,58 +40,6 @@ SERVE_READY_TIMEOUT = 15.0
 
 
 # ---------------------------------------------------------------------------
-# Mode names: one field selects the mode, a typo never falls back to a default
-# ---------------------------------------------------------------------------
-
-IN_CONTAINER = "in_container"
-LOCAL_SERVER = "local_server"
-MODES = (IN_CONTAINER, LOCAL_SERVER)
-# Default stays the executor's behaviour today: the URL goes to tuxrun.
-DEFAULT_MODE = IN_CONTAINER
-
-
-def validate(mode):
-    """Return *mode* if it is a known delivery mode, else raise ValueError.
-
-    A misspelled mode must not fall back to the default silently: that would
-    make "I chose local_server" and "I chose nothing" look identical here.
-    """
-    if mode not in MODES:
-        raise ValueError(
-            f"unknown delivery mode {mode!r}; expected one of "
-            f"{', '.join(MODES)}")
-    return mode
-
-
-def describe(mode):
-    """One-line description of *mode*, for --help, logs and reports."""
-    validate(mode)
-    if mode == IN_CONTAINER:
-        return ("in_container: the artifact URL goes straight to tuxrun and the "
-                "container downloads it (no local disk, tuxrun does the checking)")
-    return ("local_server: the artifacts are downloaded and verified locally, then "
-            "served to the container over a local HTTP server (costs disk and a "
-            "port, buys a check before the guest starts)")
-
-
-def kernel_url(mode, url, served_url=None):
-    """The address the kernel is taken from.
-
-    in_container returns *url* itself; local_server returns *served_url*,
-    which must be passed explicitly: the caller owns the gateway knowledge,
-    and a missing one is a programming error, not a guessable default.
-    """
-    validate(mode)
-    if mode == IN_CONTAINER:
-        return url
-    if not served_url:
-        raise ValueError(
-            "local_server delivery needs the address its artifact server "
-            "serves (see start_artifact_server); got no served_url")
-    return served_url
-
-
-# ---------------------------------------------------------------------------
 # local_server: artifacts on disk (transfer + manifest + size record)
 # ---------------------------------------------------------------------------
 
@@ -432,18 +380,29 @@ def stop_artifact_server(server):
         server.kill()
 
 
+class ArtifactServerError(RuntimeError):
+    """The artifact server cannot be trusted to serve this run's kernel.
+
+    Raised instead of exiting the process: this library is also called by a
+    resident worker, where one busy port must cost a job, not the daemon.  An
+    entry point that wants a process exit status catches this and uses sys.exit()
+    itself (scripts/fetch-and-run-latest.py does exactly that, keeping the stderr
+    text, the infra record and status 1 it produced when these were sys.exit()).
+    """
+
+
 def start_artifact_server(out, port, node, kernel_path):
     """Start the artifact server and prove what it serves before tuxrun runs.
 
     The port is probed first (busy = a loud refusal, never the stale server
     that once served an older build - #12), and the served build-id plus
     Image size are read back through the very port tuxrun is handed. The
-    probe binds 0.0.0.0, as the stack serves. Refusals are sys.exit(): a
-    resident caller (the worker) would have to raise instead.
+    probe binds 0.0.0.0, as the stack serves. Refusals raise
+    ArtifactServerError, never SystemExit (a resident caller exists).
     """
     if not ports.port_is_free(port, host="0.0.0.0"):
         holder = ports.port_holder(port)
-        sys.exit(
+        raise ArtifactServerError(
             f"artifact server port {port} is already in use ({holder}).\n"
             "    A stale server from an earlier run would serve an OLDER build "
             f"to tuxrun while this run reports {node.get('id')} - refusing to "
@@ -478,7 +437,7 @@ def start_artifact_server(out, port, node, kernel_path):
     if served is None or served.get("node_id") != node.get("id"):
         stop_artifact_server(server)
         got = served.get("node_id") if isinstance(served, dict) else "no answer"
-        sys.exit(
+        raise ArtifactServerError(
             f"artifact server on port {port} did not serve build "
             f"{node.get('id')} (got {got}); refusing to run tuxrun against an "
             "unknown build.\n"
@@ -492,7 +451,7 @@ def start_artifact_server(out, port, node, kernel_path):
     local_size = os.path.getsize(kernel_path)
     if served_bytes != local_size:
         stop_artifact_server(server)
-        sys.exit(
+        raise ArtifactServerError(
             f"artifact server serves {name} as {served_bytes} but the verified "
             f"file on disk is {local_size} bytes; refusing to boot a different "
             "or truncated kernel.")

@@ -259,11 +259,6 @@ def callback_token():
     return os.environ.get(CALLBACK_TOKEN_ENV)
 
 
-def callback_target(job):
-    """The (callback_url, token) pair that heads a report tuple."""
-    return callback_url(job), callback_token()
-
-
 def pending_entry(report):
     """The persistable half of a (callback_url, token, body) report tuple.
 

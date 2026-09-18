@@ -58,11 +58,6 @@ DEFAULT_ROOTFS_URL = (
 # evidence - so this record and the worker's callback are one verdict.
 
 
-def api_get(path, api):
-    """One GET through the shared client (kcilib/api.py): no stack, no token."""
-    return KernelCI(api).get(path)
-
-
 def pick_newest(job, api):
     """Newest done/pass kbuild node (the API pages old-first: widen the window)."""
     for days in (3, 7, 30, 180):
@@ -304,20 +299,32 @@ def run_once(args, run_config, node, out, record, rootfs):
         except OSError:
             gateway = "172.17.0.1"
     base = f"http://{gateway}:{args.serve_port}"
-    server = delivery.start_artifact_server(out, args.serve_port, node, kernel)
+    try:
+        server = delivery.start_artifact_server(out, args.serve_port, node,
+                                                kernel)
+    except delivery.ArtifactServerError as error:
+        # The library raises; only an entry point decides a process exit status.
+        # sys.exit(str(error)) is exactly what delivery.py used to do, so the
+        # stderr text, the infra record main() writes and status 1 are unchanged.
+        sys.exit(str(error))
     log_path = os.path.join(out, "tuxrun.log")
     try:
         # kcilib.core.params.cpu_for(): the KVM jobs need the H extension.
         parameters = [f"cpu={params.cpu_for(run_config.cpu, args.test)}"]
         if args.test != "boot":
             parameters.append(f"KSELFTEST={base}/kselftest.tar.xz")
-            # kcilib.core.params.kvm_allow_list(): the curated subset in the
-            # "kvm:name ..." form the LKFT script wants, as ONE --parameters entry;
-            # --kvm-full asks for the whole collection, i.e. no allow-list at all.
+            # Exclusion, not an allow-list: everything the build's kselftest
+            # tarball ships minus KVM_SKIP_TESTS, listed from the tarball already
+            # fetched into out/ above.  --kvm-full skips this (whole collection,
+            # no TST_CASENAME).
             if (args.test == "kselftest-kvm" and modules
                     and not run_config.kvm_full):
-                parameters.append(
-                    f"TST_CASENAME={params.kvm_allow_list()}")
+                names = params.kvm_tests_to_run(
+                    artifacts.tarball_executables(
+                        os.path.join(out, "kselftest.tar.xz"), subdir="kvm"))
+                if names:
+                    parameters.append(
+                        "TST_CASENAME=" + " ".join(f"kvm:{n}" for n in names))
         argv = runner.build_tuxrun_argv(
             tuxrun_bin=run_config.tuxrun_bin,
             runtime=run_config.container_runtime, device="qemu-riscv64",

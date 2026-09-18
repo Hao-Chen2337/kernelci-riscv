@@ -177,10 +177,21 @@ class KernelCI:
         return job
 
 
+def local_api_url():
+    """The local API's base URL: $KCI_API_URL when set, else LOCAL_API.
+
+    One place decides this, because a second deployment moves the local API with
+    KCI_API_URL (docs/RUNBOOK.md) and the four callers that used to spell the
+    fallback themselves disagreed on it - "localhost" in the two tools, which can
+    resolve to ::1 on a dual-stack host while the stack publishes IPv4 only.
+    """
+    import os
+    return os.environ.get("KCI_API_URL") or LOCAL_API
+
+
 def client(api_url=None, token=None, **kwargs):
     """The client for *api_url* (or $KCI_API_URL, or the local default)."""
-    import os
-    base = api_url or os.environ.get("KCI_API_URL") or LOCAL_API
+    base = api_url or local_api_url()
     return KernelCI(base, token=token, **kwargs)
 
 

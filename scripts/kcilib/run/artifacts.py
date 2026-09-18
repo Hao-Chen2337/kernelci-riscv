@@ -11,9 +11,11 @@ kernel, and a .part already at its own recorded total drew 416 forever.
 Nothing here swallows a failure.  Rationale: docs/code-notes/W2c-kcilib.md.
 """
 
+import hashlib
 import json
 import os
 import re
+import tarfile
 import time
 
 import requests
@@ -277,3 +279,52 @@ def looks_complete(dest):
     if not isize:
         return True
     return os.path.getsize(dest) == isize
+
+
+def tarball_executables(path, subdir="kvm"):
+    """Executable regular files under *subdir/* in a tarball, by basename.
+
+    A kselftest tarball's kvm/ dir holds the test binaries (mode +x) plus
+    ``config`` and ``settings`` (mode -x), so the executable bit is the test
+    filter: config files are not run, and no fixed list can name a test the
+    kernel never built."""
+    names = set()
+    with tarfile.open(path) as tf:
+        for member in tf.getmembers():
+            if not member.isfile() or not (member.mode & 0o111):
+                continue
+            parts = member.name.replace("\\", "/").split("/")
+            if len(parts) >= 2 and parts[-2] == subdir:
+                names.add(parts[-1])
+    return names
+
+
+def kselftest_cache_dir():
+    """Where kselftest tarballs are cached for listing (work/env/kselftest/).
+
+    Small (a few MB each), but the list is read before every kselftest-kvm job,
+    so a per-build tarball is downloaded once and reused across re-runs.  Lives
+    in the gitignored work/ tree, in its own subdirectory beside the bake cache.
+    """
+    from kcilib import repo_root
+    return os.path.join(repo_root(), "work", "env", "kselftest")
+
+
+def kselftest_kvm_tests(url, cache_dir=None, max_size=MAX_DOWNLOAD_SIZE):
+    """The kvm test binaries a kselftest tarball ships, sorted by name.
+
+    Downloads *url* once into *cache_dir* (keyed on the URL, which embeds the
+    build id and so is immutable) and lists its executable kvm/ entries.  An
+    empty list means the build has no kvm collection."""
+    cache_dir = cache_dir or kselftest_cache_dir()
+    key = hashlib.sha256(url.encode()).hexdigest()[:16]
+    suffix = ""
+    for ext in (".tar.xz", ".tar.gz", ".tgz", ".tar"):
+        if url.endswith(ext):
+            suffix = ext
+            break
+    path = os.path.join(cache_dir, f"{key}{suffix}")
+    if not os.path.isfile(path):
+        os.makedirs(cache_dir, exist_ok=True)
+        download(url, path, max_size=max_size)
+    return sorted(tarball_executables(path, subdir="kvm"))

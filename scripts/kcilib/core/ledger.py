@@ -72,6 +72,29 @@ _FIELD_DEFAULTS = {
 }
 
 
+def test_of(definition):
+    """A job definition -> the test name its record is filed under.
+
+    ``tests[0].type``, then ``tests[0].id``, then ``"boot"``.  The name is part of
+    the layout below, so the rule lives with it: kcilib.table.jobspec.test_of and
+    the run path (kcilib.run.jobrun.record_result) both call this one, instead of
+    keeping a copy each.
+
+    The run path's copy had no type check, and it runs OUTSIDE run_node's error
+    handling, so a definition shaped ``{"tests": ["boot"]}`` raised AttributeError
+    out of run_node - poll.handle_event reads that as "handled", marks the node
+    seen, and the node's result is never posted and never retried.  A malformed
+    tests[0] is therefore "boot" here, never an exception.
+    """
+    tests = definition.get("tests") or [{}]
+    if not isinstance(tests, (list, tuple)):
+        # `tests: 5` / `tests: true` is not a list at all; tests[0] would raise
+        # TypeError, and a raise here is the failure this function exists to stop.
+        return "boot"
+    first = tests[0] if tests and isinstance(tests[0], dict) else {}
+    return first.get("type") or first.get("id") or "boot"
+
+
 def result_path(build_id, test):
     """The record path for one (build, test): the only place the layout lives."""
     return os.path.join(results_dir(), build_id, f"{test}.json")

@@ -9,7 +9,7 @@ import time as _time
 from contextlib import contextmanager
 
 import requests as _real_requests
-from kcilib.core import config, params
+from kcilib.core import config
 from kcilib.core.state import StateFile
 from kcilib.run import jobrun
 
@@ -135,7 +135,7 @@ def _run_job_config(tmp):
         platform="qemu-riscv64",
         output_dir=os.path.join(tmp, "out"), keep_workspace=False,
         log_dir=os.path.join(tmp, "logs"), tuxrun_bin="tuxrun",
-        cpu="rv64", container_runtime="", kvm_tests=params.KVM_TEST_SUBSET,
+        cpu="rv64", container_runtime="", kvm_tests=None,
         max_download_size=(1 << 20), api_config_name="docker-host",
         storage_config_name="docker-host", kvm_full=False, rootfs="",
         max_timeout=1200, min_timeout=jobrun.MIN_TIMEOUT,

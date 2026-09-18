@@ -79,22 +79,26 @@ def run_job(definition, run_config=None, node_id=None):
                                          source=SOURCE_TABLE)
     outcome = outcome_from(body)
     outcome["callback_url"] = callback_url
-    outcome["record"] = _record_path(definition)
+    outcome["record"] = _record_path(definition, node_id)
     outcome["report"] = (callback_url, token, body) if callback_url else None
     return outcome
 
 
-def _record_path(definition):
+def _record_path(definition, node_id):
     """The ledger file this run actually landed in, or None.
 
     The path is recomputed from the definition's artifact URLs, so it is a
     prediction, not a receipt; os.path.exists turns it into a fact.
+
+    It mirrors kcilib.run.jobrun.record_result's naming exactly, node-id fallback
+    included: without that fallback a run whose artifact URLs name no build id was
+    recorded under the node id while this returned None, so the record existed and
+    the table printed nothing.
     """
     from kcilib.run.artifacts import build_id_from_artifacts
-    from kcilib.table.jobspec import test_of
-    build_id = build_id_from_artifacts(definition.get("artifacts") or {})
-    test = test_of(definition)
-    if not build_id or not test:
+    artifacts = definition.get("artifacts") or {}
+    build_id = build_id_from_artifacts(artifacts) or node_id or ""
+    if not build_id:
         return None
-    path = ledger.result_path(build_id, test)
+    path = ledger.result_path(build_id, ledger.test_of(definition))
     return path if os.path.exists(path) else None
