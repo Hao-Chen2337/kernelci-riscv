@@ -1,16 +1,16 @@
-"""The interface layer (kci), and the table line that runs through it.
+"""The model layer (kcilib.model), and the table line that runs through it.
 
 Two things this suite did not cover before, both of which the 2026-09-18 wiring
 made load-bearing:
 
-* kci's Outcome is read by older callers through the dict protocol the run
+* the model's Outcome is read by older callers through the dict protocol the run
   result used to be (local-jobs.py's loop, kcilib.sink's ledger sink), so that
   contract is pinned here - including that the key set is EXACTLY the old one,
   because a reader testing ``"log" in outcome`` would otherwise enter a branch
   that never existed.
-* the run of a table row goes through kci.Job.run, which must send the very
-  definition kcilib.table.jobspec renders for that row - the object layer is
-  not allowed to grow a second idea of what a row is.
+* the run of a table row goes through kcilib.model.Job.run, which must send the
+  definition Job.definition() renders for that row - the object layer is not
+  allowed to grow a second idea of what a row is.
 
 Added for the one-shot fetch line's move onto the same call: run()'s two
 deliveries (kcilib.run.delivery's in_container and local_server) and the ledger
@@ -18,36 +18,50 @@ deliveries (kcilib.run.delivery's in_container and local_server) and the ledger
 driven with that module's own functions recorded, never with a copy of it, so a
 future divergence in delivery.py is a failure here and not a silently different
 run.
+
+The 2026-09-19 name cleanup left ONE build class and ONE job object: Build
+(kcilib.table.build, the table's row and the model's card at once) and Job
+(kcilib.model.jobs, with the definition it renders).  BuildRef, Kbuild, JobSpec,
+jobs_from_build() and jobspec.job_definition() are gone, so the conversions this
+suite used to drive (row -> card -> spec) are gone with them - each check below
+says what replaced the name it used.
 """
 import json
 import os
 import tempfile
 
 import kcilib.model.jobs as kci_jobs
-from kcilib.core import ledger
+from kcilib.core import ledger, policy
 from kcilib.model import (
     DELIVERY_IN_CONTAINER,
     DELIVERY_LOCAL_SERVER,
     ORIGIN_API,
     SOURCE_FETCH,
+    Build,
+    Builds,
     Job,
     Jobs,
-    Kbuild,
-    Kbuilds,
     Outcome,
 )
-from kcilib.table import buildref, jobspec
+from kcilib.model.jobs import jobs_for
 
 from .support import check
 
-# The keys kcilib.table.localrun.run_job returned before the object layer.
+# The keys the pre-object-layer run result carried (kcilib.table.localrun's
+# run_job, deleted with the table's object layer).  local-jobs.py's loop and
+# kcilib.sink.LedgerSink.deliver still read Outcome through them.
 OLD_KEYS = ("verdict", "exit_code", "detail", "status", "record", "report",
             "callback_url")
 
 
-def _row():
-    """A table row: one BuildRef plus the one test it can support."""
-    ref = buildref.BuildRef(
+def _build():
+    """The one table row this suite runs: a Build with every artifact.
+
+    It was a BuildRef; BuildRef and the model's Kbuild are one class now
+    (kcilib.table.build.Build), so this object is the table's row AND the
+    model's card - there is no conversion left between them to pin.
+    """
+    return Build(
         build_id="6aa3689720239ade90209d50",
         artifacts={"kernel": "https://files.kernelci.org/x/Image.gz",
                    "kselftest_tar_xz": "https://files.kernelci.org/x/ks.tar.xz",
@@ -55,24 +69,32 @@ def _row():
         tree="net-next", branch="main", commit="348ea4642f56ab3d" * 2,
         describe="v7.3-rc2-655-g348ea4642f56a",
         created="2026-09-11T02:33:59.007000", node_id="6aa3689720239ade90209d50",
-        source="official")
-    specs, _skipped = jobspec.jobs_from_build(ref, tests=["boot"])
-    return specs[0]
+        origin=ORIGIN_API)
 
 
-def _container(ref):
-    """One BuildRef from the table -> a Kbuilds holding one card."""
-    card = Kbuilds()
-    card.add(Kbuild(ref.build_id, ref.artifacts, tree=ref.tree,
-                   branch=ref.branch, commit=ref.commit, describe=ref.describe,
-                   created=ref.created, node_id=ref.node_id,
-                   origin=ORIGIN_API))
-    return card
+def _row():
+    """The table line's own row -> Job: kcilib.model.jobs.jobs_for(build, ...).
+
+    jobs_from_build() + the JobSpec->Job conversion are one call now, so this
+    is the only way this suite gets a runnable row - and it is the way the entry
+    points get one.
+    """
+    jobs, _skipped = jobs_for(_build(), tests=["boot"])
+    return jobs[0]
 
 
-def _card(ref):
-    """The single Kbuild card for one table row."""
-    return _container(ref).builds[0]
+def _container(build):
+    """One Build from the table -> a Builds holding one card."""
+    builds = Builds()
+    check(builds.add(build) is build,
+          "Builds.add must hand back the build it holds; a build is one card "
+          "per build_id, copied by nobody")
+    return builds
+
+
+def _card(build):
+    """The single build card for one table row."""
+    return _container(build).builds[0]
 
 
 def test_outcome_is_dict_shaped_for_old_readers():
@@ -117,28 +139,132 @@ def test_outcome_is_dict_shaped_for_old_readers():
 
 
 def test_job_run_matches_the_table_line():
-    """A row's run must be the table line's own run, down to the definition.
+    """A row's run must be the row's own definition, key by key.
 
-    This guard used to compare two ways to run one row: kci.Job.run and
-    kcilib.table.localrun.run_job, the old shell over run_node that no
-    production caller used any more (removed 2026-09-18, with the move of the
-    object layer to kci/).  What it was comparing for is what is pinned here,
-    and it is pinned harder: Job.run() must reach
-    kcilib.run.jobrun.run_node with the byte-identical definition
-    kcilib.table.jobspec renders for that same row, with the row's build id as
-    the node id and with the table's ledger source - so ./run.sh run cannot
-    drift from the table line.  run_node itself is not called: the run is
-    checked at the call boundary.
+    This guard used to compare two renderers of one row: Job._definition() had
+    to be byte-identical to kcilib.table.jobspec.job_definition(spec), the
+    table's renderer, because the object layer was not allowed to grow a second
+    idea of what a row is.  That comparison cannot be asked any more, and it is
+    not a weaker guard for it: there is ONE renderer (Job.definition(), in
+    kcilib/model/jobs.py) and the second one was deleted with the two classes it
+    served (table/jobspec.py and JobSpec, 2026-09-19).  What the two-renderer
+    comparison was protecting - that a row's definition is upstream-shaped and
+    that ./run.sh run cannot drift from the table line - is pinned here
+    directly, and harder than a byte-compare against another local renderer: the
+    SHAPE of the definition is asserted key by key, so a change to it fails
+    whether or not some second renderer changed with it.
+
+    Pinned, all of it on the real table row (build -> jobs_for -> Job):
+      * the key set is exactly artifacts/tests/environment - upstream's three,
+        and no fourth (a stray key is a key tuxrun reads and the pipeline did
+        not send);
+      * artifacts carries tuxrun's own rootfs (POLICY.rootfs_url: a local path
+        would be a bind mount) and the executor's "kselftest" key is the rename
+        of the index's raw "kselftest_tar_xz" - one tarball, two spellings, and
+        both must point at the same URL;
+      * no callback URL means NO callback section at all, and a job that carries
+        one has it in the definition - otherwise a dispatched job's result is
+        never posted;
+      * tests[0] is exactly the six fields pull_labs.jinja2 renders, with the
+        job's own test as id and type and the policy's timeout;
+      * Job.run() reaches kcilib.run.jobrun.run_node ONCE, with that same
+        definition, the row's build id as the node id and the table's ledger
+        source - the run is checked at the call boundary, run_node itself is
+        not called.
     """
-    spec = _row()
-    ref = spec.build
-    build = _card(ref)
-    job = Job(build.build_id, spec.test, timeout_s=spec.timeout_s,
-              artifacts=dict(build.artifacts), build=build)
+    job = _row()
+    build = job.build
+    check(build is not None and build is job.build,
+          "a row from the table line must carry the Build it came from")
+    check(job.build_id == build.build_id and job.test == "boot",
+          f"the row is not the build's own boot job: {job!r}")
 
-    rendered = json.dumps(jobspec.job_definition(spec), sort_keys=True)
-    check(json.dumps(job._definition(), sort_keys=True) == rendered,
-          "Job._definition() drifted from the table line's job_definition()")
+    definition = job.definition()
+    check(set(definition) == {"artifacts", "tests", "environment"},
+          f"the definition's key set changed: {sorted(definition)}")
+
+    artifacts = definition["artifacts"]
+    check(artifacts.get("rootfs") == policy.POLICY.rootfs_url,
+          "the definition must inject tuxrun's own rootfs "
+          f"({policy.POLICY.rootfs_url}), got {artifacts.get('rootfs')!r}")
+    # ... and it is a URL tuxrun fetches, not a path this host happens to have
+    # (a local path is a bind mount: the guest would get the invoking host's
+    # rootfs instead of the pinned nfsroot).  Compared to itself above, the
+    # policy value cannot catch that, so the shape is pinned too.
+    check(str(artifacts.get("rootfs", "")).startswith("https://")
+          and str(artifacts.get("rootfs")).endswith(".tar.xz"),
+          "the injected rootfs must be the pinned nfsroot tarball's URL: "
+          f"{artifacts.get('rootfs')!r}")
+    check(artifacts.get("kselftest") == artifacts.get("kselftest_tar_xz")
+          == build.artifacts["kselftest_tar_xz"],
+          "the executor's kselftest key must be the index's raw "
+          f"kselftest_tar_xz: {artifacts.get('kselftest')!r} vs "
+          f"{artifacts.get('kselftest_tar_xz')!r}")
+    check(artifacts.get("kernel") == build.artifacts["kernel"]
+          and artifacts.get("modules") == build.artifacts["modules"],
+          f"the definition rewrote a URL: {artifacts}")
+    check("callback" not in definition,
+          "without a callback URL the definition must carry no callback "
+          "section at all")
+    check(set(definition["environment"]) == {"platform", "arch", "console"},
+          f"the environment's keys changed: {sorted(definition['environment'])}")
+    check(definition["environment"]["platform"] == policy.POLICY.platform
+          and definition["environment"]["arch"] == policy.POLICY.arch,
+          f"the environment is not the policy's: {definition['environment']}")
+    check(definition["environment"]["console"] == {"method": "serial",
+                                                   "baud": 115200},
+          f"the console changed: {definition['environment']['console']}")
+
+    tests = definition["tests"]
+    check(len(tests) == 1, f"one job is one test entry: {tests}")
+    check(set(tests[0]) == {"id", "type", "depends", "timeout_s",
+                            "pre-commands", "post-commands"},
+          f"tests[0]'s fields changed: {sorted(tests[0])}")
+    check(tests[0]["id"] == tests[0]["type"] == job.test,
+          f"tests[0] is not this job's test: {tests[0]}")
+    check(tests[0]["depends"] == [] and tests[0]["pre-commands"] == []
+          and tests[0]["post-commands"] == [],
+          f"a locally rendered test has no dependencies or commands: {tests[0]}")
+    check(tests[0]["timeout_s"] == job.timeout_s
+          == policy.POLICY.seconds_test_timeouts["boot"],
+          f"the timeout is not the policy's for boot: {tests[0]['timeout_s']}")
+
+    # A callback URL does reach the definition - and it is the only difference.
+    url = "http://127.0.0.1:8003/n/1"
+    called = Job(job.build_id, job.test, timeout_s=job.timeout_s,
+                 artifacts=dict(job.artifacts), callback={"url": url},
+                 build=build).definition()
+    check(called.get("callback") == {"url": url,
+                                     "token_name": "kernelci-pipeline-callback"},
+          f"a callback URL did not reach the definition: {called.get('callback')}")
+    check({key: value for key, value in called.items() if key != "callback"}
+          == definition,
+          "the callback changed something other than the callback section")
+    # A caller naming its own token keeps it (the default above is only a
+    # default): the sink posts with the token the pipeline's deployment knows.
+    named = Job(job.build_id, job.test, timeout_s=job.timeout_s,
+                artifacts=dict(job.artifacts),
+                callback={"url": url, "token_name": "some-other-token"},
+                build=build).definition()
+    check(named["callback"]["token_name"] == "some-other-token",
+          f"a named token did not reach the definition: {named['callback']}")
+
+    # The one exception to "definition() renders": a job pulled from the API
+    # runs the definition the pipeline served, verbatim (Jobs._job_from_node
+    # sets this).  Re-rendering it would inject our rootfs and rewrite
+    # tests[0].id - i.e. run something the pipeline did not ask for.
+    served_definition = {"artifacts": {"kernel": "http://api/x/Image"},
+                         "tests": [{"id": "baseline", "type": "baseline"}],
+                         "callback": {"url": "http://api/cb"}}
+    served = Job("b" * 24, "baseline")
+    served._served = served_definition
+    check(served.definition() is served_definition,
+          "a pulled job must hand run_node the API's own definition object, "
+          "not a re-render of it")
+    check("rootfs" not in served.definition()["artifacts"],
+          "a pulled definition was rewritten with our own rootfs")
+
+    rendered = json.dumps(definition, sort_keys=True)
 
     seen = []
 
@@ -155,8 +281,8 @@ def test_job_run_matches_the_table_line():
         kci_jobs._jobrun.run_node = real_run_node
     check(len(seen) == 1, f"one row is one run_node call: {seen}")
     check(seen[0][0] == rendered,
-          "Job.run() sent a definition the table line's renderer did not "
-          "produce")
+          "Job.run() sent a definition its own definition() did not produce "
+          "(there is one renderer, and run() must send its output verbatim)")
     check(seen[0][1] == build.build_id,
           f"the node id is not the row's build id: {seen[0][1]}")
     check(seen[0][2] == "table",
@@ -191,7 +317,7 @@ def test_jobs_runs_a_row_and_records_it():
         def fake_run_node(definition, run_config, node_id=None, source=None):
             calls.append((node_id, source))
             ledger.write_result(
-                node_id, jobspec.test_of(definition),
+                node_id, ledger.test_of(definition),
                 {"verdict": "pass", "exit_code": 0, "source": source})
             return None, None, {"status": 2, "results": {}}
 
@@ -242,7 +368,7 @@ def test_job_run_refuses_an_unknown_delivery_and_files_its_source():
     spec = _row()
     build = _card(spec.build)
     job = Job(build.build_id, spec.test, timeout_s=spec.timeout_s,
-              artifacts={}, build=Kbuild(build.build_id, {}))
+              artifacts={}, build=Build(build.build_id, {}))
 
     with tempfile.TemporaryDirectory() as tmp:
         real_env = os.environ.get(ledger.RESULTS_DIR_ENV)
@@ -427,9 +553,9 @@ def test_job_run_local_server_delivery():
                   f"{key} is not served from {base}/{name}: {served.get(key)}")
         check(served.get("_config") == "https://files.kernelci.org/x/.cfg",
               "an artifact the run layer never fetches was rewritten")
-        check(served.get("rootfs") == jobspec.ROOTFS_URL,
+        check(served.get("rootfs") == policy.POLICY.rootfs_url,
               "the rootfs must stay tuxrun's own (a local path is a bind mount)")
-        check(definitions[0]["tests"] == job._definition()["tests"],
+        check(definitions[0]["tests"] == job.definition()["tests"],
               "the served definition rewrote something other than URLs")
 
         order = [call[0] for call in first_calls]

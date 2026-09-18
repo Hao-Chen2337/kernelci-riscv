@@ -4,8 +4,14 @@
 
 Job is the intent (build, test, timeout) plus the definition its executor gets;
 Outcome is what one run produced; Jobs is the collection that runs them one
-after another.  The definition shape comes from kcilib.table.jobspec and the
-run from kcilib.run.jobrun, so this layer adds no definition of its own.
+after another.  Job renders its own definition (definition()), shaped like
+kernelci-pipeline's pull_labs.jinja2, and the run is kcilib.run.jobrun's - so
+this layer owns the definition and re-implements no execution.
+
+It used to be two names: JobSpec was the table's row and Job was this card, and
+every caller converted one into the other (and a card into a BuildRef and back)
+before anything could run.  JobSpec and jobs_from_build() are gone; jobs_for()
+is the one "one build -> its jobs".
 
 How a run's artifacts reach the guest is kcilib.run.delivery's two modes:
 in_container (the default - run_node hands tuxrun the URLs and the container
@@ -34,19 +40,17 @@ from dataclasses import replace as _replace
 from kcilib.core import config as _config
 from kcilib.core import ledger as _ledger
 from kcilib.core import params as _params
+from kcilib.core import policy as _policy
 from kcilib.run import artifacts as _artifacts
 from kcilib.run import callback as _callback
 from kcilib.run import delivery as _delivery
 from kcilib.run import jobrun as _jobrun
 from kcilib.run import judge as _judge
 from kcilib.run import runner as _runner
-from kcilib.table import buildref as _buildref
-from kcilib.table import jobspec as _jobspec
+from kcilib.table.build import ORIGIN_API, ORIGIN_API_LOCAL, Build
 
-from .builds import Kbuild, Kbuilds
+from .builds import Builds
 from .nodes import (
-    ORIGIN_API,
-    ORIGIN_API_LOCAL,
     JobPuller,
     KernelCINode,
     origin_for,
@@ -350,18 +354,19 @@ class Job:
                  artifacts: Mapping[str, str] | None = None,
                  callback: Mapping[str, str] | None = None,
                  origin: str = ORIGIN_API, notes: str = "",
-                 build: Kbuild | None = None) -> None:
+                 build: Build | None = None) -> None:
         # Mapping, not dict: this layer's public signatures name no bare dict.
         self.build_id: str = build_id
         self.test: str = test
         self.timeout_s: int = (
-            timeout_s or _jobspec.TEST_TIMEOUTS.get(test, DEFAULT_TIMEOUT))
+            timeout_s or _policy.POLICY.seconds_test_timeouts.get(
+                test, DEFAULT_TIMEOUT))
         self.artifacts: dict[str, str] = dict(artifacts or {})
         self.callback: dict[str, str] | None = (
             dict(callback) if callback else None)
         self.origin: str = origin
         self.notes: str = notes
-        self.build: Kbuild | None = build
+        self.build: Build | None = build
         # A pulled job keeps the definition the API served: run() passes it
         # through untouched (the resident worker does the same), instead of
         # re-rendering through jobspec - that would drop keys (integrity),
@@ -372,9 +377,9 @@ class Job:
     def missing(self) -> list[str]:
         """Artifacts this test needs and this job does not have.
 
-        With a Kbuild card the answer is the card's (kcilib.table.buildref owns
-        the per-test requirement); without one it is read off the artifacts the
-        job itself carries.
+        With a Build the answer is the build's (kcilib.table.build owns the
+        per-test requirement); without one it is read off the artifacts the job
+        itself carries.
         """
         if self.build is not None:
             return list(self.build.missing_for(self.test))
@@ -422,7 +427,7 @@ class Job:
         mode = _delivery_of(delivery)
         run_config = _run_config_for(config, overrides)
         named = node_id or self.build_id
-        definition = self._definition()
+        definition = self.definition()
         if mode == DELIVERY_LOCAL_SERVER:
             return self._run_served(definition, run_config, source, named,
                                     serve_port, gateway, out_dir,
@@ -706,36 +711,50 @@ class Job:
                     or node_id or self.build_id)
         return _existing(_ledger.result_path(build_id, self.test))
 
-    def _definition(self) -> dict:
-        """The definition handed to run_node, shaped exactly like the table's.
+    def definition(self) -> dict:
+        """The definition handed to run_node, shaped exactly like upstream's.
 
-        A locally listed job is built through kcilib.table.jobspec so this
-        layer cannot drift from the definition the local job table renders for
-        the same input.  A pulled job returns the definition the API served,
-        verbatim: it is what the pipeline asked this lab to run.
+        Field names are the ones kernelci-pipeline's pull_labs.jinja2 renders, so
+        run_node cannot tell (and must not care) whether a definition came from
+        the API or was built here; the only difference is whether it carries a
+        callback URL, and that is what makes "run one of my own jobs" and "run
+        one the pipeline dispatched" the same thing at the execution layer.
+
+        A pulled job returns the definition the API served, verbatim: it is what
+        the pipeline asked this lab to run, and re-rendering it would drop keys
+        and inject our own rootfs.
         """
         if self._served is not None:
             return self._served
-        build = self.build
-        ref = _buildref.BuildRef(
-            build_id=self.build_id,
-            artifacts=self.artifacts,
-            tree=build.tree if build is not None else None,
-            branch=build.branch if build is not None else None,
-            commit=build.commit if build is not None else None,
-            describe=build.describe if build is not None else None,
-            created=build.created if build is not None else None,
-            node_id=build.node_id if build is not None else None,
-            source=_source_for(self.origin),
-        )
-        spec = _jobspec.JobSpec(self.build_id, self.test, self.timeout_s,
-                                build=ref)
         callback = self.callback or {}
-        return _jobspec.job_definition(
-            spec,
-            callback_url=callback.get("url"),
-            token_name=callback.get("token_name"),
-        )
+        artifacts = dict(self.artifacts, rootfs=_policy.POLICY.rootfs_url)
+        # The executor reads "kselftest", but the index stores the API's raw key
+        # "kselftest_tar_xz" - the same rename the production template does.
+        artifacts["kselftest"] = (
+            artifacts.get("kselftest") or artifacts.get("kselftest_tar_xz") or "")
+        definition = {
+            "artifacts": artifacts,
+            "tests": [{
+                "id": self.test,
+                "type": self.test,
+                "depends": [],
+                "timeout_s": self.timeout_s,
+                "pre-commands": [],
+                "post-commands": [],
+            }],
+            "environment": {
+                "platform": _policy.POLICY.platform,
+                "arch": _policy.POLICY.arch,
+                "console": {"method": "serial", "baud": 115200},
+            },
+        }
+        if callback.get("url"):
+            definition["callback"] = {
+                "url": callback["url"],
+                "token_name": callback.get("token_name")
+                or "kernelci-pipeline-callback",
+            }
+        return definition
 
     def _log_path(self, run_config: _config.RunConfig,
                   node_id: str | None = None) -> str | None:
@@ -758,24 +777,46 @@ class Job:
         return f"<Job {self}>"
 
 
+def jobs_for(build: Build, tests=None, timeout_s=None):
+    """One build -> (its jobs, the tests it cannot support).
+
+    The one implementation of "which tests does this build run": it used to
+    exist twice, as table.jobspec.jobs_from_build (returning JobSpecs) and as
+    Kbuild.to_jobs (returning Jobs), and callers of the first had to convert its
+    rows into the second's cards before anything could run.  A test whose
+    artifacts are missing is reported with its reason, never dropped silently.
+    """
+    names = tuple(tests) if tests else _policy.DEFAULT_TESTS
+    jobs, skipped = [], []
+    for test in names:
+        missing = build.missing_for(test)
+        if missing:
+            skipped.append((test, f"missing artifact(s): {', '.join(missing)}"))
+            continue
+        jobs.append(Job(build.build_id, test, timeout_s=timeout_s,
+                        artifacts=dict(build.artifacts),
+                        origin=build.origin, notes=build.notes, build=build))
+    return Jobs(jobs), skipped
+
+
 class Jobs:
     """The middle job layer: a collection of Job."""
 
     def __init__(
-            self, source: Kbuilds | Kbuild | JobPuller | Sequence[Job] | None
+            self, source: Builds | Build | JobPuller | Sequence[Job] | None
             = None,
             *, tests: Sequence[str] | None = None) -> None:
         self.jobs: list[Job] = []
         if source is None:
             return
-        if isinstance(source, Kbuilds):
-            self._from_kbuild(source, tests)
-        elif isinstance(source, Kbuild):
+        if isinstance(source, Builds):
+            self._from_builds(source, tests)
+        elif isinstance(source, Build):
             # One card is a collection of one: Jobs(card, tests=[...]) is the
             # common case and reads better than wrapping it first.
-            one = Kbuilds()
+            one = Builds()
             one.add(source)
-            self._from_kbuild(one, tests)
+            self._from_builds(one, tests)
         elif isinstance(source, JobPuller):
             self._from_puller(source)
         else:
@@ -807,11 +848,11 @@ class Jobs:
                                         detail=str(error), job=job))
         return outcomes
 
-    def _from_kbuild(self, kbuild: Kbuilds,
+    def _from_builds(self, builds: Builds,
                      tests: Sequence[str] | None) -> None:
         """Every card x every test that card has the artifacts for."""
-        wanted = tuple(tests) if tests else _jobspec.DEFAULT_TESTS
-        for build in kbuild:
+        wanted = tuple(tests) if tests else _policy.DEFAULT_TESTS
+        for build in builds:
             for test in wanted:
                 missing = build.missing_for(test)
                 if missing:
@@ -852,12 +893,12 @@ class Jobs:
         callback = dict(callback) if isinstance(callback, dict) else None
         build_id = _artifacts.build_id_from_artifacts(artifacts)
         job = Job(
-            build_id, _jobspec.test_of(definition),
+            build_id, _ledger.test_of(definition),
             timeout_s=_definition_timeout(definition),
             artifacts=artifacts,
             callback=callback,
             origin=origin,
-            build=Kbuild(build_id, artifacts, origin=origin) if build_id
+            build=Build(build_id, artifacts, origin=origin) if build_id
             else None,
         )
         # Keep the served definition: run() must run what the API asked for,

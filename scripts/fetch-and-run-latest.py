@@ -30,17 +30,16 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _SCRIPT_DIR)
 
 from kcilib import repo_root
-from kcilib.core import config, layout
+from kcilib.core import config, layout, policy
 from kcilib.model import (
     DELIVERY_LOCAL_SERVER,
     SOURCE_FETCH,
+    Builds,
     Job,
     KbuildPuller,
-    Kbuilds,
     KernelCINode,
 )
 from kcilib.run import artifacts, bake, delivery, judge
-from kcilib.table import jobspec
 
 API = "https://api.kernelci.org"
 JOB = "kbuild-gcc-14-riscv"
@@ -64,7 +63,7 @@ DEFAULT_SERVE_IMAGE = os.path.join(WORK_SERVE, "Image")
 # pinned here but discovered from the newest production kbuild node: storage
 # prunes old builds (a pinned hash served modules.tar.xz but 404'd on its Image).
 # The URL has one owner - the artifact the job definitions carry themselves.
-DEFAULT_ROOTFS_URL = jobspec.ROOTFS_URL
+DEFAULT_ROOTFS_URL = policy.POLICY.rootfs_url
 
 # The verdict vocabulary is kcilib.run.judge's - exit statuses (0 pass, 1 test
 # failure, 3 infrastructure), the TAP parser, the timeout detail and the boot
@@ -174,7 +173,7 @@ def provision_only(args):
         if not node.artifact("kernel"):
             sys.exit(f"newest {args.job} node {node.node_id} carries no "
                      f"kernel artifact")
-        card = Kbuilds().add(node)
+        card = Builds().add(node)
         kernel_url = card.kernel
         modules_url = modules_url or card.modules
         revision = revision_of(node)
@@ -374,7 +373,7 @@ def main():
         json.dump({key: raw[key] for key in ("id", "name", "created", "data")},
                   handle, indent=1)
 
-    card = Kbuilds().add(node)
+    card = Builds().add(node)
     # The default rootfs used to be a hand-made 4GB file nothing generated: bake
     # it on first use (the run layer bakes a tarball rootfs, not this one).  An
     # explicit --rootfs is used verbatim, never generated.

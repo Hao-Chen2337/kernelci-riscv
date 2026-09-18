@@ -136,3 +136,8 @@ class Policy:
 # disagree.  Phase 1 moves those readers onto this table.
 POLICY = Policy()
 
+# The tests the pull-labs-riscv runtime claims: the three entries of
+# kernelci-pipeline/config/scheduler-pull-labs.yaml.  Not a number, so not a
+# Policy field, but it belongs with them: it is the one list of what to run.
+DEFAULT_TESTS = ("boot", "kselftest-riscv", "kselftest-kvm")
+

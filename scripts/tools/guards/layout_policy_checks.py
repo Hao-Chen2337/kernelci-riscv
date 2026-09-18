@@ -44,7 +44,12 @@ _POLICY_NUMBERS = (
     # the one ceiling would move the worker's limit and leave the bake path's
     # behind - a drift with no symptom until a 5 GiB image is refused.
     ("kcilib.run.artifacts", "MAX_DOWNLOAD_SIZE", "bytes_max_download"),
-    ("kcilib.table.jobspec", "PLATFORM", "platform"),
+    # The platform: config.DEFAULT_PLATFORM is what --platform defaults to and
+    # what the poll filter sends, so it has to be the one platform the
+    # definitions carry.  It used to be pinned on kcilib.table.jobspec.PLATFORM,
+    # which is gone (2026-09-19): the definition's environment.platform is
+    # POLICY.platform now, and this is the second spelling that survived.
+    ("kcilib.core.config", "DEFAULT_PLATFORM", "platform"),
 )
 
 

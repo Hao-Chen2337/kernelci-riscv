@@ -23,13 +23,13 @@ sys.path.insert(0, HERE)
 
 from kcilib import api, sink
 from kcilib.core import ledger
-from kcilib.model import ORIGIN_API, ORIGIN_HANDMADE, Job, Jobs, Kbuild, Outcome
-from kcilib.model.jobs import EXIT_ERROR, VERDICT_ERROR
-from kcilib.source import get_source
-from kcilib.table import localrun
+from kcilib.core import policy as _policy
+from kcilib.model import ORIGIN_API, ORIGIN_HANDMADE, Jobs, Outcome
+from kcilib.model import views as localrun
+from kcilib.model.jobs import EXIT_ERROR, VERDICT_ERROR, jobs_for
+from kcilib.model.sources import get_source
+from kcilib.table.build import BuildQuery, builds_from_production_api
 from kcilib.table.buildindex import BuildIndex
-from kcilib.table.buildref import BuildQuery, builds_from_production_api
-from kcilib.table.jobspec import DEFAULT_TESTS, job_definition, jobs_from_build
 
 # kcilib.api owns the local default and the KCI_API_URL override (a second
 # deployment moves the local API); spelling the fallback again here is how the
@@ -40,7 +40,7 @@ LOCAL_API = api.local_api_url()
 def _specs_for_build(build, tests):
     """One build's specs, minus the ones the ledger already has."""
     ran = localrun.ran_tests().get(build.build_id, set())
-    specs, skipped = jobs_from_build(build, tests=tests)
+    specs, skipped = jobs_for(build, tests=tests)
     return ([spec for spec in specs if spec.test not in ran],
             [(build.build_id, test, reason) for test, reason in skipped], 1)
 
@@ -103,7 +103,7 @@ def cmd_jobs(args):
             print("the index is empty; run './run.sh build index' first")
             return 1
         build = builds[0]
-    specs, skipped = jobs_from_build(build, tests=args.test)
+    specs, skipped = jobs_for(build, tests=args.test)
     print(f"build {build.build_id} ({build.tree or '?'} "
           f"{(build.describe or '')[:40]})")
     for spec in specs:
@@ -117,12 +117,12 @@ def cmd_todo(args):
     """(build, test) pairs not run yet. Pure subtraction: index minus ledger."""
     index = BuildIndex(args.db)
     ran = localrun.ran_tests()
-    tests = tuple(args.test) if args.test else DEFAULT_TESTS
+    tests = tuple(args.test) if args.test else _policy.DEFAULT_TESTS
     builds = [index.get(args.build)] if args.build else index.all()
     builds = [b for b in builds if b]
     pending = 0
     for build in builds:
-        specs, _skipped = jobs_from_build(build, tests=tests)
+        specs, _skipped = jobs_for(build, tests=tests)
         for spec in specs:
             if spec.test in ran.get(build.build_id, set()):
                 continue
@@ -210,27 +210,6 @@ def _origin_of(source):
     return ORIGIN_API if source == "official" else ORIGIN_HANDMADE
 
 
-def _job_for_spec(spec, callback_url=None):
-    """One table row -> the object layer's Job, its Kbuild card included.
-
-    The card carries the row's identity, artifacts and revision, so the Job
-    renders the definition through kcilib.table.jobspec exactly as the table
-    does for the same row (compared byte for byte), and the same artifacts feed
-    both the card and the job. *callback_url* is the same switch job_definition
-    takes: it decides whether the run reports back or only writes the ledger.
-    """
-    row = spec.build
-    artifacts = dict(row.artifacts)
-    origin = _origin_of(row.source)
-    card = Kbuild(row.build_id, artifacts, tree=row.tree, branch=row.branch,
-                 commit=row.commit, describe=row.describe, created=row.created,
-                 node_id=row.node_id, origin=origin)
-    return Job(spec.build_id, spec.test, timeout_s=spec.timeout_s,
-               artifacts=artifacts,
-               callback={"url": callback_url} if callback_url else None,
-               origin=origin, build=card)
-
-
 def cmd_run(args):
     """Run: the source decides what runs; the executor is always the same run_node.
 
@@ -250,7 +229,7 @@ def cmd_run(args):
         if build is None:
             print(f"build {args.build} is not in the index")
             return 1
-        planned, skipped, checked = _specs_for_build(build, tests or DEFAULT_TESTS)
+        planned, skipped, checked = _specs_for_build(build, tests or _policy.DEFAULT_TESTS)
     else:
         source = get_source(args.source, db=args.db, tests=tests) \
             if args.source == "table" \
@@ -265,24 +244,26 @@ def cmd_run(args):
         print("nothing to run")
         return 0
     print(f"-> running {len(planned)} job(s), one at a time")
-    # Kbuild the definitions first: the sink comes from the definition, not from
-    # argparse. Every job in a trip shares one sink (the same --callback-url).
-    definitions = [(spec, job_definition(spec, callback_url=args.callback_url))
-                   for spec in planned]
-    sinks = sink.sinks_for(definitions[0][1])
+    # The callback URL is the one thing argparse decides: it turns each job into
+    # one that reports back, and the definition - the sink's input - is rendered
+    # from the job.  Every job in a trip shares one sink.
+    if args.callback_url:
+        for job in planned:
+            job.callback = {"url": args.callback_url}
+    definitions = [job.definition() for job in planned]
+    sinks = sink.sinks_for(definitions[0])
     if not sink.has_callback(sinks):
         print("   no --callback-url: results go to the local ledger only")
-    # The execution itself is the object layer's: one Kbuild card + one Job per
-    # row, held in Jobs and run one at a time. The definitions above stay the
-    # sink's input - that read point does not change.
-    jobs = Jobs([_job_for_spec(spec, args.callback_url) for spec in planned])
-    outcomes = []
-    # Not Jobs.run(): its failure path prints "Warning: <id> <test> could not
-    # be run (...)"; this loop has printed its own line for that case since
+    # The execution itself is one path: Jobs holds Jobs and runs them one at a
+    # time.  Not Jobs.run(): its failure path prints "Warning: <id> <test> could
+    # not be run (...)"; this loop has printed its own line for that case since
     # before the object layer existed, and ./run.sh run's output is pinned.
-    for (spec, definition), job in zip(definitions, jobs):
-        print(f"\n=== {spec.build_id} / {spec.test} "
-              f"({spec.build.tree or '?'} {(spec.build.describe or '')[:36]})")
+    jobs = Jobs(planned)
+    outcomes = []
+    for job, definition in zip(jobs, definitions):
+        print(f"\n=== {job.build_id} / {job.test} "
+              f"({job.build.tree if job.build else '?'} "
+              f"{((job.build.describe or '') if job.build else '')[:36]})")
         try:
             outcome = job.run()
         except Exception as error:  # noqa: BLE001 - one job must not stop the batch

@@ -8,6 +8,10 @@ import time
 from collections.abc import Iterator, Mapping, Sequence
 
 from kcilib import api as _api
+from kcilib.table.build import (
+    ORIGIN_API,
+    ORIGIN_API_LOCAL,
+)
 
 # What a failed transfer arrives as: the class the resident worker retries and
 # treats every other exception as "handled".  It is requests' own, and it is
@@ -16,13 +20,10 @@ from kcilib import api as _api
 # business, not ours.
 _RequestException: type[Exception] = _api.requests.exceptions.RequestException
 
-# Where a node came from.  "api" is any KernelCI deployment, ours or
-# production's; the rest name a source that is not a remote API at all.
-ORIGIN_API = "api"
-ORIGIN_API_LOCAL = "api_local"
-ORIGIN_SELF_BUILD = "self_build"
-ORIGIN_IMPORTED = "imported"
-ORIGIN_HANDMADE = "handmade"
+# Where a node came from: the constants live with the Build they describe
+# (kcilib.table.build), because the table and the sources need to name an origin
+# and may not import this layer back.  origin_for() stays here - it is a fact
+# about API URLs, not about builds.
 
 # The kbuild job this configuration reads.
 DEFAULT_KBUILD_JOB = "kbuild-gcc-14-riscv"

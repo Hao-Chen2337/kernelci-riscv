@@ -31,10 +31,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from kcilib import api, repo_root
-from kcilib.core import layout, ledger
-from kcilib.table import localrun
+from kcilib.core import layout, ledger, policy
+from kcilib.model import views as localrun
 from kcilib.table.buildindex import BuildIndex
-from kcilib.table.jobspec import DEFAULT_TESTS
 from tools import config_drift, regression_tracker
 
 # One owner for "where is the local API": kcilib.api.local_api_url().
@@ -281,7 +280,7 @@ def collect(db, api_url=None, limit=ROW_LIMIT):
         entry["series"] = series.get(entry["test"], [])
         entry["regressions"] = regr_by_test.get(entry["test"], 0)
 
-    specs, skipped, checked = localrun.todo(index, tests=DEFAULT_TESTS)
+    specs, skipped, checked = localrun.todo(index, tests=policy.DEFAULT_TESTS)
 
     return {
         "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -293,7 +292,7 @@ def collect(db, api_url=None, limit=ROW_LIMIT):
                 "build_id": b.build_id, "tree": b.tree, "describe": b.describe,
                 "created": b.created, "commit": b.commit,
                 "ran": len(ran.get(b.build_id, ())),
-                "tests": len(DEFAULT_TESTS),
+                "tests": len(policy.DEFAULT_TESTS),
             } for b in builds[:limit]],
         },
         "ledger": {

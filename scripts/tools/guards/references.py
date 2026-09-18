@@ -53,18 +53,30 @@ def test_layers_import_downward_only():
     not import.
 
     Forbidden, and why each is a cycle or a lie:
-      * run -> table / source: the execution layer is HANDED a job definition and
-        must not learn where it came from (jobspec.py's docstring: run_node cannot
-        tell ours from the API's);
-      * core -> run / table / source: core is the bottom layer - api.py, source.py
+      * run -> table / model: the execution layer is HANDED a job definition and
+        must not learn where it came from (kcilib/table/build.py's docstring:
+        run_node cannot tell ours from the API's), nor hold the model's cards;
+      * core -> run / table / model: core is the bottom layer - api.py, table/
         and run/ all stand on it;
-      * api -> anything in the package, and source -> run: the API client is the
-        lowest thing there is, and a source says WHAT to run, never how;
-      * anything -> kcilib.model: the model (the cards and the objects a caller
-        holds) sits on top of every other module here, so nothing below it may
-        import back.  It used to be a separate top-level package (scripts/kci),
-        which made every consumer of it import kcilib as well - two packages,
-        one vocabulary, and no module that was the only face.
+      * api -> anything in the package: the API client is the lowest thing there
+        is (it imports the standard library and requests, nothing else);
+      * table -> model: the model's Builds and the sources' views stand ON the
+        table, so the table may not import them back.  The other direction is
+        the layer's shape, not a violation: model/builds.py, model/jobs.py and
+        model/views.py import kcilib.table (Build, BuildQuery, BuildIndex),
+        which is why the rule below names the direction it bans;
+      * sink -> model: kcilib/sink.py delivers a result INTO the model's
+        vocabulary, so it may not import it back;
+      * anything -> kcilib.model, which is what the table below enforces: the
+        model (the builds and the objects a caller holds) sits on top of every
+        other module here.  It used to be a separate top-level package
+        (scripts/kci), which made every consumer of it import kcilib as well -
+        two packages, one vocabulary, and no module that was the only face.
+
+    kcilib/source.py and kcilib/table/{buildref,jobspec,localrun}.py are gone
+    (2026-09-19): their rules went with the modules, and the things they held
+    live in kcilib/model/sources.py, kcilib/table/build.py,
+    kcilib/model/jobs.py's definition() and kcilib/model/views.py.
     """
     import ast
     import glob
@@ -89,27 +101,22 @@ def test_layers_import_downward_only():
             found.extend((name, node.lineno) for name in names)
         return found
 
+    # One key per module (or subtree): a second spelling of the same key would
+    # REPLACE the first in a dict literal, and the replaced rule would read as
+    # enforced while nothing checked it - which is how the api.py rule below was
+    # silently weakened to kcilib.model before 2026-09-19.
     rules = {
         # api.py is the lowest thing in the package: it may not import kcilib at
-        # all.  Naming the four submodules would let `from kcilib import
-        # repo_root` through, i.e. the rule would not be what this docstring says.
+        # all.  Naming the submodules would let `from kcilib import
+        # repo_root` through, i.e. the rule would not be what its docstring says.
         os.path.join(package, "api.py"): ("kcilib",),
-        os.path.join(package, "source.py"): ("kcilib.run",),
-        os.path.join(package, "core"): ("kcilib.run", "kcilib.table",
-                                        "kcilib.source"),
-        os.path.join(package, "run"): ("kcilib.table", "kcilib.source"),
-        # The model is above everything else in this package: api, core, run,
-        # table and the two single-file modules may not import it back.  The
-        # model itself is free to import any of them (it is the layer a caller
-        # holds), which is why the rule names the subtrees rather than globbing
-        # the whole package the way the old kci rule did.
-        os.path.join(package, "api.py"): ("kcilib.model",),
-        os.path.join(package, "source.py"): ("kcilib.run", "kcilib.model"),
         os.path.join(package, "sink.py"): ("kcilib.model",),
         os.path.join(package, "core"): ("kcilib.run", "kcilib.table",
-                                        "kcilib.source", "kcilib.model"),
-        os.path.join(package, "run"): ("kcilib.table", "kcilib.source",
-                                       "kcilib.model"),
+                                        "kcilib.model"),
+        os.path.join(package, "run"): ("kcilib.table", "kcilib.model"),
+        # The model itself is not named: it is the layer a caller holds and is
+        # free to import any of the modules above (model -> table is the
+        # direction the 2026-09-19 cleanup made explicit).
         os.path.join(package, "table"): ("kcilib.model",),
     }
     scanned, offenders = 0, []

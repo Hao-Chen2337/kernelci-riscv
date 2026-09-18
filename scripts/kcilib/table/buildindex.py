@@ -9,13 +9,12 @@ comes from the artifact URLs and is stable. Defaults to work/builds.db (sqlite,
 gitignored; deleting it loses no upstream data).
 """
 
-import json
 import os
 import sqlite3
 
 from kcilib import repo_root
 from kcilib.core import layout
-from kcilib.table.buildref import ARTIFACT_KEYS, BuildRef
+from kcilib.table.build import Build
 
 # Walked up from the package (kcilib.repo_root), never a fixed dirname() depth.
 ROOT = repo_root()
@@ -48,34 +47,34 @@ class BuildIndex:
             " first_seen TEXT DEFAULT CURRENT_TIMESTAMP)")
         self._db.commit()
 
-    def add(self, ref):
+    def add(self, build):
         """Insert a row, or refresh the artifact URLs of a build already known.
 
         Returns True for a new build, so callers can report how many were added
         instead of reading idempotency as "nothing happened".
         """
-        row = ref.as_row()
+        row = build.as_row()
         known = self._db.execute(
             "SELECT build_id FROM builds WHERE build_id = ?",
-            (ref.build_id,)).fetchone()
+            (build.build_id,)).fetchone()
         self._db.execute(_INSERT,
                          tuple(row[column] for column in _COLUMNS))
         self._db.commit()
         return known is None
 
-    def add_all(self, refs):
+    def add_all(self, builds):
         """Insert many. Returns (added, already known)."""
-        added = sum(1 for ref in refs if self.add(ref))
-        return added, len(refs) - added
+        added = sum(1 for build in builds if self.add(build))
+        return added, len(builds) - added
 
     def get(self, build_id):
         row = self._db.execute(_SELECT + " WHERE build_id = ?",
                                (build_id,)).fetchone()
-        return self._row_to_ref(row) if row else None
+        return self._row_to_build(row) if row else None
 
     def all(self):
         rows = self._db.execute(_SELECT + " ORDER BY created DESC").fetchall()
-        return [self._row_to_ref(row) for row in rows]
+        return [self._row_to_build(row) for row in rows]
 
     def newest(self, count):
         return self.all()[:count]
@@ -84,10 +83,6 @@ class BuildIndex:
         return self._db.execute("SELECT COUNT(*) FROM builds").fetchone()[0]
 
     @staticmethod
-    def _row_to_ref(row):
-        values = dict(zip(_COLUMNS, row))
-        artifacts = json.loads(values.pop("artifacts") or "{}")
-        return BuildRef(
-            artifacts={key: value for key, value in artifacts.items()
-                       if key in ARTIFACT_KEYS and value},
-            **values)
+    def _row_to_build(row):
+        """One row back as a Build - kcilib.table.build owns that conversion."""
+        return Build.from_row(dict(zip(_COLUMNS, row)))

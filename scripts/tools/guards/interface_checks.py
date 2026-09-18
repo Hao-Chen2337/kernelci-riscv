@@ -412,14 +412,24 @@ def test_interface_exports_its_public_names():
     the project's one-line usage needs - must be exported, and every
     exported name has to exist on the package: a name in __all__ that does
     not breaks `from kcilib.model import *` for every caller at once.
+
+    The names are the 2026-09-19 vocabulary: the one build class is Build and
+    the collection is Builds (Kbuild/Kbuilds, BuildRef and JobSpec are gone), so
+    the removed spellings are checked too - a caller that still writes
+    ``from kcilib.model import Kbuild`` must fail loudly at the import, not
+    quietly get a second class back.
     """
     from kcilib import model as kci
 
-    for name in ("Kbuild", "Dashboard", "Job", "Jobs", "Kbuilds", "Outcome",
+    for name in ("Build", "Builds", "Dashboard", "Job", "Jobs", "Outcome",
                  "Record", "Results", "Stack"):
         check(name in kci.__all__, f"{name} is not exported: {kci.__all__}")
         check(hasattr(kci, name),
               f"kcilib.model.__all__ names {name}, which does not exist")
+    for gone in ("Kbuild", "Kbuilds", "BuildRef", "JobSpec"):
+        check(gone not in kci.__all__ and not hasattr(kci, gone),
+              f"{gone} was renamed away (Build / Builds / Job) and must not "
+              f"come back as a second name for the same thing: {kci.__all__}")
     check(len(kci.__all__) == len(set(kci.__all__)),
           f"duplicate names in __all__: {kci.__all__}")
     check(len(kci.__all__) >= 16, f"__all__ shrank to {len(kci.__all__)}")
@@ -427,4 +437,10 @@ def test_interface_exports_its_public_names():
         module = getattr(kci, name).__module__
         check(module.startswith("kcilib.model."),
               f"{name} is not defined in kci: {module}")
+    # Build is defined by the table layer and re-exported here: one class, one
+    # definition, so `kcilib.table.build.Build is kcilib.model.Build`.
+    check(kci.Build.__module__ == "kcilib.table.build"
+          and kci.Builds.__module__ == "kcilib.model.builds",
+          f"Build/Builds are not the table's/model's own: "
+          f"{kci.Build.__module__}, {kci.Builds.__module__}")
     print("test_interface_exports_its_public_names OK")

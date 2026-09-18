@@ -2,18 +2,24 @@
 #
 """Sources: who decides what this run should execute.
 
-Only the chooser varies: "table" (local index minus ledger) or "newest" (newest
-usable production build).  The events worker is not a source - it is a state
-machine, not a jobs() iterator.  The layers share the boundary instead: every
-source yields job definitions for the same run_node.
+Only the chooser varies: "table" (local index minus ledger) or "newest" (the
+newest usable production build).  The events worker is not a source - it is a
+state machine, not a jobs() iterator.
+
+A source sits in the model because it answers with Jobs: what a source may NOT
+do is run anything or import the execution layer, which is what keeps "where a
+job comes from" replaceable.
 
 Rationale: docs/code-notes/A-sink-source-dashboard.md.
 """
 
 from kcilib.api import PRODUCTION_API
+from kcilib.core import policy
+from kcilib.table.build import BuildQuery, builds_from_production_api
 from kcilib.table.buildindex import BuildIndex
-from kcilib.table.buildref import BuildQuery, builds_from_production_api
-from kcilib.table.jobspec import DEFAULT_TESTS, jobs_from_build
+
+from .jobs import jobs_for
+from .views import todo
 
 
 class JobSource:
@@ -36,11 +42,10 @@ class TableSource(JobSource):
 
     def __init__(self, db=None, tests=None):
         self.index = BuildIndex(db)
-        self.tests = tuple(tests) if tests else DEFAULT_TESTS
+        self.tests = tuple(tests) if tests else policy.DEFAULT_TESTS
 
     def jobs(self, tests=None):
-        """(specs, skipped, builds_checked) - see kcilib.table.localrun.todo."""
-        from kcilib.table.localrun import todo
+        """(jobs, skipped, builds_checked) - see kcilib.model.views.todo."""
         return todo(self.index, tests=tests or self.tests)
 
 
@@ -58,19 +63,19 @@ class NewestSource(JobSource):
         self.job = job
         self.api = api
         self.days = days
-        self.tests = tuple(tests) if tests else DEFAULT_TESTS
+        self.tests = tuple(tests) if tests else policy.DEFAULT_TESTS
         self.trees = tuple(trees)
 
     def build(self):
-        """The newest usable BuildRef, or None (and why, on stderr)."""
+        """The newest usable Build, or None (and why, on stderr)."""
         query = BuildQuery(job=self.job, api=self.api, trees=self.trees,
                            result="pass")
         # Widen the window: the API pages old-first, so a quiet tree looks empty.
         for days in (self.days, 7, 30, 180):
             query.since = _days_ago(days)
-            refs, _dropped = builds_from_production_api(query)
-            if refs:
-                return refs[0]
+            builds, _dropped = builds_from_production_api(query)
+            if builds:
+                return builds[0]
         return None
 
     def jobs(self, tests=None):
@@ -78,9 +83,9 @@ class NewestSource(JobSource):
         if build is None:
             return [], [(self.job, "no usable build",
                          f"no passing {self.job} in the last 180 days")], 0
-        specs, skipped = jobs_from_build(build, tests=tests or self.tests)
-        return specs, [(build.build_id, test, reason)
-                       for test, reason in skipped], 1
+        jobs, skipped = jobs_for(build, tests=tests or self.tests)
+        return jobs, [(build.build_id, test, reason)
+                      for test, reason in skipped], 1
 
 
 def _days_ago(days):
