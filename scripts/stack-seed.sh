@@ -33,9 +33,11 @@ worker_requested() {
 }
 
 resolve_seed_inputs() {
-  # CONSISTENCY RULE: work/serve/Image, the modules in work/env/rootfs-kvm.ext4 and
-  # these URLs must be the SAME kbuild (modprobe matches by kernel release), so read
-  # work/env/build.env; the SEED_* defaults below only cover a never-provisioned stack.
+  # CONSISTENCY RULE: work/serve/Image, the modules and kselftest these URLs name
+  # must be the SAME kbuild (modprobe matches by kernel release), so read
+  # work/env/build.env; the SEED_* defaults below only cover a never-provisioned
+  # stack.  The guest rootfs is not part of this rule: it is the lab's own image
+  # (policy.POLICY.rootfs_url), baked per run into the bake cache.
   if [ -f "$ROOT/work/env/build.env" ]; then
     # shellcheck disable=SC1091
     . "$ROOT/work/env/build.env"

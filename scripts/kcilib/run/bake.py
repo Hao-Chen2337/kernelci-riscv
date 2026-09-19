@@ -160,9 +160,11 @@ def bake_cache_dir():
     """Where baked guest images are cached.
 
     Default ``work/env/baked/``, a subdirectory of the gitignored work/ that
-    already holds the multi-GB guest testbed - a separate directory, because
-    ``work/env/rootfs-kvm.ext4`` belongs to ./run.sh provision and one filename
-    cannot hold the several input sets a worker sees.
+    already holds the multi-GB guest testbed.  A directory, not one filename,
+    because every input set needs its own image: the worker, the local table and
+    the one-shot runner all bake here, and 2026-09-19 removed the last caller
+    that kept a second, pre-baked copy of its own (work/env/rootfs-kvm.ext4,
+    which ./run.sh provision used to produce and nothing writes any more).
 
     Override with KCI_BAKE_CACHE_DIR; disable with KCI_BAKE_CACHE=0 (every job
     then bakes into its own workspace, as before).  Returns "" when disabled."""

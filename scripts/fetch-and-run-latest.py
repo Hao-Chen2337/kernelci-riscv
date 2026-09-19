@@ -18,9 +18,7 @@ import os
 import shlex
 import shutil
 import sys
-import tempfile
 import time
-from urllib.parse import unquote, urlparse
 
 # The interface layer (scripts/kci) is what this entry point is written
 # against; everything below it - the transfers, the bake, the tuxrun command
@@ -39,7 +37,7 @@ from kcilib.model import (
     KbuildPuller,
     KernelCINode,
 )
-from kcilib.run import artifacts, bake, delivery, judge
+from kcilib.run import delivery, judge
 
 API = "https://api.kernelci.org"
 JOB = "kbuild-gcc-14-riscv"
@@ -55,7 +53,6 @@ TUXRUN = os.environ.get("TUXRUN_BIN", shutil.which("tuxrun")
 ROOT = delivery.ROOT
 WORK_ENV = delivery.WORK_ENV
 WORK_SERVE = delivery.WORK_SERVE
-DEFAULT_ROOTFS = os.path.join(WORK_ENV, "rootfs-kvm.ext4")
 DEFAULT_IMAGE = os.path.join(WORK_ENV, "Image")
 DEFAULT_SERVE_IMAGE = os.path.join(WORK_SERVE, "Image")
 
@@ -63,7 +60,6 @@ DEFAULT_SERVE_IMAGE = os.path.join(WORK_SERVE, "Image")
 # pinned here but discovered from the newest production kbuild node: storage
 # prunes old builds (a pinned hash served modules.tar.xz but 404'd on its Image).
 # The URL has one owner - the artifact the job definitions carry themselves.
-DEFAULT_ROOTFS_URL = policy.POLICY.rootfs_url
 
 # The verdict vocabulary is kcilib.run.judge's - exit statuses (0 pass, 1 test
 # failure, 3 infrastructure), the TAP parser, the timeout detail and the boot
@@ -106,63 +102,9 @@ def revision_of(node: KernelCINode) -> dict:
 # cache shared with the kernel artifact entries is kcilib.run.delivery's.
 
 
-def provision_rootfs(rootfs_url, modules_url, ext4_path, manifest):
-    """Ensure the baked ext4 rootfs exists at *ext4_path* (manifest cache).
-    Uses kcilib.run.bake.bake_rootfs_image(): nfsroot tar.xz -> tuxrun-bootable
-    ext4, with kvm modules baked into /lib/modules."""
-    key = f"rootfs-kvm.ext4|{rootfs_url}|{modules_url or ''}"
-    if delivery.cache_hit(manifest, key, ext4_path):
-        delivery.record_entry(manifest, key, ext4_path)
-        print(f"cache hit: {os.path.basename(ext4_path)} "
-              f"({delivery.human(os.path.getsize(ext4_path))})")
-        return ext4_path
-
-    print(f"baking rootfs ext4 from {rootfs_url}")
-    started = time.time()
-    os.makedirs(WORK_ENV, exist_ok=True)
-    # To a stable path, not the temporary bake dir: the download resumes an
-    # interrupted transfer with a Range request instead of restarting from zero.
-    source = rootfs_url
-    if not rootfs_url.startswith("file://"):
-        cached = os.path.join(
-            WORK_ENV, os.path.basename(unquote(urlparse(rootfs_url).path)))
-        expected = delivery.remote_size(rootfs_url)
-        have = os.path.getsize(cached) if os.path.exists(cached) else 0
-        if expected is not None and have == expected:
-            print(f"  reusing cached tarball {cached} "
-                  f"({delivery.human(have)})")
-        else:
-            if have:
-                known = (delivery.human(expected) if expected
-                         else "an unknown size")
-                print("  tarball on disk is incomplete "
-                      f"({delivery.human(have)} of {known}); resuming")
-            artifacts.download(rootfs_url, cached)
-        source = "file://" + os.path.abspath(cached)
-    workspace = tempfile.mkdtemp(prefix="kci-bake-", dir=WORK_ENV)
-    try:
-        # kcilib.run.bake transfers through this rebindable seam: delivery.fetch()
-        # takes file:// sources (the offline tests) and prints the "copied ..." lines.
-        bake.download = delivery.fetch
-        image = bake.bake_rootfs_image(
-            workspace, source,
-            boot_modules=["kvm"],
-            modules_url=modules_url)
-        os.replace(image, ext4_path)
-    finally:
-        shutil.rmtree(workspace, ignore_errors=True)
-    delivery.record_entry(manifest, key, ext4_path)
-    print(f"rootfs -> {ext4_path} "
-          f"({delivery.human(os.path.getsize(ext4_path))}, "
-          f"{time.time() - started:.1f}s)")
-    return ext4_path
-
-
 def provision_only(args):
     kernel_url = args.kernel_url or os.environ.get("KCI_KERNEL_URL")
     modules_url = args.modules_url or os.environ.get("KCI_MODULES_URL")
-    rootfs_url = (args.rootfs_url or os.environ.get("KCI_ROOTFS_URL")
-                  or DEFAULT_ROOTFS_URL)
     revision = {}
     if not kernel_url:
         # No pinned build hash: take kernel + modules from the newest passing
@@ -190,10 +132,15 @@ def provision_only(args):
             "url": os.environ.get("KCI_BUILD_URL", ""),
         }
     delivery.check_consistency(kernel_url, modules_url)
+    # The rootfs this lab boots its guests from is the lab's own image, not a
+    # build artifact: the one URL policy owns.  Recorded in build.env because
+    # that file is this deployment's description of what it serves; nothing
+    # prunes or bakes it any more - a run bakes its rootfs from this URL on
+    # demand and keeps the result in the bake cache.
+    rootfs_url = policy.POLICY.rootfs_url
     manifest = delivery.load_manifest()
     delivery.provision_kernel(kernel_url, DEFAULT_IMAGE, DEFAULT_SERVE_IMAGE,
                               manifest)
-    provision_rootfs(rootfs_url, modules_url, DEFAULT_ROOTFS, manifest)
     delivery.save_manifest(manifest)
     # One source of truth for "which kbuild these artifacts came from" -
     # including the revision: run-local-stack.sh seeds jobs from this file, so the
@@ -299,13 +246,12 @@ def main():
                          "Timeouts are a TCG limitation, not fails")
     ap.add_argument("--api-url", default=API)
     ap.add_argument("--rootfs", default=None,
-                    help="rootfs ext4 path (default: work/env/rootfs-kvm.ext4)")
+                    help="rootfs ext4 path to use instead of the one the job "
+                         "definition names (default: the definition's, baked "
+                         "on demand and cached under work/env/baked/)")
     ap.add_argument("--provision-only", action="store_true",
-                    help="produce/reuse work/serve/Image and "
-                         "work/env/rootfs-kvm.ext4 (+ manifest), then exit 0 "
-                         "(no tuxrun)")
-    ap.add_argument("--rootfs-url", default=None,
-                    help="nfsroot tar.xz URL to bake the ext4 rootfs from")
+                    help="produce/reuse work/serve/Image and record the build "
+                         "in work/env/build.env, then exit 0 (no tuxrun)")
     ap.add_argument("--kernel-url", default=None,
                     help="kernel Image URL for work/serve/Image")
     ap.add_argument("--modules-url", default=None,
@@ -338,17 +284,22 @@ def main():
         args.test = "kselftest-riscv"
     if args.provision_only:
         sys.exit(provision_only(args))
-    rootfs = args.rootfs or DEFAULT_ROOTFS
     # The run-scoped half of this command line, in the SAME object the worker
     # passes around (kcilib.core.config.RunConfig): the two entry points cannot
-    # describe the same run differently field by field.  --rootfs is handed over
-    # as the file:// URL tuxrun gets, and --out-dir is the run's workspace root.
+    # describe the same run differently field by field.
+    #
+    # rootfs is empty unless --rootfs named one: the job definition carries the
+    # lab's nfsroot URL (Job.definition), so run_node bakes it on demand and
+    # keeps the result in the bake cache - the same route the worker and the
+    # local table take.  This line used to pre-bake a fixed work/env/
+    # rootfs-kvm.ext4 of its own, with its own manifest, which is why it was the
+    # only one of the three that needed provisioning logic at all.
     run_config = config.RunConfig(
         tuxrun_bin=TUXRUN,
         cpu=args.cpu,
         kvm_full=args.kvm_full,
         container_runtime=args.container_runtime,
-        rootfs=f"file://{os.path.abspath(rootfs)}",
+        rootfs=f"file://{os.path.abspath(args.rootfs)}" if args.rootfs else "",
         output_dir=args.out_dir,
     )
 
@@ -374,15 +325,6 @@ def main():
                   handle, indent=1)
 
     card = Builds().add(node)
-    # The default rootfs used to be a hand-made 4GB file nothing generated: bake
-    # it on first use (the run layer bakes a tarball rootfs, not this one).  An
-    # explicit --rootfs is used verbatim, never generated.
-    if args.rootfs is None and not os.path.exists(rootfs):
-        rootfs_url = (args.rootfs_url or os.environ.get("KCI_ROOTFS_URL")
-                      or DEFAULT_ROOTFS_URL)
-        manifest = delivery.load_manifest()
-        provision_rootfs(rootfs_url, card.modules, rootfs, manifest)
-        delivery.save_manifest(manifest)
 
     # One test on one build: kcilib.run.jobrun runs it, kcilib.run.delivery
     # serves its artifacts and kcilib.run.judge decides it - this line only says

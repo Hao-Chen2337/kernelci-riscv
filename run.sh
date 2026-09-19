@@ -48,9 +48,11 @@ Subcommands:
                     PR1/bullseye/nginx patches + run validate_yaml + generate
                     the deployment-local config (API .env + admin token, SSH
                     key pair - nothing secret is ever committed)
-  provision         Produce/reuse the artifacts the runs need (kernel Image
-                    under work/serve/, rootfs ext4 under work/env/) without
-                    running any test
+  provision         Publish the kernel Image this deployment serves
+                    (work/serve/Image) and record its build in
+                    work/env/build.env, without running any test.  Guest
+                    rootfs images are not prepared here: every run bakes or
+                    reuses one in the bake cache (work/env/baked/)
   fetch [--kvm] [--kvm-full] [--job name]
                     Tier A: re-run the newest production riscv build locally
                     (--kvm = the curated 8-test subset; --kvm-full = all)
