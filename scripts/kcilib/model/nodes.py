@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from collections.abc import Iterator, Mapping, Sequence
 
@@ -420,3 +421,34 @@ class JobPuller:
         """Wrap the served nodes, keep one entry per id, return them all."""
         return [_remember(self.nodes, KernelCINode(raw))
                 for raw in nodes if isinstance(raw, dict)]
+
+
+def newest_kbuild_node(job: str, api: str) -> KernelCINode:
+    """The newest done/pass kbuild node of *job*, or exit 1 when there is none.
+
+    The API pages old-first, so the window widens 3 -> 7 -> 30 -> 180 days: an
+    empty page is not "no build".  kci.KbuildPuller asks the API (the same
+    filters this line has always sent); the done/pass filter --job has to keep
+    and the newest-by-created pick are this line's.
+    """
+    puller = KbuildPuller(api)
+    for days in (3, 7, 30, 180):
+        since = time.strftime("%Y-%m-%dT%H:%M:%S",
+                              time.gmtime(time.time() - days * 86400))
+        found = [node for node in puller.find(kind="kbuild", name=job,
+                                              created__gte=since, limit=200)
+                 if node.state == "done" and node.result == "pass"]
+        if found:
+            return max(found, key=lambda node: node.created)
+    sys.exit(f"no passing kbuild nodes for {job}")
+
+
+def revision_of(node: KernelCINode) -> dict:
+    """The node's data.kernel_revision as the API served it ({} when it has none).
+
+    build.env needs version, patchlevel and commit_tags and the ledger records
+    the whole revision (dashboard.py reads commit and branch out of it); a
+    build card keeps only what running a test needs of a build, so this reads
+    the node the way this line always has.
+    """
+    return (node.raw().get("data") or {}).get("kernel_revision") or {}

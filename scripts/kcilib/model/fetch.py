@@ -14,21 +14,18 @@ Rationale: docs/ARCHITECTURE.md, docs/code-notes in docs/archive/code-notes/.
 import argparse
 import json
 import os
-import shlex
 import shutil
 import sys
-import time
 
 from kcilib import repo_root
-from kcilib.core import config, layout, policy
+from kcilib.core import config
 from kcilib.model import (
     DELIVERY_LOCAL_SERVER,
     SOURCE_FETCH,
     Builds,
     Job,
-    KbuildPuller,
-    KernelCINode,
 )
+from kcilib.model.nodes import newest_kbuild_node, revision_of
 from kcilib.run import delivery, judge
 
 API = "https://api.kernelci.org"
@@ -57,141 +54,6 @@ DEFAULT_SERVE_IMAGE = os.path.join(WORK_SERVE, "Image")
 # failure, 3 infrastructure), the TAP parser, the timeout detail and the boot
 # evidence - so this record and the worker's callback are one verdict.
 
-
-
-def newest_node(job: str, api: str) -> KernelCINode:
-    """The newest done/pass kbuild node of *job*, or exit 1 when there is none.
-
-    The API pages old-first, so the window widens 3 -> 7 -> 30 -> 180 days: an
-    empty page is not "no build".  kci.KbuildPuller asks the API (the same
-    filters this line has always sent); the done/pass filter --job has to keep
-    and the newest-by-created pick are this line's.
-    """
-    puller = KbuildPuller(api)
-    for days in (3, 7, 30, 180):
-        since = time.strftime("%Y-%m-%dT%H:%M:%S",
-                              time.gmtime(time.time() - days * 86400))
-        found = [node for node in puller.find(kind="kbuild", name=job,
-                                              created__gte=since, limit=200)
-                 if node.state == "done" and node.result == "pass"]
-        if found:
-            return max(found, key=lambda node: node.created)
-    sys.exit(f"no passing kbuild nodes for {job}")
-
-
-def revision_of(node: KernelCINode) -> dict:
-    """The node's data.kernel_revision as the API served it ({} when it has none).
-
-    build.env needs version, patchlevel and commit_tags and the ledger records
-    the whole revision (dashboard.py reads commit and branch out of it); a
-    build card keeps only what running a test needs of a build, so this reads
-    the node the way this line always has.
-    """
-    return (node.raw().get("data") or {}).get("kernel_revision") or {}
-
-
-# The nfsroot -> ext4 bake machinery is kcilib.run.bake (imported, so its
-# guards and mkfs.ext4 command line cannot drift from the worker's); the manifest
-# cache shared with the kernel artifact entries is kcilib.run.delivery's.
-
-
-
-def provision_only(args):
-    kernel_url = args.kernel_url or os.environ.get("KCI_KERNEL_URL")
-    modules_url = args.modules_url or os.environ.get("KCI_MODULES_URL")
-    revision = {}
-    if not kernel_url:
-        # No pinned build hash: take kernel + modules from the newest passing
-        # build.  Both come from the SAME node on purpose: modprobe matches
-        # /lib/modules by kernel release, so mixing builds makes every kvm test
-        # skip with "Cannot open /dev/kvm".
-        node = newest_node(args.job, args.api_url)
-        if not node.artifact("kernel"):
-            sys.exit(f"newest {args.job} node {node.node_id} carries no "
-                     f"kernel artifact")
-        card = Builds().add(node)
-        kernel_url = card.kernel
-        modules_url = modules_url or card.modules
-        revision = revision_of(node)
-        print(f"newest {args.job}: {revision.get('describe', '?')} "
-              f"({(revision.get('commit') or '')[:12]}) id={node.node_id}")
-    else:
-        # A pinned kernel URL has no node to read a revision from: the caller
-        # states it, or the seed has nothing to label its nodes with.
-        revision = {
-            "commit": os.environ.get("KCI_BUILD_COMMIT", ""),
-            "describe": os.environ.get("KCI_BUILD_DESCRIBE", ""),
-            "tree": os.environ.get("KCI_BUILD_TREE", ""),
-            "branch": os.environ.get("KCI_BUILD_BRANCH", ""),
-            "url": os.environ.get("KCI_BUILD_URL", ""),
-        }
-    delivery.check_consistency(kernel_url, modules_url)
-    # The rootfs this lab boots its guests from is the lab's own image, not a
-    # build artifact: the one URL policy owns.  Recorded in build.env because
-    # that file is this deployment's description of what it serves; nothing
-    # prunes or bakes it any more - a run bakes its rootfs from this URL on
-    # demand and keeps the result in the bake cache.
-    rootfs_url = policy.POLICY.rootfs_url
-    manifest = delivery.load_manifest()
-    delivery.provision_kernel(kernel_url, DEFAULT_IMAGE, DEFAULT_SERVE_IMAGE,
-                              manifest)
-    delivery.save_manifest(manifest)
-    # One source of truth for "which kbuild these artifacts came from" -
-    # including the revision: run-local-stack.sh seeds jobs from this file, so the
-    # served kernel, the baked modules and the job definition cannot drift apart.
-    build_dir = kernel_url.rsplit("/", 1)[0]
-    # The path is kcilib.core.layout's (it owns what lives in work/env).
-    build_env = os.fspath(layout.deployment_env())
-    version = revision.get("version")
-    if not isinstance(version, dict):
-        # Either {"version": N, "patchlevel": N} or a bare int (N10): .get() on
-        # the int raised AttributeError and lost the whole file.
-        version = {"version": version} if isinstance(version, int) else {}
-    tags = " ".join(revision.get("commit_tags") or [])
-
-    def env_line(key, value):
-        """KEY=<shell-quoted value>.
-
-        build.env is *sourced* by run-local-stack.sh, so a raw value breaks the
-        deployment: a space-joined tag list ran `v7.0: command not found`, and a
-        quote or backslash corrupted the shell state (N2).
-        """
-        return f"{key}={shlex.quote('' if value is None else str(value))}\n"
-
-    with open(build_env, "w") as handle:
-        handle.write("# Written by ./run.sh provision - do not edit by hand.\n")
-        handle.write("# The kbuild every work/ artifact below comes from;\n")
-        handle.write("# run-local-stack.sh seeds jobs from these URLs and\n")
-        handle.write("# labels the nodes it creates with this revision.\n")
-        handle.write("# Values are shell-quoted: this file is sourced, not parsed.\n")
-        handle.write(env_line("KCI_BUILD_DIR", build_dir))
-        handle.write(env_line("KCI_KERNEL_URL", kernel_url))
-        if modules_url:
-            handle.write(env_line("KCI_MODULES_URL", modules_url))
-        handle.write(env_line("KCI_ROOTFS_URL", rootfs_url))
-        handle.write(env_line("KCI_BUILD_COMMIT", revision.get("commit") or ""))
-        handle.write(env_line("KCI_BUILD_DESCRIBE", revision.get("describe") or ""))
-        handle.write(env_line("KCI_BUILD_TREE", revision.get("tree") or ""))
-        handle.write(env_line("KCI_BUILD_BRANCH", revision.get("branch") or ""))
-        handle.write(env_line("KCI_BUILD_URL", revision.get("url") or ""))
-        handle.write(env_line("KCI_BUILD_VERSION", version.get("version") or ""))
-        handle.write(env_line("KCI_BUILD_PATCHLEVEL", version.get("patchlevel") or ""))
-        handle.write(env_line("KCI_BUILD_TAGS", tags))
-    print(f"build pinned at {build_env}: {build_dir}")
-    if revision.get("commit"):
-        print(f"build revision: {revision.get('describe') or '?'} "
-              f"({revision['commit'][:12]})")
-    else:
-        print("  !! build revision unknown (the kernel URL came from outside "
-              "production): the seed will fall back to its pinned placeholder "
-              "unless KCI_BUILD_COMMIT/KCI_BUILD_DESCRIBE are set")
-    print("provision complete")
-    return 0
-
-
-# The judgement itself is kcilib.run.judge's, reached through the run this entry
-# point hands to kci: judge_run() over the console the run archived, so the
-# printed verdict, the record and the process status are one verdict.
 
 
 def print_tap(outcome, test):
@@ -277,6 +139,9 @@ def main():
     if args.test is None:
         args.test = "kselftest-riscv"
     if args.provision_only:
+        # Lazy: ./run.sh fetch never needs the deployment package.
+        from kcilib.deploy.provision import provision_only
+
         sys.exit(provision_only(args))
     # The run-scoped half of this command line, in the SAME object the worker
     # passes around (kcilib.core.config.RunConfig): the two entry points cannot
@@ -297,7 +162,7 @@ def main():
         output_dir=args.out_dir,
     )
 
-    node = newest_node(args.job, args.api_url)
+    node = newest_kbuild_node(args.job, args.api_url)
     revision = revision_of(node)
     print(f"newest {args.job}: {revision.get('describe', '?')} "
           f"({revision.get('commit', '')[:12]}) {node.created} id={node.node_id}")
