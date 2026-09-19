@@ -45,17 +45,6 @@ WORK_SERVE = delivery.WORK_SERVE
 DEFAULT_IMAGE = os.path.join(WORK_ENV, "Image")
 DEFAULT_SERVE_IMAGE = os.path.join(WORK_SERVE, "Image")
 
-# Rootfs for --provision-only (./run.sh provision).  Kernel and modules are NOT
-# pinned here but discovered from the newest production kbuild node: storage
-# prunes old builds (a pinned hash served modules.tar.xz but 404'd on its Image).
-# The URL has one owner - the artifact the job definitions carry themselves.
-
-# The verdict vocabulary is kcilib.run.judge's - exit statuses (0 pass, 1 test
-# failure, 3 infrastructure), the TAP parser, the timeout detail and the boot
-# evidence - so this record and the worker's callback are one verdict.
-
-
-
 def print_tap(outcome, test):
     """The TAP summary this line has always printed, off the run's own verdict.
 
