@@ -361,7 +361,15 @@ class Job:
         self.timeout_s: int = (
             timeout_s or _policy.POLICY.seconds_test_timeouts.get(
                 test, DEFAULT_TIMEOUT))
-        self.artifacts: dict[str, str] = dict(artifacts or {})
+        # The build's own artifacts unless the caller names others: a job on a
+        # build IS that build's test, so Job(build_id, test, build=card) must be
+        # runnable without repeating the card's URLs.  They used to be required
+        # twice, and forgetting the second spelling produced a job that ran
+        # nothing and filed an "infra" record - the point of the one-Build /
+        # one-Job cleanup is that one fact lives in one place.
+        if artifacts is None:
+            artifacts = build.artifacts if build is not None else {}
+        self.artifacts: dict[str, str] = dict(artifacts)
         self.callback: dict[str, str] | None = (
             dict(callback) if callback else None)
         self.origin: str = origin
