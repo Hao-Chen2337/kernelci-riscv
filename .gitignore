@@ -3,13 +3,6 @@ kernelci-api/
 kernelci-pipeline/
 .ruff_cache/
 
-# the pre-rework copy of lib/ and the root entry points, plus the workspace state
-# it was taken with (docs/gui-rework/CHANGELOG.md §0).  `lib/` is untracked, so
-# this directory is the only way back to the tree as it was - and it is ignored
-# because a backup of every module is a second copy of the source, not source:
-# `ruff check .` reads it as a package named `lib.20260920T003046` (N999) and
-# fails the gate that guards the real one.
-.gui-rework-backup/
 # the workspace (see src/DESIGN.md); the old tree's work/ is gone with that tree
 var/
 *.log
