@@ -1,0 +1,12 @@
+struct kbuildnode {
+    dict kbuildnode
+}
+class kbuild {  
+    list kbuildnode
+    kbuild （api）
+    getnew(tree,)
+    getdays(tree,)
+    get(tree,)
+    考虑去重
+    print
+}

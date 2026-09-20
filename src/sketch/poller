@@ -1,0 +1,11 @@
+class poller{
+    class job
+    date d
+    time t 
+    poller(d)
+    {
+        date 
+
+
+    }
+}

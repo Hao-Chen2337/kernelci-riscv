@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""Every gate this tree has, in one command: what must be true before it is deployed.
+
+    verify [--quick] [--base URL]
+
+The old tree's gate *was* `./run.sh verify`, and it ran that tree: `validate_yaml`,
+`compileall` over `scripts/`, `ruff`, and the guard suite that imports `kcilib`.
+This is the same idea for the tree that is taking over - one command an operator
+runs, whose exit status is the answer - and it is what replaces that gate the day
+`scripts/` and `kcilib` are deleted (that is why this file exists).
+
+    ruff                       style, imports, syntax
+    i18n --check lib/gui.py    every string the page prints exists in both languages
+    check_structure.py         the shape: one owner per decision, one exit path
+    verify_callback_body.py    the LAVA body, read back by the REAL upstream parser
+    test_dom.js                the page's script, run in node against a DOM stub
+    test_config_cache.py       one request parses the workspace once
+    test_form_body.py          a POST carries the form's own body
+    smoke_pages.py             every page renders, in both languages
+    validate_yaml              the PR1 test profile still parses (the deliverable)
+    accept.py --base URL       the page over HTTP, if a server is running (--base)
+
+Each check is a command line, run in this repository, and **all of them run**: a
+gate that stops at the first failure hides the other nine, which is the wrong
+trade for a command whose whole point is to be trusted.  The exit status is 3 when
+any of them failed ("we never got what we came for"), 0 when they all passed.
+
+`--quick` leaves out the two slowest (the page renders and the HTTP sweep); that is
+for the middle of a change, not for a verdict.
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+# **An activity's log is read while it runs.**  stdout redirected to a file is
+# block-buffered, so `print()`s sat in a 4 KiB buffer: a `table.py pull` of fifty builds
+# wrote a 0-byte `run.log` for minutes, and an activity killed mid-flight left an empty log
+# behind - the page could not show progress it had been told nothing about.  Line
+# buffering is what makes every printed line arrive when it happens.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+
+from lib import errors
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+TOOLS = os.path.join(ROOT, "docs", "gui-rework", "tools")
+PIPELINE = os.path.join(ROOT, "kernelci-pipeline")
+
+# `(name, argv, cwd, needs)` - `needs` is a path that must exist for the check to
+# run at all (an upstream clone that `./run.sh setup` creates, or a tool).
+CHECKS = (
+    ("ruff", ["ruff", "check", "."], ROOT, ""),
+    ("i18n", [sys.executable, "lib/i18n.py", "--check", "lib/gui.py"], ROOT, ""),
+    ("structure", [sys.executable, os.path.join(TOOLS, "check_structure.py")], ROOT, ""),
+    ("callback body", [sys.executable, os.path.join(TOOLS, "verify_callback_body.py")],
+     ROOT, os.path.join(ROOT, "kernelci-core")),
+    ("dom", ["node", os.path.join(TOOLS, "test_dom.js")], ROOT, ""),
+    ("config cache", [sys.executable, os.path.join(TOOLS, "test_config_cache.py")], ROOT, ""),
+    ("form body", [sys.executable, os.path.join(TOOLS, "test_form_body.py")], ROOT, ""),
+    ("pages", [sys.executable, os.path.join(TOOLS, "smoke_pages.py"), "--all",
+               "--lang", "both"], ROOT, ""),
+    ("pipeline yaml", [sys.executable, "tests/validate_yaml.py"], PIPELINE, PIPELINE),
+)
+
+# The two that cost a minute or more: the page renders (it reads the API) and the
+# HTTP sweep.  `--quick` leaves them out.
+SLOW = ("pages",)
+
+
+def run(name, argv, cwd, needs=""):
+    """One check: `(ok, detail)`.  A missing precondition is reported, not skipped silently."""
+    if needs and not os.path.exists(needs):
+        return None, f"skipped: {needs} is not there (run deploy/setup.sh)"
+    try:
+        done = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
+                              timeout=1800, check=False)
+    except FileNotFoundError as error:
+        return False, f"cannot run {argv[0]}: {error}"
+    except subprocess.TimeoutExpired:
+        return False, f"{name} timed out after 30 minutes"
+    if done.returncode == 0:
+        return True, (done.stdout.strip().splitlines() or [""])[-1][:100]
+    tail = (done.stdout + done.stderr).strip().splitlines()
+    return False, " | ".join(line.strip() for line in tail[-3:])[:300]
+
+
+def main(argv=None):
+    """The command line: a bad flag is exit 3 with a message, never a traceback.
+
+    The same shape every entry point of this tree keeps, and
+    `docs/gui-rework/tools/check_structure.py` checks it - including for this file,
+    which it failed the first time it ran (the check was written, then pointed at
+    its own author).
+    """
+    try:
+        return _main(argv)
+    except errors.KciError as exc:
+        print(f"X {exc}", file=sys.stderr)
+        return exc.exit_code
+
+
+def _main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--quick", action="store_true",
+                        help="leave out the slow checks (page renders)")
+    parser.add_argument("--base", default="",
+                        help="also sweep a running page over HTTP (accept.py --base URL)")
+    args = parser.parse_args(argv)
+
+    checks = [one for one in CHECKS if not (args.quick and one[0] in SLOW)]
+    if args.base:
+        checks.append(("accept", [sys.executable, os.path.join(TOOLS, "accept.py"),
+                                  "--base", args.base], ROOT, ""))
+
+    failed, skipped, passed = [], [], 0
+    for name, command, cwd, needs in checks:
+        ok, detail = run(name, command, cwd, needs)
+        if ok is None:
+            skipped.append(name)
+            print(f"  --  {name:<14} {detail}")
+        elif ok:
+            passed += 1
+            print(f"  ok  {name:<14} {detail}")
+        else:
+            failed.append(name)
+            print(f"  X   {name:<14} {detail}")
+
+    print(f"\n{passed} passed"
+          + (f", {len(failed)} FAILED ({', '.join(failed)})" if failed else "")
+          + (f", {len(skipped)} skipped ({', '.join(skipped)})" if skipped else ""))
+    return errors.EXIT_INFRA if failed else errors.EXIT_PASS
+
+
+if __name__ == "__main__":
+    sys.exit(main())

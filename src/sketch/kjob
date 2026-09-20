@@ -1,0 +1,9 @@
+struct kjobnode{
+    kjobnode 
+}
+class kjob {
+    list kjobnode
+    kjob(api)
+    getjob(过滤参数)
+    print
+}

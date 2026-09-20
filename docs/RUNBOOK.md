@@ -1,6 +1,7 @@
 # Runbook
 
-> All commands run from the repo root via `./run.sh`.
+> All commands run from the repository root.  **`run.sh` is deleted** (2026-09-20):
+> the command is the one named in each row, and `python3 verify.py` is the gate.
 
 ## Environment
 
@@ -18,7 +19,7 @@
 ```bash
 python3 -m pip install tuxrun -r requirements.txt
 # requests + PyYAML (fetch/worker), uvicorn + fastapi + PyJWT + toml (the
-# callback service `./run.sh stack` starts on the HOST), ruff (`verify`)
+# callback service `deploy/stack.sh` starts on the HOST), ruff (`verify`)
 ```
 
   There is no virtualenv requirement - the scripts run under the system
@@ -26,7 +27,7 @@ python3 -m pip install tuxrun -r requirements.txt
   `kernelci-core` from that clone, so its requirements are needed as well:
 
 ```bash
-python3 -m pip install -r kernelci-core/requirements.txt   # after ./run.sh setup
+python3 -m pip install -r kernelci-core/requirements.txt   # after deploy/setup.sh
 ```
 
 - **one directory rule**: `kernelci-api/docker/storage/data` and
@@ -38,7 +39,7 @@ python3 -m pip install -r kernelci-core/requirements.txt   # after ./run.sh setu
   `stack` checks this and prints the `chown` to run; running `stack` as root
   fixes it automatically.
 - Tier B (local full stack) additionally needs `KCI_API_TOKEN` (local API
-  admin JWT, **never committed**) in `kernelci-pipeline/.env`; `./run.sh setup`
+  admin JWT, **never committed**) in `kernelci-pipeline/.env`; `deploy/setup.sh`
   generates it (see below)
 - One-time patch for an already-installed tuxlava (riscv kselftest support).
   The directory is derived from tuxlava itself, never hardcoded: the old
@@ -56,16 +57,18 @@ tuxrun --list-tests | grep -w kselftest-riscv    # must print it
 
 | Command | What it does |
 |---|---|
-| `./run.sh setup` | Clone core/api/pipeline + apply PR1/bullseye/nginx patches (skipped if already applied) + generate runtime config (`.env`, SSH keys, API token) + validate_yaml |
-| `./run.sh fetch [--job name] [--kvm] [--kvm-full]` | Tier A: re-run the newest production riscv build locally with tuxrun; artifacts in `work/downloads/`. The exit status **is** the verdict (0 pass / 1 test failure / 3 infrastructure error), and every run - including one that never reached tuxrun - is recorded in `work/results/<build-id>/<test>.json` |
-| `./run.sh stack [--seed]` | Tier B: start the local full stack (api/db/redis/storage/ssh + artifact server + real callback + official scheduler); `--seed` dispatches (overridable via `SEED_*` env vars). `--seed` refuses up front when the runtime's rules would drop the seed's tree, naming the allowed trees and the `SEED_TREE` override (see Fresh deployment) |
-| `./run.sh worker [--once]` | Take jobs, execute, report back; `--once` exits after the existing queue; unposted results persist and are re-posted (never re-run) on the next start |
-| `./run.sh report` | Recent baseline/kselftest node states |
-| `./run.sh results [--build ID] [--json] [--list]` | Read the local result ledger (`work/results/<build-id>/<test>.json`), written by both `fetch` and the worker. Needs no API, so it still answers "what did this machine run" with the stack stopped |
-| `./run.sh prune [--keep N] [--dry-run]` | Retention for `work/downloads/` (one ~45 MB directory per fetched build): keep the newest N (default 5) plus the build `work/env/build.env` records. Never touches the build this deployment serves; `--dry-run` prints the list and deletes nothing |
-| `./run.sh verify` | Full gate: validate_yaml + verify-lava-body + verify-worker-guards + compileall + ruff (any failure fails the command). The guard tests now target the shared library in `scripts/kcilib/`, and compileall also compiles the entry points so a syntax error there cannot pass the gate |
-| `./run.sh drift` / `./run.sh trend` | Config drift / regression pass-rates |
-| `./run.sh stop` | Stop the whole local stack (incl. the docker compose API stack; data stays in volumes) |
+| `deploy/setup.sh` (was `./run.sh setup`) | Clone core/api/pipeline + apply PR1/bullseye/nginx patches (skipped if already applied) + generate runtime config (`.env`, SSH keys, API token) + validate_yaml |
+| `python3 run_latest.py [--kvm] [--test name]` | Tier A: re-run the newest production riscv build locally with tuxrun. The exit status **is** the verdict (0 pass / 1 test failure / 3 infrastructure error), and every run - including one that never reached tuxrun - is recorded in `var/results/<build-id>/<test>.json`. **This now runs the new tree** (`run_latest.py`): artifacts go to `var/downloads/`, and the old `--job`/`--kvm-full` flags are gone with it |
+| `deploy/stack.sh [--seed]` (was `./run.sh stack`) | Tier B: start the local full stack (api/db/redis/storage/ssh + artifact server + real callback + official scheduler); `--seed` dispatches (overridable via `SEED_*` env vars).  It reads the new tree's workspace now: the artifact server serves `var/serve/`, the callback's config is rendered into `var/state/`, services are recorded in `var/state/stack-<project>.pids` (which `deploy/stop.sh` reads), and `--seed` takes the build from `var/state/served.json` - what `python3 provision.py` recorded - so the seeded nodes name the kernel that actually boots. `--seed` refuses up front when the runtime's rules would drop the seed's tree, naming the allowed trees and the `SEED_TREE` override (see Fresh deployment) |
+| `python3 pull_worker.py [--once]` | Take jobs, execute, report back; `--once` exits after the existing queue; unposted results persist and are re-posted (never re-run) on the next start. **Now the new tree** (`pull_worker.py`): `tuxrun` comes from PATH, consoles are archived under `var/logs/`, and per-test ceilings are `lib/config.py`'s run timeout and `lib/runner.py`'s tuxrun ceiling |
+| `python3 report.py` | Recent baseline/kselftest node states |
+| `python3 results.py [--build ID] [--json] [--list]` | Read the local result ledger, written by both `fetch` and the worker. Needs no API, so it still answers "what did this machine run" with the stack stopped. **Now the new tree** (`results.py`) over `var/results/<build-id>/<test>.json`; `$KCI_RESULTS_DIR` moves the ledger for a test or a second deployment |
+| `python3 provision.py` | Pin the kernel this deployment serves: the newest production build of the tree that **finished and passed** is chosen, its kernel fetched, `var/serve/Image` published as a symlink to it, and the act recorded in `var/state/served.json` (build id, revision, artifact URLs, rootfs). **Now the new tree** (`provision.py` + `lib/build.py`). An image already at `var/serve/Image` that the deployment never recorded is kept aside (`Image.kept-<stamp>`) rather than deleted, with a line saying so; identical bytes are simply replaced |
+| `python3 prune.py [--keep N] [--dry-run]` | Retention for `var/downloads/` (one directory per fetched build): keep the newest N (default 5) plus the build this deployment serves. **Now the new tree** (`prune.py` + `lib/retention.py`); the served build is the one `var/state/served.json` names, which `publish_local()` writes when it publishes `var/serve/Image`. An unrecorded `var/serve/Image` is reported rather than guessed at; `--dry-run` prints the list and deletes nothing |
+| `python3 verify.py` | The new tree's gate: ruff + i18n + structure + callback body (real upstream parser) + DOM + two unit tests + every page rendered + the PR1 YAML, and `accept.py` with `--base`. `--quick` leaves out the page renders. `./run.sh verify` is gone with the old tree |
+| `python3 drift.py` | Config drift between two builds. **Now the new tree** (`drift.py`): without `--older/--newer` it takes the newest two builds that finished and passed (the old tool's selection), exit 1 means drift, 0 no drift, 3 infrastructure |
+| `python3 trend.py` | Regression pass-rates read from the **production API's history** - not this machine's ledger; the local view of what ran here is the page's `/analysis` |
+| `deploy/stop.sh` (was `./run.sh stop`) | Stop the whole local stack (incl. the docker compose API stack; data stays in volumes) |
 
 ## Fresh deployment (one go, no manual steps)
 
@@ -76,12 +79,12 @@ python3 -m pip install tuxrun -r requirements.txt   # host deps (see Environment
 # (`setup` only WARNS when it is missing - the failure shows up much later)
 patch -p1 -d "$(python3 -c 'import tuxlava,os;print(os.path.dirname(os.path.dirname(tuxlava.__file__)))')" \
   < config/tuxlava-kselftest-riscv.patch
-./run.sh setup          # upstream clones + patches + runtime config (see below)
+deploy/setup.sh         # upstream clones + patches + runtime config (see below)
 python3 -m pip install -r kernelci-core/requirements.txt   # deps of the cloned callback
-./run.sh provision      # fetch + bake the artifacts a run needs
-./run.sh stack --seed   # API/db/redis/storage/ssh + artifact server + callback + scheduler, then seed
-./run.sh worker --once  # execute the queued jobs and report back
-./run.sh report         # results
+python3 provision.py      # fetch + bake the artifacts a run needs
+deploy/stack.sh --seed  # API/db/redis/storage/ssh + artifact server + callback + scheduler, then seed
+python3 pull_worker.py --once  # execute the queued jobs and report back
+python3 report.py         # results
 ```
 
 Three things to know before the first run on a new machine:
@@ -90,7 +93,7 @@ Three things to know before the first run on a new machine:
   before any script of ours is running: fix the proxy settings, or bypass them
   for that one command (`env -u http_proxy -u https_proxy -u HTTP_PROXY -u
   HTTPS_PROXY git clone ...`). The scripts themselves probe the network and
-  print the exact settings that are broken; `KCI_BYPASS_PROXY=1 ./run.sh setup`
+  print the exact settings that are broken; `KCI_BYPASS_PROXY=1 deploy/setup.sh`
   (or `fetch`/`stack`/`provision`) makes their downloads and clones ignore the
   proxy for that run.
 - **Several GB of images** are pulled on first use: the API/db/redis/nginx
@@ -104,8 +107,8 @@ Three things to know before the first run on a new machine:
   instead of waiting 90 s and ending with "no job node appeared", since the only
   trace of the refusal is one scheduler log line. The message names the allowed
   trees and the two ways out: relabel the seed
-  (`SEED_TREE=<allowed tree> ./run.sh stack --seed` - recorded in
-  `work/env/seed.env` when the label disagrees with the build that boots), or
+  (`SEED_TREE=<allowed tree> deploy/stack.sh --seed` - recorded in
+  `var/state/seed.env` when the label disagrees with the build that boots), or
   add the build's tree to `runtimes.pull-labs-riscv.rules.tree` in
   `kernelci-pipeline/config/pipeline-pull-labs.yaml`. If the rule engine itself
   cannot be read (no `kernelci-core` checkout), the check says so and carries on;
@@ -142,24 +145,26 @@ nothing has to be filled in by hand:
 a 4GB ext4 image from it — a few minutes on first use, instant afterwards.
 Interrupted transfers are resumed, not restarted: this CDN truncates large
 downloads routinely. Kernel and modules come from the same production build,
-recorded in `work/env/build.env`, which `stack --seed` then seeds from, so the
+recorded in `var/state/served.json` (`python3 provision.py` writes it), which
+`stack --seed` then seeds from, so the
 kernel served to the guest and the modules baked into the rootfs cannot drift
 apart.
 
 The worker also uses that ext4 image: it keeps the baked images it produces in
-`work/env/baked/`, keyed by the rootfs and modules URLs it baked them from, so
+`var/baked/`, keyed by the rootfs and modules URLs it baked them from, so
 the second kselftest job in a batch reuses the image instead of downloading
 144MB and re-baking 4GB again (measured: 180.9s → 0.0s for the second job). The
-directory is gitignored and holds up to three entries, each ~4GB (sparse on
-disk); `KCI_BAKE_CACHE=0` disables the cache and `rm -rf work/env/baked` clears
-it. A changed URL always bakes a new entry, and an interrupted bake is never
-published.
+directory is gitignored; it holds one entry per distinct (rootfs, modules) pair,
+each 4GB sparse (~800MB on disk), and nothing ages them out - a build whose
+`var/downloads/` copy `prune.py` removed will never be re-run from its cached
+image, so those entries are safe to delete. An interrupted bake is never
+published under a reusable name.
 
 Both `.env` files and the keypair live in gitignored directories, so no secret
 is ever committed. To force-refresh the keys or the `.env`:
 
 ```bash
-bash scripts/local-instance-init.sh --force   # then restart the stack
+bash deploy/instance-init.sh --force   # then restart the stack
 ```
 
 ### Known limitations of the upstream image
@@ -168,7 +173,7 @@ bash scripts/local-instance-init.sh --force   # then restart the stack
 (unfixed upstream as of the revision this deployment uses): `POST
 /latest/user/login` — and logout/forgot-password/reset-password — return
 **405**, `/latest/docs` and `/latest/openapi.json` return **404**, and a fresh
-database gets no initial admin. So `./run.sh setup` mints the admin and the API
+database gets no initial admin. So `deploy/setup.sh` mints the admin and the API
 token itself, and `KCI_API_TOKEN` in `kernelci-pipeline/.env` is the supported
 way to authenticate; **password reset is unavailable**. `setup` still tries the
 official login endpoint first, so it reverts to the documented path by itself
@@ -189,17 +194,17 @@ if upstream fixes the route.
   disk`). Its `pass` therefore describes the boot path, not the declared
   artifact. The kselftest jobs do use the provisioned rootfs.
 - Every run leaves a machine-readable record at
-  `work/results/<build-id>/<test>.json` (verdict, exit code, detail, kernel
+  `var/results/<build-id>/<test>.json` (verdict, exit code, detail, kernel
   revision, artifacts directory, log path, TAP counts, and which writer filed
   it), written for every outcome - including a run that stopped before tuxrun.
-  Both writers share the layout: `./run.sh fetch` (`source: fetch`, one
+  Both writers share the layout: `python3 run_latest.py` (`source: fetch`, one
   production build re-run locally) and the worker taking dispatched jobs
-  (`source: worker`). Read them with `./run.sh results` (add `--build <id>`,
+  (`source: worker`). Read them with `python3 results.py` (add `--build <id>`,
   `--json` or `--list`); it needs no API, so it also answers "what did this
-  machine run" with the stack stopped. `./run.sh prune` covers
-  `work/downloads/`, not `work/results/`.
-- Every node carries the kernel revision recorded by `./run.sh provision`
-  (`work/env/build.env`); a deployment seeded without it says so loudly and
+  machine run" with the stack stopped. `python3 prune.py` covers
+  `var/downloads/`, not `var/results/`.
+- Every node carries the kernel revision recorded by `python3 provision.py`
+  (`var/state/served.json`); a deployment seeded without it says so loudly and
   labels its nodes with a placeholder revision instead.
 
 ### What `stack --seed` actually creates (and what it does not)
@@ -209,8 +214,8 @@ only the last row is produced by something that really ran:
 
 | Node | Who creates it | Where its bytes come from | What it does NOT mean |
 |---|---|---|---|
-| `checkout` | `run-local-stack.sh` POSTs it (`state=done`, `result=pass`) when the database has none | `data.kernel_revision` is taken from `work/env/build.env` (or the `SEED_*` variables) | no repository was cloned and no checkout ran - the `pass` says "the seed declared one", nothing more |
-| `kbuild-gcc-14-riscv` | `run-local-stack.sh` POSTs it as `state=available` | `artifacts.kernel` = `http://172.17.0.1:<KCI_SERVE_PORT>/Image`, i.e. the file this deployment serves from `work/serve/Image`; `modules`/`kselftest`/`_config` are the production build recorded in `work/env/build.env` | nothing was compiled. The node is a declaration carrying pre-existing artifacts, so the tree it claims (`SEED_TREE`, from `work/env/build.env`'s `KCI_BUILD_TREE` unless overridden) can disagree with the build the artifacts came from - `work/env/seed.env` records both |
+| `checkout` | `deploy/stack.sh --seed` POSTs it (`state=done`, `result=pass`) when the database has none | `data.kernel_revision` is taken from `var/state/served.json` (or the `SEED_*` variables) | no repository was cloned and no checkout ran - the `pass` says "the seed declared one", nothing more |
+| `kbuild-gcc-14-riscv` | `deploy/stack.sh --seed` POSTs it as `state=available` | `artifacts.kernel` = `http://172.17.0.1:<KCI_SERVE_PORT>/Image`, i.e. the file this deployment serves from `var/serve/Image`; `modules`/`kselftest`/`_config` are the production build recorded in `var/state/served.json` | nothing was compiled. The node is a declaration carrying pre-existing artifacts, so the tree it claims (`SEED_TREE`, the served build's tree unless overridden) can disagree with the build the artifacts came from - `var/state/seed.env` records both |
 | `baseline-riscv-pull-labs`, `kselftest-riscv-pull-labs`, `kselftest-kvm-pull-labs` | the **official scheduler**, from `kernelci-pipeline/config/jobs-pull-labs.yaml` | real job definitions, rendered per node | nothing: these are the real thing. The worker fetches each definition and runs tuxrun. `kselftest-kvm-pull-labs` is the **shared** kvm job: `kernelci-pipeline#1600` added it for sasha-lab, and this lab reuses it instead of carrying its own copy (the scheduler entry is what restricts it to `qemu-riscv64`) |
 
 Two consequences worth knowing before reading a result:
@@ -220,8 +225,8 @@ Two consequences worth knowing before reading a result:
   If that deployment is gone, the job cannot download its kernel and comes back
   `Incomplete` / `Infrastructure` for that reason alone - the node is not
   wrong, the server behind its URL is. Re-seed from the running deployment
-  (`./run.sh stack --seed`) instead of running an old queue.
-- **`./run.sh drift` needs two real kbuild `.config` files.** On a database
+  (`deploy/stack.sh --seed`) instead of running an old queue.
+- **`python3 drift.py` needs two real kbuild `.config` files.** On a database
   that only ever saw one seed there is exactly one kbuild node, so drift has
   nothing to compare and says so. It compares whatever done/pass kbuild nodes
   the database holds, which on a long-lived deployment includes builds from
@@ -259,8 +264,9 @@ cannot run *at the same time*: kernelci-api's compose file hardcodes
   (accumulate history), remote official (`--api-url` + token).
 - **KVM**: default = curated 8-test subset; the worker bakes modules.tar.xz
   into `/lib/modules` of the rootfs so kvm.ko loads at boot and `/dev/kvm`
-  works. The seed kernel (`work/serve/Image`) must be the **same build** as
-  `SEED_MODULES_URL`. `--kvm-full` runs everything — timeouts report
-  incomplete, never fail.
+  works. The seed kernel (`var/serve/Image`) must be the **same build** as
+  `SEED_MODULES_URL`. A job definition naming its own test list (the
+  `kvm_tests`/`kvm_full` parameters) runs more than the curated set - timeouts
+  report incomplete, never fail.
 - **fetch** defaults to gcc-14 builds; clang riscv has no kselftest
   (upstream gap).

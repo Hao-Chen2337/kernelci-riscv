@@ -1,0 +1,10 @@
+struct jobnode{
+    kjobnode
+}
+class job {
+    list jobnode
+    job (class kbuild)
+    make()
+    class out run()
+    print
+}

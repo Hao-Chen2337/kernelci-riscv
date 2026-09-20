@@ -1,0 +1,381 @@
+#!/usr/bin/env bash
+# Local KernelCI full stack, one command: API stack + artifact server + real
+# callback + the official scheduler (reading our YAMLs).
+# Usage: [--seed] (POST a kbuild seed node) | [--worker] (seed + foreground worker)
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+API_DIR="$ROOT/kernelci-api"
+PIPE_DIR="$ROOT/kernelci-pipeline"
+ENV_FILE="$PIPE_DIR/.env"
+SERVE_DIR="$ROOT/var/serve"
+# Everything that identifies THIS deployment is overridable (KCI_COMPOSE_PROJECT plus
+# the KCI_*_PORT variables), so a second one can run against its own empty database.
+# They cannot run at once (compose hardcodes container_name); the volume decides freshness.
+PROJECT="${KCI_COMPOSE_PROJECT:-kcirv}"
+API_PORT="${KCI_API_PORT:-8001}"
+STORAGE_PORT="${KCI_STORAGE_PORT:-8002}"
+SSH_PORT="${KCI_SSH_PORT:-8022}"
+MONGO_PORT="${KCI_MONGO_PORT:-8017}"
+CB_PORT="${KCI_CB_PORT:-8003}"
+SERVE_PORT="${KCI_SERVE_PORT:-8999}"
+API_URL="http://127.0.0.1:$API_PORT"
+# Per-deployment scheduler config dir, or "is a scheduler already running?" matched
+# (and ./run.sh stop killed) another deployment's scheduler too (#18).
+KCFG="/tmp/kcisched-$PROJECT"
+# Ownership record of the host services this deployment starts (record_service).
+PID_FILE="$ROOT/var/state/stack-$PROJECT.pids"
+# compose reads these (${API_HOST_PORT:-8001} ...): exporting moves the published ports.
+export API_HOST_PORT="$API_PORT" STORAGE_HOST_PORT="$STORAGE_PORT"
+export SSH_HOST_PORT="$SSH_PORT" MONGO_HOST_PORT="$MONGO_PORT"
+# Rendered from the tracked @NAME@ templates into this deployment's workspace
+# (`var/state/`, which lib/layout.py owns):
+# toml.load() does not expand environment variables, so a tracked file cannot name
+# the checkout next to it or this deployment's ports.
+SETTINGS="$ROOT/var/state/local-callback.toml"
+CB_CONFIG="$ROOT/var/state/cb-config/pipeline.yaml"
+TUXRUN_BIN="${TUXRUN_BIN:-$(command -v tuxrun || echo "$HOME/.local/bin/tuxrun")}"
+
+die() { echo "X $*" >&2; exit 1; }
+ok()  { echo "OK $*"; }
+
+# shellcheck source=net-preflight.sh
+. "$ROOT/deploy/net-preflight.sh"
+# shellcheck source=stack-seed.sh
+. "$ROOT/deploy/seed.sh"
+
+# --- ports ------------------------------------------------------------------
+# Every port is overridable (KCI_*_PORT) and nothing checked it was free first: a
+# listener surfaced three layers down as "X artifact server failed".  The probe is
+# lib/ports.py's (the one port probe this deployment has; it was
+# kcilib.core.ports until the old tree's deployment half moved here).
+require_port_free() {   # port label override-var
+  python3 -m lib.ports \
+    --require "$1" --label "$2" --override "$3" \
+    --host 0.0.0.0 --project "$PROJECT" || exit 1
+}
+
+# --- service ownership ------------------------------------------------------
+# ./run.sh stop used machine-global pkill patterns and killed another deployment's
+# services (#18); here each service is recorded as role|pid|start-time|pattern and
+# stop kills those pids after re-reading the start time (a recycled pid survives).
+record_service() {   # role pattern
+  local role="$1" pattern="$2" pid start
+  mkdir -p "$(dirname "$PID_FILE")"
+  for pid in $(pgrep -f "$pattern" 2>/dev/null); do
+    start="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)"
+    [ -n "$start" ] || continue          # pid vanished between pgrep and here
+    printf '%s|%s|%s|%s\n' "$role" "$pid" "$start" "$pattern" >> "$PID_FILE"
+  done
+}
+
+[ -f "$ENV_FILE" ] || die "$ENV_FILE missing; run deploy/setup.sh first"
+TOKEN="$(grep '^KCI_API_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
+# setup's placeholder text ("fill in the local kernelci-api admin JWT ...") is
+# non-empty, so it used to pass and then 401 on every API call: demand a JWT shape.
+case "$TOKEN" in
+  ""|fill\ in*|*" "*)
+    die "KCI_API_TOKEN in $ENV_FILE is not a real token (found: '${TOKEN:0:48}'); run deploy/setup.sh (or deploy/instance-init.sh) to generate one" ;;
+  eyJ*) ;;
+  *)
+    echo "  !! KCI_API_TOKEN does not look like a local API JWT (no 'eyJ' prefix); continuing" ;;
+esac
+
+python3 "$ROOT/deploy/render-local-config.py" \
+  --template "$ROOT/config/local-callback.toml" --output "$SETTINGS" >/dev/null \
+  || die "could not render $SETTINGS from config/local-callback.toml"
+python3 "$ROOT/deploy/render-local-config.py" \
+  --template "$ROOT/config/cb-config/pipeline.yaml" --output "$CB_CONFIG" \
+  --var API_PORT="$API_PORT" --var STORAGE_PORT="$STORAGE_PORT" \
+  --var SSH_PORT="$SSH_PORT" >/dev/null \
+  || die "could not render $CB_CONFIG from config/cb-config/pipeline.yaml"
+ok "settings rendered ($SETTINGS, $CB_CONFIG; project=$PROJECT api=$API_PORT)"
+
+# The ssh container stores job definitions through these bind mounts as uid 1000
+# (see kernelci-api/docker/ssh/Dockerfile).  Any other owner makes every job stay
+# incomplete with "submit error": StorageSSH._upload's `mkdir -p` fails SILENTLY.
+check_uid1000_dir() {
+  local dir="$1" what="$2" owner
+  mkdir -p "$dir" 2>/dev/null || true
+  if [ ! -d "$dir" ]; then
+    echo "  !! $dir does not exist and could not be created ($what)"
+    return 0
+  fi
+  owner="$(stat -c %u "$dir" 2>/dev/null || echo '?')"
+  if [ "$(id -u)" = "0" ]; then
+    chown -R 1000:1000 "$dir" 2>/dev/null && \
+      echo "  $dir -> uid 1000 ($what)"
+    return 0
+  fi
+  if [ "$owner" = "1000" ]; then
+    return 0
+  fi
+  echo "  !! $dir is owned by uid $owner, but the ssh container writes it as uid 1000 ($what)"
+  echo "     Job definitions would not be stored and every job would stay incomplete"
+  echo "     with 'submit error'.  Fix with: sudo chown -R 1000:1000 $dir"
+}
+check_uid1000_dir "$API_DIR/docker/storage/data" "job definitions and result logs"
+check_uid1000_dir "$API_DIR/docker/ssh/user-data" "the scheduler's upload key"
+
+
+# The worker's callback token: the environment first, else this deployment's rendered
+# settings ([runtime].pull-labs-riscv.callback_token).  The literal "labtoken-callback"
+# that used to sit here 401/403'd every one of them - a PERMANENT failure (#10).
+CALLBACK_TOKEN="${PULL_LABS_CALLBACK_TOKEN:-}"
+TOKEN_SOURCE="built-in default (config/local-callback.toml's literal)"
+if [ -z "$CALLBACK_TOKEN" ] && [ -f "$SETTINGS" ]; then
+  CALLBACK_TOKEN="$(python3 - "$SETTINGS" <<'PY'
+import re
+import sys
+
+# python3 here is 3.10 (no tomllib), and the renderer emits one line per runtime.
+with open(sys.argv[1]) as handle:
+    text = handle.read()
+match = re.search(
+    r"^\s*pull-labs-riscv\s*=\s*\{[^}]*callback_token\s*=\s*\"([^\"]*)\"",
+    text,
+    re.M,
+)
+print(match.group(1) if match else "")
+PY
+)"
+  if [ -n "$CALLBACK_TOKEN" ]; then
+    TOKEN_SOURCE="$SETTINGS ([runtime] pull-labs-riscv callback_token)"
+    case "$CALLBACK_TOKEN" in
+      "Token "*) CALLBACK_TOKEN="${CALLBACK_TOKEN#Token }" ;;
+      *)
+        echo "  !! the configured callback_token does not start with 'Token ', but the"
+        echo "     worker sends 'Token <PULL_LABS_CALLBACK_TOKEN>': this cannot match, so"
+        echo "     every result would come back 401.  Fix the token in $SETTINGS"
+        ;;
+    esac
+  fi
+fi
+if [ -z "$CALLBACK_TOKEN" ]; then
+  CALLBACK_TOKEN="labtoken-callback"
+fi
+
+# Resolve the seed and check its tree label BEFORE a single service is started:
+# a seed the runtime will reject must cost one second, not a stack start (#1).
+if seed_requested "$@"; then
+  seed_prepare
+fi
+
+# Fresh ownership record: ./run.sh stop stops exactly the services this run (re)started.
+mkdir -p "$(dirname "$PID_FILE")"
+: > "$PID_FILE"
+
+# 1) KernelCI API stack
+#
+# Run `up -d` even when the API answers: only compose knows whether the running
+# containers still match the requested port mappings, and skipping it left them on
+# the default ports while the rendered cb-config pointed at this deployment's.
+if curl -s -m 3 -o /dev/null "$API_URL/latest/"; then
+  ok "API stack already up ($API_URL)"
+  (cd "$API_DIR" && docker compose -p "$PROJECT" up -d api db redis storage ssh >/dev/null) \
+    || echo "  !! compose could not reconcile the running containers; ports may be stale"
+else
+  # Bindability first, and name the conflict: a compose that cannot publish 8001
+  # reports it in its own words, sending the reader through the API's logs instead.
+  require_port_free "$API_PORT" "kernelci API" KCI_API_PORT
+  require_port_free "$STORAGE_PORT" "artifact storage" KCI_STORAGE_PORT
+  require_port_free "$SSH_PORT" "job-definition ssh" KCI_SSH_PORT
+  require_port_free "$MONGO_PORT" "mongo" KCI_MONGO_PORT
+  echo "-> starting: docker compose -p $PROJECT up -d api db redis storage ssh"
+  if ! (cd "$API_DIR" && docker compose -p "$PROJECT" up -d api db redis storage ssh >/dev/null); then
+    # After a machine/docker restart, stale Exited containers cause compose name
+    # conflicts; the data lives in volumes, so removing them is safe.
+    echo "  compose conflict; removing stale stopped containers and retrying"
+    for c in kernelci-api kernelci-api-db kernelci-api-redis kernelci-api-storage kernelci-api-ssh; do
+      docker rm -f "$c" >/dev/null 2>&1 || true
+    done
+    (cd "$API_DIR" && docker compose -p "$PROJECT" up -d api db redis storage ssh >/dev/null) || die "compose failed"
+  fi
+fi
+for i in $(seq 1 40); do
+  curl -s -m 2 -o /dev/null "$API_URL/latest/" && break
+  sleep 2
+done
+curl -s -m 3 -o /dev/null "$API_URL/latest/" || die "API not ready at $API_URL"
+ok "API stack up"
+
+# Which artifact is actually running - recorded, not inferred: compose pulls a
+# *mutable* tag, so the image this deployment tested can change overnight, and no
+# report could otherwise name what it verified.  Read back from the container.
+API_IMAGE_ID="$(docker inspect -f '{{.Image}}' kernelci-api 2>/dev/null || true)"
+if [ -n "$API_IMAGE_ID" ]; then
+  ok "API image: ${API_IMAGE_ID#sha256:} (${KERNELCI_API_IMAGE:-kernelci/staging-kernelci}:${KERNELCI_API_TAG:-api})"
+  mkdir -p "$ROOT/var/state"
+  {
+    echo "# Written by deploy/stack.sh - the artifact this deployment runs."
+    echo "# kernelci-api's compose file pulls a mutable tag, so this is the only"
+    echo "# durable record of what was tested; re-read on every stack start."
+    echo "KCI_API_IMAGE_ID=$API_IMAGE_ID"
+    echo "KCI_API_IMAGE_REF=${KERNELCI_API_IMAGE:-kernelci/staging-kernelci}:${KERNELCI_API_TAG:-api}"
+    echo "KCI_STACK_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "KCI_COMPOSE_PROJECT=$PROJECT"
+  } > "$ROOT/var/state/images.env"
+else
+  # Say so rather than write nothing: this record is the only way a later report can
+  # name the artifact it verified (a renamed container would vanish without a trace).
+  echo "  !! could not read the running API image id (docker inspect kernelci-api failed);"
+  echo "     var/state/images.env was NOT written, so this run's artifact is unrecorded"
+fi
+
+# `stop` + `stack` used to truncate the previous round's logs (every service logs to
+# a fixed /tmp path).  Rotate one generation, and ONLY just before starting the service:
+# rotating an already-running one left the live round writing to a moved inode.
+rotate_log() {
+  [ -f "$1" ] && mv -f "$1" "$1.prev"
+  return 0
+}
+
+# Every launch below redirects the SUBSHELL too: redirecting only the service left
+# it holding the caller's stdout, so `./run.sh stack | tee log` never saw EOF.
+# 2) artifact server (8999)
+if curl -s -m 3 -o /dev/null "http://127.0.0.1:$SERVE_PORT/Image"; then
+  ok "artifact server already up (:$SERVE_PORT)"
+  record_service "artifact server" "http\.server $SERVE_PORT"
+else
+  # A listener that does not answer /Image is the case the old "X artifact server
+  # failed" hid; require_port_free names the port and the holder instead.
+  require_port_free "$SERVE_PORT" "artifact server" KCI_SERVE_PORT
+  rotate_log "/tmp/fs$SERVE_PORT.log"
+  (cd "$SERVE_DIR" && setsid nohup python3 -m http.server $SERVE_PORT --bind 0.0.0.0 >/tmp/fs$SERVE_PORT.log 2>&1 < /dev/null &) >/dev/null 2>&1
+  # Bounded wait, the same shape as the API probe above: the wait ends as soon as
+  # the service answers, so the bound only costs time when it is genuinely broken
+  # - a fixed `sleep 2` here turned a slow start on a loaded machine into
+  # "artifact server failed" with nothing in the log tail yet.
+  for i in $(seq 1 20); do
+    curl -s -m 3 -o /dev/null "http://127.0.0.1:$SERVE_PORT/Image" && break
+    sleep 1
+  done
+  if curl -s -m 3 -o /dev/null "http://127.0.0.1:$SERVE_PORT/Image"; then
+    ok "artifact server started (:$SERVE_PORT)"
+    record_service "artifact server" "http\.server $SERVE_PORT"
+  else
+    # The service's own log is the evidence; print it, not just its path.
+    tail -3 "/tmp/fs$SERVE_PORT.log" 2>/dev/null | sed 's/^/     /'
+    die "artifact server failed on port $SERVE_PORT (see /tmp/fs$SERVE_PORT.log)"
+  fi
+fi
+
+# 3) real lava_callback (validates the token)
+if curl -s -m 3 -o /dev/null "http://127.0.0.1:$CB_PORT/"; then
+  ok "lava_callback already up (:$CB_PORT)"
+  record_service "lava_callback" "uvicorn lava_callback:app --port $CB_PORT"
+else
+  require_port_free "$CB_PORT" "lava_callback" KCI_CB_PORT
+  # lava_callback runs on the HOST against the cloned kernelci-core, so import it to
+  # check the deps.  KCI_SETTINGS is read AT IMPORT TIME (toml.load): without it a
+  # healthy machine dies with FileNotFoundError 'config/kernelci.toml'.
+  if ! CALLBACK_IMPORT_ERROR="$(cd "$PIPE_DIR/src" && KCI_SETTINGS="$SETTINGS" \
+      PYTHONPATH="$ROOT/kernelci-core" python3 -c 'import lava_callback' 2>&1)"; then
+    echo "$CALLBACK_IMPORT_ERROR" | tail -3 >&2
+    die "the callback service cannot be imported (see the traceback above); install the host deps with: python3 -m pip install -r requirements.txt && python3 -m pip install -r kernelci-core/requirements.txt"
+  fi
+  rotate_log "/tmp/cb$CB_PORT.log"
+  (cd "$PIPE_DIR/src" && KCI_SETTINGS="$SETTINGS" KCI_API_TOKEN="$TOKEN" PYTHONPATH="$ROOT/kernelci-core" setsid nohup python3 -m uvicorn lava_callback:app --port $CB_PORT --host 0.0.0.0 >/tmp/cb$CB_PORT.log 2>&1 < /dev/null &) >/dev/null 2>&1
+  # uvicorn imports kernelci-core before it binds, so its start-up time is a
+  # function of the machine, not a constant: wait until it actually answers.
+  for i in $(seq 1 30); do
+    curl -s -m 3 -o /dev/null "http://127.0.0.1:$CB_PORT/" && break
+    sleep 1
+  done
+  if curl -s -m 3 -o /dev/null "http://127.0.0.1:$CB_PORT/"; then
+    ok "lava_callback started (:$CB_PORT)"
+    record_service "lava_callback" "uvicorn lava_callback:app --port $CB_PORT"
+  else
+    tail -3 "/tmp/cb$CB_PORT.log" 2>/dev/null | sed 's/^/     /'
+    die "callback failed on port $CB_PORT (see /tmp/cb$CB_PORT.log)"
+  fi
+fi
+
+# 4) official scheduler (reads our 4 YAMLs, renders jobdefs in real time)
+if pgrep -f "scheduler\.py.*--yaml-config $KCFG/" >/dev/null; then
+  ok "scheduler already running (pull-labs-riscv, config $KCFG)"
+  record_service "scheduler" "scheduler\.py.*--yaml-config $KCFG/"
+else
+  # A second scheduler on the same API dispatches every job twice (both subscribe to
+  # the same node events), so a scheduler that is not ours is a conflict to report.
+  if pgrep -af "scheduler\.py.*pull-labs-riscv" | grep -qv "$KCFG/"; then
+    echo "  !! a scheduler for the same runtime is already running without this"
+    echo "     deployment's config directory ($KCFG):"
+    pgrep -af "scheduler\.py.*pull-labs-riscv" | sed 's/^/       /'
+    die "starting a second one would create every job node twice; stop that one (deploy/stop.sh, or kill the pid above) and re-run"
+  fi
+  mkdir -p "$KCFG/config/runtime"
+  ln -sfn "$PIPE_DIR/config/logger.conf" "$KCFG/config/logger.conf" 2>/dev/null
+  ln -sfn "$ROOT/kernelci-core/config/runtime/base" "$KCFG/config/runtime/base" 2>/dev/null
+  for f in "$PIPE_DIR"/config/runtime/*.jinja2; do ln -sfn "$f" "$KCFG/config/runtime/" 2>/dev/null; done
+  for f in "$PIPE_DIR"/config/*.yaml; do
+    [ "$(basename "$f")" = "pipeline.yaml" ] && continue
+    ln -sfn "$f" "$KCFG/config/" 2>/dev/null
+  done
+  PIPE_CONF="$PIPE_DIR/config/pipeline.yaml" CB_CONF="$CB_CONFIG" \
+    python3 - "$KCFG/config/pipeline.yaml" <<'PYEOF'
+import os, sys, yaml
+def merge(a, b):
+    for k, v in b.items():
+        if isinstance(v, dict) and isinstance(a.get(k), dict):
+            merge(a[k], v)
+        else:
+            a[k] = v
+    return a
+a = yaml.safe_load(open(os.environ["PIPE_CONF"]))
+b = yaml.safe_load(open(os.environ["CB_CONF"]))
+open(sys.argv[1], "w").write(yaml.safe_dump(merge(a, b), sort_keys=False))
+PYEOF
+  rotate_log "/tmp/sched-local.log"
+  (cd "$KCFG" && KCI_SETTINGS="$SETTINGS" KCI_API_TOKEN="$TOKEN" KCI_INSTANCE_CALLBACK="http://127.0.0.1:$CB_PORT" PYTHONPATH="$ROOT/kernelci-core" setsid nohup python3 "$PIPE_DIR/src/scheduler.py" --yaml-config "$KCFG/config" --settings "$SETTINGS" loop --runtimes pull-labs-riscv --name local-full-stack --output /tmp/sched-output >/tmp/sched-local.log 2>&1 < /dev/null &) >/dev/null 2>&1
+  # Wait for it to appear, then let it settle before believing it: the process is
+  # visible to pgrep the instant it forks, while its failures are import errors a
+  # few seconds in.  The settle is 10s - the same grace the blind `sleep 10` used
+  # to give - so the crash window is not narrowed, while a slow start (the old
+  # false "scheduler failed") now only costs a longer wait.
+  for i in $(seq 1 30); do
+    pgrep -f "scheduler\.py.*--yaml-config $KCFG/" >/dev/null && break
+    sleep 1
+  done
+  sleep 10
+  if pgrep -f "scheduler\.py.*--yaml-config $KCFG/" >/dev/null; then
+    ok "scheduler started (pull-labs-riscv, config $KCFG)"
+    record_service "scheduler" "scheduler\.py.*--yaml-config $KCFG/"
+  else
+    tail -3 /tmp/sched-local.log 2>/dev/null | sed 's/^/     /'
+    die "scheduler failed on config $KCFG (see /tmp/sched-local.log)"
+  fi
+fi
+
+echo
+echo '--- local full stack ---'
+echo "  project:    $PROJECT (containers + data volumes)"
+echo "  API:        $API_URL"
+echo "  artifacts:  http://127.0.0.1:$SERVE_PORT"
+echo "  callback:   http://127.0.0.1:$CB_PORT (real lava_callback)"
+echo '  scheduler:  pull-labs-riscv (official code, our YAMLs)'
+echo
+
+if seed_requested "$@"; then
+  seed_stack
+fi
+
+if worker_requested "$@"; then
+  echo '-> worker taking jobs (Ctrl-C to stop):'
+  echo "   callback token from: $TOKEN_SOURCE"
+  # The token comes from CALLBACK_TOKEN above, not the literal that used to sit here:
+  # the callback validates the header it receives against the configured token (#10).
+  # The new tree's worker (`pull_worker.py`): the old entry (`riscv_pull_worker.py`,
+  # deleted with the adoption) and its `--tuxrun-bin` / `--output-dir` /
+  # `--max-timeout` flags are gone with it.  `tuxrun` comes from the PATH set
+  # below, the consoles go to this deployment's own workspace (`var/logs/`, which is
+  # what the page reads), and per-test ceilings are `lib/policy.py`'s.
+  PYTHONUNBUFFERED=1 PATH=/usr/local/sbin:/usr/sbin:$PATH PULL_LABS_CALLBACK_TOKEN="$CALLBACK_TOKEN" \
+    kci_run python3 "$ROOT/pull_worker.py" \
+    --api-url "$API_URL" --container-runtime docker \
+    --state-file "/tmp/kci-worker-$PROJECT-state.json" --poll-period 5
+else
+  echo 'next step (manual):'
+  echo "  python3 pull_worker.py --once     # same state file, one batch, then exit"
+  echo "  # or directly: python3 pull_worker.py   # keep polling"
+fi

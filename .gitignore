@@ -1,20 +1,18 @@
 kernelci-core/
 kernelci-api/
-kernelci-frontend/
 kernelci-pipeline/
-kernelci-project/
-.venv-kci/
 .ruff_cache/
 
-# runtime workspace: regenerable, never committed
-work/
+# the pre-rework copy of lib/ and the root entry points, plus the workspace state
+# it was taken with (docs/gui-rework/CHANGELOG.md §0).  `lib/` is untracked, so
+# this directory is the only way back to the tree as it was - and it is ignored
+# because a backup of every module is a second copy of the source, not source:
+# `ruff check .` reads it as a package named `lib.20260920T003046` (N999) and
+# fails the gate that guards the real one.
+.gui-rework-backup/
+# the workspace (see src/DESIGN.md); the old tree's work/ is gone with that tree
+var/
 *.log
-# ...except the test fixtures: real tuxrun console captures that
-# verify-lava-body.py replays through the upstream LAVA parser.  They are
-# test data, not logs - ignoring them broke a fresh clone (verify died with
-# FileNotFoundError, and run.sh's gate swallowed the traceback into a green
-# exit code).
-!scripts/fixtures/*.log
 __pycache__/
 
 # docs: only the runbook is public; everything else (tool deep dives, SOW
