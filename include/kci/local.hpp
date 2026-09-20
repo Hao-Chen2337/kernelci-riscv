@@ -68,7 +68,7 @@ struct Build {
     std::string rootfs(bool with_modules = false);
 
     void merge(const Build& other);   // 把另一个 build 的构件并进来
-    void remove();                    // ./run.sh prune 干的事
+    void remove();                    // python3 prune.py 干的事
     void print(std::ostream& os = std::cout) const;
 };
 

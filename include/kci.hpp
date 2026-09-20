@@ -45,9 +45,9 @@ namespace kci {
 // 入口：每个都是薄薄一层 —— 解析参数、组装对象、跑、用退出码收场
 // ===========================================================================
 //
-//   run_latest   最新的一个 build 跑一次            （./run.sh fetch）
-//   pull_worker  常驻：认领 API 队列里的 job         （./run.sh worker）
-//   runday       某一天的全部 build，账本说跑过的不再跑（./run.sh runday）
+//   run_latest   最新的一个 build 跑一次            （python3 run_latest.py）
+//   pull_worker  常驻：认领 API 队列里的 job         （python3 pull_worker.py）
+//   runday       某一天的全部 build，账本说跑过的不再跑（python3 runday.py）
 //   table        本地表：index / jobs / todo / summary / run，离线
 //   results      读账本；gui：页面；drift：两份 config 的差异
 //

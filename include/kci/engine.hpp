@@ -59,8 +59,8 @@ struct Runner {
 // 190 字的答案，曾让峰值内存多花 205MB。
 //
 // 仓库里有两份真 console 可以做基准（唯一的两份，别删）：
-//   scripts/fixtures/tuxrun-pass.log  剥掉 ANSI 后 4 条 "ok N selftests: riscv: xxx"
-//   scripts/fixtures/tuxrun-fail.log  一条 TAP 都没有（JobCanceled）→ 判 fail
+//   docs/gui-rework/tools/fixtures/tuxrun-pass.log  剥掉 ANSI 后 4 条 "ok N selftests: riscv: xxx"
+//   docs/gui-rework/tools/fixtures/tuxrun-fail.log  一条 TAP 都没有（JobCanceled）→ 判 fail
 
 struct Judge {
     struct Tap {
