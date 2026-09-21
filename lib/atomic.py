@@ -20,27 +20,63 @@ so the default is to sync, and that one caller says `fsync=False`.
 import json
 import os
 
+from . import errors
+
+
+class DiskError(errors.InfraError, OSError):
+    """The filesystem refused an I/O this tree needed: exit 3, a named path, no traceback.
+
+    The two writers below let the `OSError` out as itself, so a read-only workspace,
+    a `chmod 000` directory or a full disk reached the entry point as a traceback
+    carrying the interpreter's exit 1 - the code this tree reserves for "a test
+    failed" (`lib/errors.py`) - and a write that never happened was reported as a
+    test result: `table.py pull` in a read-only workspace said exactly that.
+    `retention.py` raises this too, for a directory it cannot list and a build it
+    cannot remove.  The message is `drift.py:_read()`'s spelling: the path that
+    could not be written, then the OS's own reason.
+
+    **An `OSError` as well as an `InfraError`, deliberately.**  Four callers catch
+    `OSError` around these writers and mean something by it: `drift.py`'s
+    `_keep_config` swallows it ("a cache that cannot be written is not a failure"),
+    `sink.py`'s `Ledger.deliver` turns it into `NOT recorded: <why>`, and
+    `build/model.py` and `build/publish.py` re-raise it as the `ArtifactError` that
+    names the build.  A type those four no longer match would turn a cache miss into
+    a failed drift and a record that explains itself into a crash - so this is both,
+    and the repair reaches exactly the callers that had no handler at all.
+    """
+
 
 def write_json(path, data, *, fsync=True, **dump_kwargs):
     """`data` written as JSON at `path`, atomically: `<path>.tmp`, then renamed over it.
 
     `**dump_kwargs` are `json.dump`'s own - the caller's `indent`, `sort_keys`
     and anything else it named.
+
+    A write the filesystem refuses is a `DiskError`, never a bare `OSError`.
     """
     tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, **dump_kwargs)
-        _settle(handle, fsync)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, **dump_kwargs)
+            _settle(handle, fsync)
+        os.replace(tmp, path)
+    except OSError as error:
+        raise DiskError(f"cannot write {path}: {error}") from error
 
 
 def write_text(path, text, *, encoding="utf-8", fsync=True):
-    """`text` written at `path`, atomically, in `encoding` - a record's JSON, or a kept file."""
+    """`text` written at `path`, atomically, in `encoding` - a record's JSON, or a kept file.
+
+    A write the filesystem refuses is a `DiskError`, never a bare `OSError`.
+    """
     tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding=encoding) as handle:
-        handle.write(text)
-        _settle(handle, fsync)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w", encoding=encoding) as handle:
+            handle.write(text)
+            _settle(handle, fsync)
+        os.replace(tmp, path)
+    except OSError as error:
+        raise DiskError(f"cannot write {path}: {error}") from error
 
 
 def _settle(handle, fsync):
