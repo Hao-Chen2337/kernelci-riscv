@@ -37,12 +37,22 @@ extend-exclude = [
     "docs",
     # The design pair and the C++ interface spec: a board and declarations,
     # cited by docstrings and read by the extractor alone.
-    "design",
-    "include",
-    "tools/design_extract.py",
+    #
+    # **Anchored, and it has to be.**  A bare `design` (and the bare `design/`
+    # `.gitignore` carried before this file) matches a directory of that name at
+    # *any* depth, and this tree has a second one: `lib/gui/design/`, 8845 lines
+    # of the console the gate exists to watch.  Unanchored, that rule quietly
+    # took the whole presentation layer out of `ruff`'s reach - `ruff check .`
+    # said `All checks passed!` with an unused import sitting in
+    # `lib/gui/design/ui.py`, and caught the same import one directory over in
+    # `lib/api.py`.  A leading slash is what makes it mean "the board at the top
+    # of this repository" instead of "any directory called design".
+    "/design",
+    "/include",
+    "/tools/design_extract.py",
     # `proto/` is deleted (`git checkout 6a5fc44 -- proto` brings it back) and
     # named for the same reason its rule is still in `.gitignore`.
-    "proto",
+    "/proto",
     # Caches.  `.ruff_cache` is `ruff`'s own default; `__pycache__` is not.
     ".ruff_cache",
     "__pycache__",

@@ -19,17 +19,25 @@ docs/*
 # - declarations only, cited by 20 docstrings but read by nothing.  `proto/` is
 # recovered from git history (`git checkout 6a5fc44 -- proto`) if ever needed.
 # See docs/FILE-AUDIT.zh-CN.md
-proto/
-include/
+#
+# **The leading slashes are load-bearing.**  A bare `proto/` matches a directory
+# of that name at any depth, which is how a bare `design/` here took
+# `lib/gui/design/` - 8845 lines of the console - out of `ruff`'s reach for a
+# day: `ruff check .` reads a `.gitignore` whenever a `.git` sits beside it, and
+# it said `All checks passed!` with an unused import in `lib/gui/design/ui.py`.
+# Anchored, each rule means the directory at the top of this repository.
+/proto/
+/include/
 
 # the design pair: `design/kernelci-design.html` is the design of record and
 # `tools/design_extract.py` is its only reader (`--check` compares the board with
 # `lib/gui/design/style.py`).  They are one decision, not two: the extractor
 # without the board dies on its first line.  Local working material - what ships
 # is the extraction, and `style.py` says so.  `tools/check_hooks.py` is NOT part
-# of this pair and stays tracked.
-design/
-tools/design_extract.py
+# of this pair and stays tracked.  Anchored for the same reason as above:
+# `lib/gui/design/` is source, not the board.
+/design/
+/tools/design_extract.py
 
 # ...but the gate's own fixtures ARE part of the tree: `verify_callback_body.py`
 # opens these two consoles, so the `*.log` rule above must not swallow them.
