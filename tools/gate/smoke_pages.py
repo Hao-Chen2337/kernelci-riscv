@@ -22,6 +22,15 @@ So this is the third canary, and the only one that exercises a render:
 No server and no network are required for the pages that read only local disk.  With
 `--all` the API-backed pages are rendered too, which costs whatever the API costs -
 use `--api` to point them at a fast one, or leave them out.
+
+**"The page drew" is not "the page had a data source."**  Every page catches its own
+`ApiError` and draws the state it draws when the rows are not there, so an API that
+answers nothing looks exactly like a page that renders - and this check used to call
+that `every page rendered` and exit 0.  The reads are therefore watched too: when the
+renders ask the API and **not one** of those reads comes back, this exits 1 and names
+the page, the read and the URL that did not answer.  A read that failed while others
+answered is printed and is not fatal: one endpoint refusing is a fact about that
+endpoint, and the pages that did read show it.
 """
 
 import argparse
@@ -72,6 +81,25 @@ def main(argv=None) -> int:
     bad, slow = [], []
     calls = {}
     current = [""]                      # which page/language the counter is attributing to
+
+    # **An API that answers nothing is a verdict, and it used to be invisible here.**
+    # Measured: `KCI_API_URL=http://127.0.0.1:19998` (nothing listening) printed
+    # `every page rendered` and exited 0, with the 143 KB homepage carrying
+    # `did not answer this query ... nothing is known about this window either way` -
+    # every query behind every page had failed.  Nothing raised, so `bad` stayed empty
+    # and `failed = bool(bad)` was False; the only other signal, `slow`, is printed and
+    # never reaches the exit code.  The pages are not wrong to paint the empty state -
+    # a console has to draw something - but a *check* may not read that state as
+    # success, and the difference between the two is countable: a read either answered
+    # or it did not.  Both counts are taken at the one place every read goes through.
+    #
+    # Total silence (not one read answered) fails the check whatever the workspace
+    # holds - "the API is not there" is not a state this canary may report as fine.
+    # Renders that made no read at all (no `--all`, no client) are left alone: there is
+    # no data source to judge, and the render canary still does its own job.
+    reads = [0, 0]                      # [asked, answered]
+    refused = {}                        # "page[lang]" -> [(method, path, why), ...]
+
     if args.calls:
         # Count the API reads each render makes, **per language**.  This is the
         # deterministic form of "a language must not change the cost": wall clock on
@@ -86,6 +114,25 @@ def main(argv=None) -> int:
                             token=token, retries=retries)
 
         api_mod.Api._request = counting
+
+    # The observation wraps whatever is installed above, so `--calls`' own counting
+    # stays exactly what it was - and a read is retried exactly as `lib/api` retries
+    # it (`retries` is forwarded only when the caller names one), so the pages see the
+    # answer they would see in production.
+    answered_through = api_mod.Api._request
+
+    def watching(self, method, path, params=None, body=None, token="", **rest):
+        reads[0] += 1
+        try:
+            answer = answered_through(self, method, path, params=params, body=body,
+                                      token=token, **rest)
+        except Exception as exc:                # counted, then re-raised: nothing is hidden
+            refused.setdefault(current[0], []).append((method, path, str(exc)))
+            raise
+        reads[1] += 1
+        return answer
+
+    api_mod.Api._request = watching
 
     width = max(len(page) for page in pages)
     print(f"# rendering {len(pages)} page(s), {len(langs)} language(s)"
@@ -119,7 +166,32 @@ def main(argv=None) -> int:
         print(f"{len(slow)} render(s) over 5s (the API's cost, not the renderer's): "
               + ", ".join(f"{p}[{l}] {t:.1f}s" for p, l, t in slow))
 
-    failed = bool(bad)
+    # **The evidence, page by page.**  A boolean would leave an operator with "the pages
+    # rendered, and the check failed" and no way to tell which read died; and "the API is
+    # down" and "one endpoint refuses" need different actions.  So every read that failed
+    # is named with the page it was made for, and the distinct reasons are printed once -
+    # 68 failed reads are two URLs and one connection refusal, not a page of text.
+    if refused:
+        print()
+        print(f"{reads[0] - reads[1]} of {reads[0]} API read(s) did not answer:")
+        for where, ones in refused.items():
+            seen = dict.fromkeys((method, path) for method, path, _ in ones)
+            print(f"  {where}: {len(ones)} read(s) - "
+                  + ", ".join(f"{method} {path}" for method, path in seen))
+        for why in dict.fromkeys(reason for ones in refused.values()
+                                 for _, _, reason in ones):
+            print(f"    {why}")
+
+    silence = bool(reads[0]) and not reads[1]
+    if silence:
+        at = client.base if client is not None else api_mod.Api.url()
+        print()
+        print(f"the API at {at} answered none of the {reads[0]} read(s) these pages made, "
+              "so every page that shows rows drew the state it draws when its data source "
+              "is not there - `every page rendered` is not the same answer as `the pages "
+              "had a data source`")
+
+    failed = bool(bad) or silence
     if args.calls:
         print()
         print("# API reads per render (the deterministic form of `a language must not "
