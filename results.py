@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
 
-from lib import errors
+from lib import errors, layout
 from lib import re as re_mod
 
 
@@ -62,9 +62,47 @@ def _main(argv=None):
         records = records.for_test(args.test)
     if args.json:
         print(re_mod.json_report(records))
+        return errors.EXIT_PASS
+    lines = _nothing_matched(args) if not len(records) else None
+    if lines:
+        for line in lines:
+            print(line)
     else:
         re_mod.render(records)
     return errors.EXIT_PASS
+
+
+def _nothing_matched(args):
+    """The sentence for an empty answer out of a ledger that is not empty.
+
+    `lib/re.render()` answers `no result records in <dir>` for an empty `Records`
+    however it came to be empty, and the two ways are not the same fact: a ledger
+    with nothing in it at all, and a filter that matched none of the records the
+    ledger holds.  `results.py --build deadbeef1234` over 23 builds and 61 records
+    printed the empty-ledger paragraph - "an empty ledger means nothing has run
+    here yet" - to a reader who was looking for a typo in a build id, which is the
+    one thing that answer says cannot be it.  A filter that matched nothing is now
+    answered with the filter's own name and the size of the ledger, so the reader
+    knows the records are there and the *argument* is what to look at.
+
+    Only this case reads the ledger a second time, and only when a filter was
+    given at all: the ordinary path (records found) does no extra work, and a
+    ledger that really is empty still gets `re.render()`'s own words verbatim.
+    """
+    named = [f"{flag} {value}" for flag, value in (("build", args.build),
+                                                   ("test", args.test)) if value]
+    if not named:
+        return None
+    known = re_mod.Records.load()
+    if not known:
+        return None
+    # The build count comes out of the records themselves rather than a second
+    # listing: `Ledger.write()` builds the path out of the record's own
+    # `build_id`, so the field and the directory that holds it cannot disagree.
+    return [f"no records for {' and '.join(named)} in {layout.results()}",
+            (f"  (the ledger is not empty: {len(known)} record(s) over "
+             f"{len({one.build_id for one in known})} build(s); "
+             "this filter matched none of them)")]
 
 
 if __name__ == "__main__":
