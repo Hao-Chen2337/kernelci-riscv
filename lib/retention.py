@@ -10,7 +10,7 @@ This is the old tree's `kcilib/core/retention.py`, and the one decision it made
 that nothing else can make is the same: *which* build is protected.  The old rule
 read it from two files it also had to trust - `work/env/build.env`'s
 `KCI_BUILD_COMMIT`/`KCI_BUILD_DIR`, and each directory's `node.json`.  This tree
-records the same act once, as data (`lib/build.py`'s `publish_local()` writes
+records the same act once, as data (`lib/build/publish.py`'s `publish_local()` writes
 `var/state/served.json`), so the served build is protected by the id that record
 names; there is no `node.json` here to match a commit against, and no second
 opinion about what "the served build" means.
@@ -71,7 +71,7 @@ def plan(downloads=None, keep=DEFAULT_KEEP, served=None):
     the operator reading a prune is asking exactly that, and a table of names with
     no reason is the one shape this must not have.
 
-    *served* is the record `publish_local()` wrote (`lib/build.py: served()`);
+    *served* is the record `publish_local()` wrote (`lib/build/publish.py`: `served()`);
     `{}` means this deployment serves nothing yet, and then nothing is protected
     by provenance.
     """
@@ -89,7 +89,7 @@ def plan(downloads=None, keep=DEFAULT_KEEP, served=None):
     # A served image nobody recorded is the one state this must not guess about:
     # `var/serve/Image` exists, so this deployment serves *something*, but no
     # record says which build's bytes they are (published before
-    # `lib/build.py`'s `_remember_served()` existed, or the record was removed).
+    # `lib/build/publish.py`'s `_remember_served()` existed, or the record was removed).
     # Protecting nothing silently would let a prune delete the very build the
     # stack seeds from; refusing to prune would be a worse answer.  Said out loud,
     # the operator can re-publish (which records it) or name the build himself.

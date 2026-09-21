@@ -5,6 +5,10 @@ Not a test suite - this is the list of tests *this project runs*, which both
 `Build` (to answer "is this build missing something") and `Job` (to render a
 definition) need.  It lives here so those two do not have to import each other.
 
+It also owns the environment those tests run in - the default lab, the default
+device, and `device()`, the rule that says which device a job definition names -
+because it imports nothing, so `config`, `sink` and `runner` can all read it.
+
 接口形状（C++，只有声明）：include/kci/local.hpp §8 测试目录。
 """
 
@@ -30,8 +34,9 @@ DEFAULT_TESTS = ("boot", "kselftest-riscv", "kselftest-kvm")
 
 # The KVM tests: an EXCLUSION list, not an allow list.  The build's kselftest
 # tarball decides what exists (a test an older kernel did not build simply is
-# not there), and these seven are the ones that cannot pass under TCG - three
-# perf, two stress, plus the two that hang or burn their whole budget.
+# not there), and these nine are the ones that cannot pass under TCG - three
+# perf, two stress, two that hang or burn their whole budget, plus the two
+# measured later at the bottom of the list.
 KVM_SKIP_TESTS = (
     # perf: benchmark throughput an emulator has none of
     "access_tracking_perf_test",
@@ -84,3 +89,22 @@ def needs(test):
     except KeyError:
         raise errors.ConfigError(
             f"unknown test {test!r}; known: {', '.join(sorted(TESTS))}") from None
+
+
+def device(definition, default=DEFAULT_DEVICE):
+    """The device a job definition names: its `environment.platform`, else *default*.
+
+    **The definition is the authority on what is being booted**, and this is one
+    rule with three readers, not three rules: `runner.argv` boots this device,
+    `sink.lava_body` reports it as `actual_device_id`, and both must answer the
+    same thing or the report names a device that did not run.
+
+    *default* is the caller's own fallback because the two callers do not have the
+    same one - `runner` has the run config's `device` (what the operator asked
+    for), `sink` has the deployment default.  A definition with no `environment`,
+    or one that names no platform, gets the caller's default.
+    """
+    environment = definition.get("environment") if isinstance(definition, dict) else {}
+    if isinstance(environment, dict) and environment.get("platform"):
+        return str(environment["platform"])
+    return default

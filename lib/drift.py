@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 from . import api as api_mod
-from . import layout
+from . import atomic, layout
 from .errors import ConfigError, KciError
 from .kbuild import PASSED_FILTER, Kbuilds
 
@@ -65,7 +65,7 @@ class Drift:
         `--job kbuild-gcc-14-riscv` asked the production API for a tree of that name,
         was told `total=0`, and ended in a `ConfigError` traceback - which is why
         `python3 drift.py` could not be repointed at this reader.  Nothing on a page
-        ever hit it: `gui.py` always passes the two ids it just listed.  The no-ids
+        ever hit it: `gui` always passes the two ids it just listed.  The no-ids
         read asks for the job's whole history with `state=done`/`result=pass`
         (`_fetch` pins `name` to the job itself), so it is the old tool's selection
         with the new tree's one reader.
@@ -330,11 +330,7 @@ def _keep_config(url, text):
     for path, body in ((_config_path(url), text), (_config_note(url), json.dumps(note))):
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(f"{path}.tmp", "w", encoding="utf-8") as handle:
-                handle.write(body)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(f"{path}.tmp", path)
+            atomic.write_text(path, body)
         except OSError:
             return                      # a cache that cannot be written is not a failure
 

@@ -26,7 +26,11 @@ What it guarantees, each of which was a real bug once:
 * a node with a pending report is re-posted, never re-run
 * state is flushed to disk after every event and on SIGTERM, so a killed worker
   does not lose a result or repeat a run
-* a node is only marked seen once its report was really accepted
+* a node is marked seen once its **run** is over, whether or not the report was
+  accepted - the two are separate debts, and the paragraph above says which one
+  the retry pays.  "Only once its report was really accepted" is what this said,
+  and it made the two lines above untrue: an unaccepted report left the node
+  unseen, an unseen node is claimed again, and claiming again runs the job.
 
 接口形状（C++，只有声明）：include/kci/flow.hpp §15 Poller。
 """
@@ -37,7 +41,7 @@ import os
 import signal
 import time
 
-from . import errors, layout, sink
+from . import atomic, errors, layout, sink
 from .build import Build
 from .config import RunConfig
 from .job import Job, Jobs
@@ -50,6 +54,7 @@ CURSOR_OVERLAP_S = 900      # the events feed is not ordered; re-scan a window
 SEEN_LIMIT = 20000          # oldest ids are evicted past this
 MAX_RETRIES = 5             # consecutive failed batches before giving up
 EVENTS_LIMIT = 1000
+REPOST_EVERY = 12           # polls between re-posts of a report the callback refused
 
 # The state file's shape is a contract: operators read it, and an older worker
 # must not misread what a newer one wrote.  The callback token is NOT in it.
@@ -77,6 +82,7 @@ class Poller:
         self._lock = None
         self._stopping = False
         self._dirty = False
+        self._repost_at = 0.0       # first poll re-posts at once; see `loop`
 
     # --- the loop ----------------------------------------------------------
 
@@ -85,9 +91,19 @@ class Poller:
         self._acquire()
         self.load()
         self._arm_signals()
-        self._repost_pending()
         failures = 0
         while not self._stopping:
+            # Every poll and not once at startup: `resident` has no next startup, so a
+            # report `handle` kept had no second chance to be delivered - the only
+            # thing that could still clear it was another *run* of the same job, which
+            # is exactly what must not happen.  Throttled, because an endpoint that is
+            # refusing must not be asked twelve times a minute for ever; the first
+            # poll is not throttled (`_repost_at` starts at 0), so a report kept
+            # before a restart still goes out immediately.
+            now = time.monotonic()
+            if now >= self._repost_at:
+                self._repost_pending()
+                self._repost_at = now + self.period * REPOST_EVERY
             try:
                 batch = self.events()
             except Exception as exc:  # noqa: BLE001 - every failure here is retryable
@@ -229,11 +245,22 @@ class Poller:
             job.run(self.run, sinks=(forward,), source="worker")
         except Exception as exc:  # noqa: BLE001 - a failed delivery must stay retryable
             # The ledger row is already written (it is the first sink); what is
-            # missing is the callback, so the node stays unseen and the report
-            # is kept - to be re-posted, never re-run.
+            # missing is the callback, and the report is kept for `_repost_pending`
+            # to pay on a later poll - re-posted, never re-run.
+            #
+            # **So the node is marked seen anyway**, and "True" here is the whole
+            # fix: returning False left it unseen, which reads as "try again" - but
+            # a retry at this level is a *run*, and the run is the thing that has
+            # just finished.  The resident worker re-ran the identical job on every
+            # poll until it was killed by hand (41 workspaces, ~17s apart, from one
+            # job definition whose ledger write could never succeed), and because
+            # `_drain` holds the cursor while any event is unhandled it never
+            # advanced its window either, so it could not get past the node.  The
+            # debt recorded below is the *report*; the job is done and marking it
+            # seen is what says so.
             self._remember_pending(claimed, definition, forward.outcome)
             print(f"! {node.node_id}: report not delivered ({exc}); kept pending", flush=True)
-            return False
+            return True
         return True
 
     def _claim(self, node):
@@ -283,12 +310,7 @@ class Poller:
             return
         directory = os.path.dirname(self.state_file) or "."
         os.makedirs(directory, exist_ok=True)
-        tmp = self.state_file + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(self.state, handle, indent=1, sort_keys=True)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, self.state_file)
+        atomic.write_json(self.state_file, self.state, indent=1, sort_keys=True)
         self._dirty = False
 
     def seen(self, node_id):
@@ -322,8 +344,23 @@ class Poller:
     # --- the events feed ---------------------------------------------------
 
     def start_cursor(self):
-        """Where the first poll starts: the persisted cursor, else `--since`, else now."""
-        return self.state.get("timestamp") or self.since or _iso_now()
+        """Where the first poll starts: `--since` if given, else the cursor, else now.
+
+        **`--since` outranks the persisted cursor**, which reverses the order this
+        applied and is what makes the option mean anything.  Cursor-first meant
+        `--since` was only ever consulted on a state file that had no cursor yet -
+        so the operator's one way to reach work this worker never saw (a stack
+        seeded with build timestamps from days ago, a deployment that was down over
+        a weekend) did nothing at all on any deployment that had ever run once, and
+        did it silently.  An instant the operator typed is a thing they meant; a
+        stamp the file happens to hold is not, and when the two disagree the
+        argument is the one to believe.
+
+        Re-scanning from `--since` on every start is safe because `seen` answers
+        it: a node already handled is skipped, and one that finished long ago fails
+        `Kjob.claimable` even if it is not.
+        """
+        return self.since or self.state.get("timestamp") or _iso_now()
 
     def events(self):
         """One batch from the events API, with the overlap window applied."""

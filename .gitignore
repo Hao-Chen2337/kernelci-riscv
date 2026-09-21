@@ -3,7 +3,7 @@ kernelci-api/
 kernelci-pipeline/
 .ruff_cache/
 
-# the workspace (see src/DESIGN.md); the old tree's work/ is gone with that tree
+# the workspace; the old tree's work/ is gone with that tree
 var/
 *.log
 __pycache__/

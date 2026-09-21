@@ -331,6 +331,19 @@ def _text(value: Any) -> str:
     return str(value) if value not in (None, "") else ""
 
 
+def _stamp() -> str:
+    """Now, in the one timestamp spelling this tree writes: UTC, second resolution.
+
+    One owner, here, because the spelling is a contract between writers that
+    never meet: a run's start, a pull act's `at`, the build a `publish_local()`
+    files and the served record's `at` all have to sort and compare as strings
+    (and `_age()` above reads the same shape back).  `lib/job.py` and every
+    module of `lib/build/` import it from here instead of spelling `strftime`
+    again - the rule `build_id_of()` already follows in this module.
+    """
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
 def _iso_ago(days: int) -> str:
     """The ISO-8601 timestamp `days` days back (UTC, seconds).
 

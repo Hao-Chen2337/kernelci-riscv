@@ -28,6 +28,7 @@ from typing import Any, TextIO
 
 from .api import Api
 from .errors import ApiError
+from .kbuild import _artifacts, _text
 
 AVAILABLE = "available"
 DONE = "done"
@@ -176,16 +177,3 @@ class Kjobs:
         if self.api is None:
             raise ApiError("Kjobs needs an Api to ask which jobs exist")
         return self.api
-
-
-def _artifacts(raw: Any) -> dict[str, str]:
-    """A node's `artifacts` as name -> URL, dropping entries that name no URL."""
-    if not isinstance(raw, dict):
-        return {}
-    return {str(name): str(url) for name, url in raw.items()
-            if isinstance(url, str) and url}
-
-
-def _text(value: Any) -> str:
-    """A field as the string this layer promises: '' for what the node does not carry."""
-    return str(value) if value not in (None, "") else ""

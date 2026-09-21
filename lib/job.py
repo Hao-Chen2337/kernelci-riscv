@@ -30,13 +30,12 @@ build, and how it maps to tuxrun arguments.  One table, one owner.
 """
 
 import os
-import time
 from dataclasses import dataclass, field
 
 from . import build as build_mod
 from . import errors, judge, layout, runner, sink
 from .build import Build
-from .kbuild import build_id_of
+from .kbuild import _stamp, build_id_of
 from .out import Outcome
 from .sink import Sink
 from .tests import DEFAULT_TESTS, ROOTFS_URL, TESTS
@@ -317,11 +316,6 @@ class Jobs:
     def print(self, stream=None):
         for job in self.items:
             job.print(stream)
-
-
-def _stamp():
-    """UTC, second resolution: the name a run and its record share."""
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _announce(argv, label):

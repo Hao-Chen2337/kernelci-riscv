@@ -11,10 +11,13 @@ runs, whose exit status is the answer - and it is what replaces that gate the da
 `scripts/` and `kcilib` are deleted (that is why this file exists).
 
     ruff                       style, imports, syntax
-    i18n --check lib/gui.py    every string the page prints exists in both languages
+    i18n --check lib/gui       every string the page prints exists in both languages
+                               (run as `python3 -m lib.i18n`, the package's own CLI)
     check_structure.py         the shape: one owner per decision, one exit path
     verify_callback_body.py    the LAVA body, read back by the REAL upstream parser
     test_dom.js                the page's script, run in node against a DOM stub
+    test_notice.js             when a finish announces itself, driven the same way:
+                               the one check that was never gated, and rotted
     test_config_cache.py       one request parses the workspace once
     test_form_body.py          a POST carries the form's own body
     smoke_pages.py             every page renders, in both languages
@@ -56,11 +59,18 @@ PIPELINE = os.path.join(ROOT, "kernelci-pipeline")
 # run at all (an upstream clone that `./run.sh setup` creates, or a tool).
 CHECKS = (
     ("ruff", ["ruff", "check", "."], ROOT, ""),
-    ("i18n", [sys.executable, "lib/i18n.py", "--check", "lib/gui.py"], ROOT, ""),
+    ("i18n", [sys.executable, "-m", "lib.i18n", "--check", "lib/gui"], ROOT, ""),
     ("structure", [sys.executable, os.path.join(TOOLS, "check_structure.py")], ROOT, ""),
     ("callback body", [sys.executable, os.path.join(TOOLS, "verify_callback_body.py")],
      ROOT, os.path.join(ROOT, "kernelci-core")),
     ("dom", ["node", os.path.join(TOOLS, "test_dom.js")], ROOT, ""),
+    # **The notice, and it is here because it was not.**  This is the same shape of
+    # check as `dom` - the poll script driven in node against a DOM stub - and it
+    # asserted `/\/log\?offset=0/` against a notice whose link has been
+    # `/runs/<id>/log` since the log box was removed.  Nothing ran it, so nothing
+    # noticed: a check outside this tuple is a check that rots (`CHECKS` is the list
+    # of everything this tree gates on, and there are no others).
+    ("notice", ["node", os.path.join(TOOLS, "test_notice.js")], ROOT, ""),
     ("config cache", [sys.executable, os.path.join(TOOLS, "test_config_cache.py")], ROOT, ""),
     ("form body", [sys.executable, os.path.join(TOOLS, "test_form_body.py")], ROOT, ""),
     ("pages", [sys.executable, os.path.join(TOOLS, "smoke_pages.py"), "--all",

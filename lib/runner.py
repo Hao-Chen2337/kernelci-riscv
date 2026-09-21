@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from . import errors
+from . import errors, tests
 
 if TYPE_CHECKING:
     from .config import RunConfig
@@ -55,6 +55,10 @@ def argv(job: "Job", config: "RunConfig") -> tuple[list[str], str]:
     Each artifact is the local copy `Job.make()` made when there is one, else the
     URL the definition names - so a definition the API sent runs against exactly
     what it says, and our own jobs run against the bytes we downloaded.
+
+    The device is the one the definition names, and only a definition that names
+    none falls back to `config.device` (`tests.device`): what boots and what the
+    callback reports as `actual_device_id` are that one answer, never two.
     """
     definition = job.definition()
     artifacts = _artifacts(definition)
@@ -64,7 +68,10 @@ def argv(job: "Job", config: "RunConfig") -> tuple[list[str], str]:
     command = [
         config.tuxrun_bin,
         "--runtime", config.container_runtime,
-        "--device", config.device,
+        # The job's own platform, not the deployment's device: a job whose
+        # definition says qemu-x86_64 must not be booted as riscv, and must not be
+        # reported as x86 while it boots riscv either.
+        "--device", tests.device(definition, config.device),
         "--kernel", _local(_artifact(local, artifacts, "kernel", test)),
         "--boot-args", BOOT_ARGS,
     ]

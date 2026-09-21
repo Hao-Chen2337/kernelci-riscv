@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """The middle layer: one run is pick a build -> make it local -> run a job -> get an outcome.
 
-Everything above this package (the four entry points, the GUI, the viewers) is a
+Everything above this package (the twelve entry points, the GUI, the viewers) is a
 selector or a viewer; everything below it is the outside world (KernelCI HTTP,
 tuxrun/QEMU, the filesystem).  Nothing in here imports an entry point or a tool.
 
@@ -16,9 +16,9 @@ tuxrun/QEMU, the filesystem).  Nothing in here imports an entry point or a tool.
     errors            one exception root, three exit codes
     gui / drift / re  viewers over the same objects
 
-Draft this package is built from: the extensionless files in this directory
-(kbuild, build, kjob, job, out, poller) -- kept as written, superseded by the
-``.py`` beside them.
+Draft this package is built from: the owner's hand-written sketches (kbuild,
+build, kjob, job, out, poller), superseded by the ``.py`` modules here -- each
+module's docstring opens with the text of the sketch it came from.
 """
 
 import os

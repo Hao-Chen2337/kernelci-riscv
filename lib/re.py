@@ -16,7 +16,7 @@ bookkeeping file:
 
 Nothing here writes, and nothing here needs the network.
 
-接口形状（C++，只有声明）：include/kci/view.hpp §17 账本读法（§16 的 Filter 在 lib/gui.py）。
+接口形状（C++，只有声明）：include/kci/view.hpp §17 账本读法（§16 的 Filter 在 lib/gui/）。
 """
 
 import json

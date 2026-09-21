@@ -1,5 +1,0 @@
-kb = kbuild(API = ORG)
-kbuild.new (tree = main next riscv )
-b = build (kb)
-j = job(b)
-outcome = j.runjob

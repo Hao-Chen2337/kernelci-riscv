@@ -11,7 +11,7 @@ at a time: the ledger and the table have one writer each and a page that lets
 two runs race is a page that corrupts them.
 
 The page holds no copy of the table or the ledger: `Gui` reads them once per
-request (`lib/gui.py`, `_state`), because the buttons here start the very
+request (`lib/gui/`, `_state`), because the buttons here start the very
 commands that write them.  A page that read them at startup kept saying "six
 records" after the seventh was on disk - the operator's "I ran it and nothing
 changed" - and only a restart made it true again.
@@ -24,6 +24,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib import config, errors, gui
+from lib.gui.design.serve import DesignGui
 
 # A page waits 10s for the API, not 60: a slow upstream must cost one page, and the
 # old dashboard used the same 10s/1-retry patience for the same reason.
@@ -51,10 +52,17 @@ def _main(argv=None):
     parser.add_argument("--rows", type=int, default=gui.ROWS)
     parser.add_argument("--refresh", type=int, default=gui.REFRESH)
     parser.add_argument("--api-url", default=None)
+    parser.add_argument("--design", action="store_true",
+                        help="draw the screens of the new presentation layer (lib/gui/design)")
     args = parser.parse_args(argv)
 
-    gui.Gui(port=args.port, rows=args.rows, refresh=args.refresh,
-            api=config.client(args, timeout=GUI_TIMEOUT)).serve()
+    # `--design` chooses the presentation layer and nothing else: both classes are
+    # `Gui`, so the readers, the actions, the poll and the gates are the same code
+    # either way.  It is how the port is looked at while it is being made, and it goes
+    # away the day the old layer does.
+    maker = DesignGui if args.design else gui.Gui
+    maker(port=args.port, rows=args.rows, refresh=args.refresh,
+          api=config.client(args, timeout=GUI_TIMEOUT)).serve()
     return 0
 
 

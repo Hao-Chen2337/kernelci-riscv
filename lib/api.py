@@ -63,7 +63,7 @@ CHUNK = 32768
 # The bounds one query may carry.  A window has to become a date the platform
 # can print (`time.gmtime` refuses an epoch outside its range, and that OSError
 # reached a page as an HTTP 500), and a row cap has to be a number the API is
-# asked for.  `gui.py` builds its select boxes out of these same two: a box and
+# asked for.  `gui` builds its select boxes out of these same two: a box and
 # a clamp that are written twice drift apart, and these did.
 MAX_WINDOW_DAYS = 3650
 MAX_ROWS = 1000
@@ -95,25 +95,35 @@ _CACHE_LOCK = threading.Lock()
 
 
 def _scope() -> dict[str, Any]:
-    """This thread's request scope, created empty when no request has begun one.
+    """This thread's request scope, or a throwaway one when no request has begun.
 
     Only ever read through `begin_request()`, `read_age()` and `request_ttl()`; the
     one caller that reaches in is `Api._request`, which is where the reads are.
+
+    **The no-request scope is not stored on the thread.**  It was, and that one
+    line turned the memo from a per-*request* cache into a per-*thread* one: any
+    long-lived process that never calls `begin_request()` - the resident worker,
+    which polls for ever - got its first answer to a URL back on every later read,
+    `ttl` of 0 notwithstanding.  That `ttl` only gates `_CACHE`; the `memo`
+    short-circuit in `_request` is consulted before it and has no expiry at all.
+    The damage was not hypothetical: `Poller._claim` re-reads a node precisely to
+    find out whether it is *still* `available`, was told `available` for a node
+    that had finished hours earlier, and so re-ran the whole job on every poll;
+    and because the events URL carries a changing `from=`, the memo grew by an
+    entry per poll on top of that.  A fresh dict per call is what the paragraph
+    above `_NO_SCOPE` always promised - no cache - and what it now delivers.
     """
     found = getattr(_SCOPE, "scope", None)
-    if found is None:
-        found = dict(_NO_SCOPE, memo={})
-        _SCOPE.scope = found
-    return found
+    return found if found is not None else dict(_NO_SCOPE, memo={})
 
 
 def begin_request(ttl: float | None = None, budget: float | None = None) -> dict[str, Any]:
     """Begin one request: an empty memo, this request's freshness, its deadline.
 
-    Called at the top of every request the console serves (`gui.Handler._route_get`
-    and `_route_post`), because that is the only place that knows a new request has
-    started - and the memo has to be empty for it, or a page would answer with what
-    the *previous* request on the same keep-alive connection read.
+    Called at the top of every request the console serves (`gui.server.handler_for`'s
+    `_route_get` and `_route_post`), because that is the only place that knows a new
+    request has started - and the memo has to be empty for it, or a page would answer
+    with what the *previous* request on the same keep-alive connection read.
 
     `ttl` is how long an answer read by an earlier request may be reused (`None` is
     `DEFAULT_TTL`, `0` is "do not").  `budget` is the wall-clock total this request

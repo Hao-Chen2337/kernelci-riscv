@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import requests
 import yaml
 
-from . import errors, layout
+from . import atomic, errors, layout, tests
 from .errors import (
     CallbackMissingURLError,
     CallbackPermanentError,
@@ -28,7 +28,6 @@ from .errors import (
 )
 from .judge import LAVA_CASE_RE, strip_ansi, tap_summary
 from .out import RECORD_FIELDS, Outcome
-from .tests import DEFAULT_DEVICE
 
 if TYPE_CHECKING:
     from .job import Job
@@ -37,8 +36,20 @@ LEDGER = "ledger"
 CALLBACK = "callback"
 
 # A remote token shared with the pipeline admins: read from the environment
-# every time it is needed, never a parameter, never on disk.
+# every time it is needed, never a parameter, never held in a config object.
 TOKEN_ENV = "PULL_LABS_CALLBACK_TOKEN"
+
+# ...and when the environment has nothing, this deployment's rendered settings,
+# which is the second half of the resolution `deploy/stack.sh` already does.  The
+# name is `layout.state()`'s, so a moved workspace moves it (grep `local-callback`).
+SETTINGS_NAME = "local-callback.toml"
+
+# The runtime section's one line, read with the regex `stack.sh` uses rather than
+# parsed: python3 here is 3.10 and has no `tomllib`, `lib/config.py` records the
+# project's refusal to add dependencies, and the renderer emits exactly this shape.
+TOKEN_LINE_RE = re.compile(
+    r"^\s*" + re.escape(tests.DEFAULT_LAB) + r"\s*=\s*\{[^}]*callback_token\s*=\s*\"([^\"]*)\"",
+    re.MULTILINE)
 
 # The POST: one timeout, three attempts, `time.sleep(2 * n)` between them.
 REQUEST_TIMEOUT = 60
@@ -119,12 +130,7 @@ class Ledger(Sink):
         filled = _filled(outcome)
         path = layout.results(filled.build_id, filled.test)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = f"{path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as handle:
-            handle.write(filled.json())
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
+        atomic.write_text(path, filled.json())
         return path
 
     @staticmethod
@@ -217,7 +223,7 @@ def lava_body(job: Job, outcome: Outcome, console: str = "") -> dict:
         "results": results,
         "status": status,
         "log": yaml.safe_dump(_log_lines(output)),
-        "actual_device_id": _device(job),
+        "actual_device_id": tests.device(job.definition()),
     }
 
 
@@ -238,9 +244,49 @@ def verdict_from_body(body: dict) -> Outcome:
                    detail=error.get("error_msg") or "")
 
 
+def _settings_token() -> str:
+    """The token this deployment rendered into its settings, or '' if it cannot be read.
+
+    Never raises: the ledger is written before any callback (`deliver`), and
+    losing that record to an unreadable settings file would be worse than the
+    401 the missing header causes.
+    """
+    try:
+        with open(layout.state(SETTINGS_NAME), encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return ""
+    match = TOKEN_LINE_RE.search(text)
+    return match.group(1) if match else ""
+
+
 def callback_token() -> str:
-    """The callback token, from the environment, at the instant of delivery."""
-    return os.environ.get(TOKEN_ENV) or ""
+    """The callback token, at the instant of delivery: the environment, else the settings.
+
+    `deploy/stack.sh` resolves this itself and exports the result into the worker
+    it spawns, so `stack.sh --worker` always worked.  The two other ways of
+    running one had no environment to inherit: `python3 pull_worker.py --once` run
+    by hand after `stack.sh --seed` - a script cannot export into its parent shell
+    - and a worker spawned from the GUI page, which passes no `env=` and so
+    inherited the *GUI server's* environment, in which nothing had ever set
+    `PULL_LABS_CALLBACK_TOKEN`.  Both sent no `Authorization` header at all, so
+    every callback came back 401 while the ledger recorded the run: the work
+    happened and the API said it never did.
+
+    The environment still wins verbatim and is never rewritten - an operator's
+    exported token is what `_post` will send.  Only the settings file's value is
+    stripped of its leading `Token `, because the renderer writes the header the
+    callback compares (`callback_token = "Token <bare>"`) while `_post` re-adds
+    that prefix itself; read verbatim it produced `Token Token <bare>`, which
+    401'd exactly as hard as sending nothing.
+    """
+    token = os.environ.get(TOKEN_ENV) or ""
+    if token:
+        return token
+    configured = _settings_token()
+    if configured.startswith("Token "):
+        return configured[len("Token "):]
+    return configured
 
 
 def deliver(job: Job, outcome: Outcome, sinks: tuple[Sink, ...] | None = None) -> dict[str, str]:
@@ -342,14 +388,6 @@ def _log_lines(console: str) -> list[dict]:
             "msg": line[stamp.end():].lstrip() if stamp else line,
         })
     return lines
-
-
-def _device(job: Job) -> str:
-    """The platform the job definition names (what `actual_device_id` reports)."""
-    environment = job.definition().get("environment") or {}
-    if isinstance(environment, dict) and environment.get("platform"):
-        return str(environment["platform"])
-    return DEFAULT_DEVICE
 
 
 def _api_config_name() -> str:

@@ -32,7 +32,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 
-from . import errors, layout
+from . import atomic, errors, layout
 
 # What an activity can be.  The names are the page's vocabulary; `argv` is what
 # actually decides what happens.
@@ -45,7 +45,9 @@ FAILED = "failed"
 CANCELLED = "cancelled"
 
 # Activities whose argv writes to the ledger or the downloads - only one of
-# these may run at a time (see gui.write_actions).
+# these may run at a time.  The rule itself lives with the page that can start
+# two of them: `lib/gui/schema.py` names the actions, `lib/gui/actions.py`
+# (`busy()`) is what refuses the second one.
 WRITERS = ("job", "pull", "run", "fetch", "worker", "runday", "table", "stack",
            "prune")
 
@@ -237,10 +239,9 @@ class Run:
     def save(self):
         """Write `run.json` next to the log; tmp + rename, so a reader never sees half."""
         path = os.path.join(self.dir, "run.json")
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(asdict(self), handle, indent=1, sort_keys=True)
-        os.replace(tmp, path)
+        # Not synced: this file is rewritten on every state change, and nothing
+        # reads it back but a later process, which is the case the rename covers.
+        atomic.write_json(path, asdict(self), indent=1, sort_keys=True, fsync=False)
 
     @classmethod
     def load(cls, run_id):
@@ -292,9 +293,13 @@ class Run:
     def age(self):
         """How long ago it started, as a page prints it."""
         delta = max(0.0, time.time() - self.started)
-        for limit, unit in ((60, "s"), (3600, "m"), (86400, "h")):
+        # `(limit, unit, seconds)` - the divisor is spelled out and is not the
+        # limit divided by something.  It used to be `limit / 60`, which was
+        # right for minutes by accident (3600/60) and wrong for hours by a factor
+        # of 24: an activity two hours old printed `5h`.
+        for limit, unit, size in ((60, "s", 1), (3600, "m", 60), (86400, "h", 3600)):
             if delta < limit:
-                return f"{int(delta)}{unit}" if unit == "s" else f"{int(delta / (limit / 60))}{unit}"
+                return f"{int(delta / size)}{unit}"
         return f"{int(delta / 86400)}d"
 
     def line(self):
