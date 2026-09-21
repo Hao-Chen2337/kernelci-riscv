@@ -1,0 +1,49 @@
+# What `ruff check .` is allowed to read, said here in full instead of borrowed
+# from git.
+#
+# `ruff` applies a `.gitignore` **only when it finds a `.git` beside it**, and
+# until this file existed that was the whole of the gate's scope: every tree
+# listed below was skipped because `.gitignore` named it, not because anything
+# in this tree said so.  So the answer depended on where the files were, not on
+# what they are.  Here `ruff check .` is `All checks passed!`; the same files
+# copied anywhere without git metadata - a CI checkout, a Docker build context,
+# an archived copy - came back with `Found 21428 errors`, every one of them in
+# `kernelci-pipeline/data/**`, the vendored Linux tree the pipeline's own
+# `.gitignore` had been hiding.  A gate that is green on this machine and red on
+# the next one is not a gate.
+#
+# The list is `.gitignore` minus the two rules `ruff` cannot use: `*.log`, which
+# it never opens (it looks at `*.py`, `*.pyi`, `*.ipynb`, `*.md` and the config
+# files), and the `!tools/gate/fixtures/*.log` re-include that exists for that
+# rule alone.  `respect-gitignore` stays at its default, so a developer's own
+# untracked scratch is still skipped; this list only says what is local to the
+# deployment, and it says it with or without `.git`.
+extend-exclude = [
+    # The upstream clones `deploy/setup.sh` makes; not this tree's source.
+    "kernelci-core",
+    "kernelci-api",
+    "kernelci-pipeline",
+    # The workspace.  The ledger under `var/` is history that is never pruned,
+    # and nothing down there is code.
+    "var",
+    # Local working material, published one file at a time.  `.gitignore`
+    # carves `docs/RUNBOOK.md` out of the rule; excluding the directory whole
+    # costs nothing, because `ruff` opens a Markdown file only for its fenced
+    # Python and the runbook has none (`ruff check docs/RUNBOOK.md` answers
+    # "No Python files found under the given path(s)").  What the exclusion
+    # buys is the two scripts down here - `docs/archive/wip-thin-fetch/
+    # fetch-and-run-latest.thin.py` and `docs/gui-rework/tools/check_page.py`
+    # - which are internal notes, not the run path.
+    "docs",
+    # The design pair and the C++ interface spec: a board and declarations,
+    # cited by docstrings and read by the extractor alone.
+    "design",
+    "include",
+    "tools/design_extract.py",
+    # `proto/` is deleted (`git checkout 6a5fc44 -- proto` brings it back) and
+    # named for the same reason its rule is still in `.gitignore`.
+    "proto",
+    # Caches.  `.ruff_cache` is `ruff`'s own default; `__pycache__` is not.
+    ".ruff_cache",
+    "__pycache__",
+]
