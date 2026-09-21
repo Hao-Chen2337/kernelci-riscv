@@ -7,7 +7,7 @@
 This reads the **production API's history**, not this machine's ledger: every
 finished (`state=done`) node of a pull-lab job, in the order they happened, with
 its commit, its result and its node id - then one line saying how many passed, how
-many failed and how many regressions the run contains.
+many failed, how many produced no verdict and how many regressions the run contains.
 
 A regression is a pass -> fail **transition**, not a failure: consecutive failures
 are one regression, and the detector re-arms only on a fresh pass, so a build that
@@ -141,8 +141,23 @@ def _main(argv=None):
         records = as_records(runs)
         passing = sum(1 for one in records if one.verdict == errors.VERDICT_PASS)
         failing = sum(1 for one in records if one.verdict == errors.VERDICT_FAIL)
-        print(f"  -> {passing} pass / {failing} fail, "
-              f"{len(re_mod.transitions(records))} regression(s)")
+        # **The line explains every row above it.**  Only pass and fail were counted,
+        # so `--job kselftest-riscv-pull-labs` printed five rows and ended
+        # `-> 1 pass / 1 fail` - the three `incomplete` runs were in no number at all,
+        # and the operator who saw "1 pass / 1 fail" had been told the run was two
+        # rows long while three more sat in front of them.  The third count is the
+        # **complement** of the first two and not another filter, so the three always
+        # add up to the rows printed above; it is spelled `incomplete` because that is
+        # the tree's word for `VERDICT_INFRA` (`lib/errors.py`), which is what
+        # `VERDICTS` gives every result that is neither pass nor fail - `skipped` and
+        # unknown results included.  It appears only when it is not zero, the way
+        # `verify.py` prints its FAILED and skipped counts, so a job with a verdict on
+        # every run keeps the line it had.  The regression count is not touched: the
+        # pass -> fail rule is `re.transitions()`'s and stays there.
+        undecided = len(records) - passing - failing
+        print(f"  -> {passing} pass / {failing} fail"
+              + (f" / {undecided} incomplete" if undecided else "")
+              + f", {len(re_mod.transitions(records))} regression(s)")
     return errors.EXIT_PASS
 
 
