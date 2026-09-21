@@ -470,7 +470,7 @@ def main(argv=None) -> int:
     # must appear as the row count of **some** table on the page it points at, which
     # does not care what the chip, the table or the filter is called.
     chips = _strip_chips(home.body)
-    bad_chips, checked = [], 0
+    bad_chips, checked, empties = [], 0, 0
     for label, number, href in chips:
         if not href or href.startswith("#"):
             continue                    # an anchor into this page: nothing to fetch
@@ -491,13 +491,38 @@ def main(argv=None) -> int:
         checked += 1
         if failure and not counts:
             bad_chips.append((label, failure))
+        elif number == 0 and not counts:
+            # **A zero on an empty page is a count, not a broken link.**  The rows are
+            # what a table is made of, so a page with nothing to show draws no `<table>`
+            # at all: `counts` comes back empty and there is no row count for the chip's
+            # 0 to match.  That is the truth on a fresh deployment - and after `prune`,
+            # which is a state this tree is supposed to be able to be in - so it reads
+            # as "0, and the page agrees", the same way a chip whose page draws an
+            # empty table already did.
+            #
+            # Narrow on purpose, so nothing real is let through: only a **zero** chip
+            # reads this way, and only when the page drew no table at all.  A chip
+            # that says N > 0 is still compared below, and so is a 0 whose page does
+            # have tables (`counts` is not empty then) - a page drawing rows under a
+            # chip that says none is exactly the disagreement this check exists for.
+            empties += 1
         elif number not in counts:
             bad_chips.append((label, f"{href} has no table with {number} rows"))
+    # Said out loud, because "found a table with exactly its number" is not what
+    # happened for those: there was no table to find.  A deployment that holds any
+    # bytes at all has none of them (`empties` is 0 exactly when every zero chip found
+    # a table, which is the only way this check ever passed before), so the line an
+    # operator with data sees is the one it always was.
+    followed = (f"{checked} chip link(s) followed, each found a table with exactly"
+                " its number")
+    if empties:
+        followed += (f"; {empties} of them counted 0 and the page drew no table,"
+                     " which is that count")
     check(results, "S6 every number chip reproduces its rows",
           not bad_chips and checked > 0,
           f"broken: {bad_chips}" if bad_chips else
-          f"{checked} chip link(s) followed, each found a table with exactly its number"
-          if checked else "no chip link to follow - the strip is not a set of links")
+          followed if checked else
+          "no chip link to follow - the strip is not a set of links")
 
     # --- S1: the three old pages still answer ------------------------------
     dead = [p for p, one in legacy.items() if one.status not in (200, 301, 302)]
