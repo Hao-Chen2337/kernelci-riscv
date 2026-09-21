@@ -31,6 +31,16 @@ renders ask the API and **not one** of those reads comes back, this exits 1 and 
 the page, the read and the URL that did not answer.  A read that failed while others
 answered is printed and is not fatal: one endpoint refusing is a fact about that
 endpoint, and the pages that did read show it.
+
+**A route this run could not reach is named and counted, not dropped.**  `/local/<id>`
+is the one route that needs something the workspace has to hold, so an empty workspace
+rendered five routes where a populated one renders six - and both runs ended with the
+same sentence, because the route was left out of the list before anything counted it.
+The verdict is therefore a count, `5 of 6 page(s) rendered, /local/<build_id> skipped
+(the workspace has no build to drill into)`, with the skipped route and its reason
+printed beside the renders.  A missing precondition is not a failed render - the empty
+workspace still exits 0 - it is a smaller answer, and the answer is what the reader is
+owed; the API-silence verdict below is a separate one and is unaffected.
 """
 
 import argparse
@@ -70,9 +80,24 @@ def main(argv=None) -> int:
     pages = list(LOCAL_PAGES) + (list(API_PAGES) if args.all else [])
     langs = ("en", "zh") if args.lang == "both" else (args.lang,)
 
-    build_id = _a_build_id()
+    # **A route this run could not reach is named and counted, not dropped.**  `/local/<id>`
+    # needs a build the workspace actually holds, so it used to be appended only when there
+    # was one - and a workspace with none rendered five routes where a populated one
+    # renders six, with `every page rendered` as the last line of both.  Measured: with
+    # `--all` the empty workspace printed `# rendering 5 page(s)` and the populated one
+    # `# rendering 6 page(s)`, and `verify.py` prints a check's *last* line and nothing
+    # else, so the gate showed the same sentence either way and the missing route had no
+    # name anywhere.  Nothing here is a failure: `/local/<id>` is the one route that is
+    # not in `PAGES` and a workspace with no build in it is a state the pages have to
+    # draw, not an error, so the exit status is unchanged.  What changes is that the
+    # route count, the route that was skipped and the reason are all in the output.
+    build_id, why = _a_build_id()
+    skipped = []                        # (route, why) - never in `pages`, never hidden
     if build_id:
         pages.append(DETAIL.format(build_id=build_id))
+    else:
+        skipped.append((DETAIL.format(build_id="<build_id>"), why))
+    routes = len(pages) + len(skipped)
 
     client = None
     if args.all or args.api:
@@ -134,9 +159,11 @@ def main(argv=None) -> int:
 
     api_mod.Api._request = watching
 
-    width = max(len(page) for page in pages)
-    print(f"# rendering {len(pages)} page(s), {len(langs)} language(s)"
+    width = max(len(page) for page in pages + [route for route, _ in skipped])
+    print(f"# rendering {len(pages)} of {routes} page(s), {len(langs)} language(s)"
           f"{'  (API-backed pages included)' if args.all else ''}")
+    for route, why in skipped:
+        print(f"skip  {route:<{width}} {why}")
     for page in pages:
         for lang in langs:
             current[0] = f"{page}[{lang}]"
@@ -161,7 +188,17 @@ def main(argv=None) -> int:
         for page, lang, exc in bad:
             print(f"  {page} [{lang}]: {type(exc).__name__}: {exc}")
     else:
-        print("every page rendered")
+        # Not `every page rendered`: that one sentence answered a run that drew every
+        # route and a run that drew one fewer, which is how the gap stayed invisible in
+        # the gate.  The count is the answer, and the route that was not asked is named
+        # in the same line - this is the line `verify.py` prints and the one an operator
+        # reads, so the reason is repeated here rather than left to the `skip` line above.
+        rendered = f"{len(pages)} of {routes} page(s) rendered"
+        if skipped:
+            rendered += ", " + ", ".join(
+                f"{route} skipped (the workspace has no build to drill into)"
+                for route, _ in skipped)
+        print(rendered)
     if slow:
         print(f"{len(slow)} render(s) over 5s (the API's cost, not the renderer's): "
               + ", ".join(f"{p}[{l}] {t:.1f}s" for p, l, t in slow))
@@ -219,15 +256,28 @@ def main(argv=None) -> int:
     return 1 if failed else 0
 
 
-def _a_build_id() -> str:
-    """One build id the workspace holds, for the `/local/<id>` detail route."""
+def _a_build_id() -> tuple:
+    """One build id the workspace holds for `/local/<id>`, and why there is none.
+
+    `(build_id, why)`: the id, or `""` and the reason this workspace cannot drill
+    into a build.  The second half exists because that route is not in `PAGES` and
+    the id has to come from somewhere - a workspace with none is precisely the case
+    the caller has to name instead of quietly rendering one route fewer.
+    """
     import json
     root = os.environ.get("KCI_WORK_DIR") or os.path.join(ROOT, "var")
+    table = os.path.join(root, "state", "builds.json")
     try:
-        with open(os.path.join(root, "state", "builds.json"), encoding="utf-8") as handle:
-            return next(iter(json.load(handle)), "")
-    except (OSError, ValueError, StopIteration):
-        return ""
+        with open(table, encoding="utf-8") as handle:
+            builds = json.load(handle)
+    except FileNotFoundError:
+        return "", f"no build to drill into: {table} is not there"
+    except (OSError, ValueError) as exc:
+        return "", f"no build to drill into: {table} cannot be read ({exc})"
+    try:
+        return next(iter(builds)), ""
+    except StopIteration:
+        return "", f"no build to drill into: {table} holds no build"
 
 
 if __name__ == "__main__":
