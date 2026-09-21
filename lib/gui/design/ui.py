@@ -55,8 +55,9 @@ tooltip.
 import html
 import json
 
-from ...i18n import CATALOGUE
-from ..widgets import _end_word
+from ... import errors
+from ...i18n import CATALOGUE, DEFAULT_LANG, t
+from ..schema import _labels
 from . import words
 from .words import _KEY_SHAPE, both
 
@@ -173,22 +174,38 @@ def tone(one) -> str:
     return STATE.get(str(one or "").strip().lower(), "idle")
 
 
-def end_word(state: str, exit_code, lang: str) -> str:
-    """What a finished activity's pill *says*: the exit code's word, not the state's.
+def end_word(state: str, exit_code: "int | None", lang: str = DEFAULT_LANG) -> str:
+    """What an activity's pill *says*: the exit code's word, not the state's.
 
-    `Run._settle` collapses exit 1 and exit 3 onto the one state `failed`, and that is
-    right for the activity - the process failed either way.  It is not the tests'
-    verdict: 0 is a pass, 1 is a test that failed, 3 is infrastructure (no verdict was
-    reached), and a pill that printed the state would call a run which finished every
-    test it started "failed" - the same word it prints for a command that crashed.
+    `Run._settle` (`lib/run.py`) collapses exit 1 and exit 3 onto the one state
+    `failed`, and that is right for the *activity* - the process failed either way.  It
+    is not the tests' verdict: `lib/errors.py` defines 0 = pass, 1 = a test failed and
+    3 = infrastructure (*incomplete*, no verdict was reached), so a pill that printed
+    the state called a run which finished every test it started and failed some of them
+    "failed" - the very word it prints for a command that crashed.  The class stays the
+    state's (the stylesheet colours one ending one way, and the state filter box offers
+    the four states), and only the word is the code's.
 
-    This is `lib/gui/widgets.py`'s function, which stays the one owner: `_js()` builds
-    the script's `I18N.end_word` map out of it, so the poll writes this same word into
-    the same cell.  A second implementation here would make a pill change its word the
-    moment the page refreshed - and the pages must not have to reach into the old
-    layer for the one function that keeps them in step.
+    A cancelled activity keeps its own word whatever the code - `Run.cancel` leaves
+    `0`/`-15` behind and the reader, not the tests, ended it - and so does any ending
+    whose code is outside those three: the pill then says what is on disk, which is
+    what the live panel's `exit code not seen` rule already does for a code nobody saw
+    (`07-shell.md` §A3).
+
+    `_js()` builds the script's `I18N.end_word` map out of this function
+    (`script.py`), so the poll writes this same word into the same cell: this is the one
+    owner of the word both writers print, and a second copy would make a pill change its
+    word the moment the page refreshed.
     """
-    return _end_word(state, exit_code, lang)
+    if state == "cancelled":
+        return t(lang, "run_state.label.cancelled")
+    if exit_code == errors.EXIT_PASS:
+        return t(lang, "run_state.label.done")
+    if exit_code == errors.EXIT_TEST_FAIL:
+        return t(lang, "run_end.tests_failed")
+    if exit_code == errors.EXIT_INFRA:
+        return t(lang, "run_end.infra")
+    return _labels("run_state", lang).get(state, str(state))
 
 
 def pill(one, n=None, tone_override: str = "", label: str = "", *, lang: str) -> str:

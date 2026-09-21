@@ -28,7 +28,7 @@ readers handed over, measured by id (`_matched`).
 a build outside this answer's cap, and a card this machine made - which has no remote
 counterpart *by construction* and never had one.  The cell reads the row's own `here` for
 the third and this page's `Remote` for the first two (its `note`, and its `total` against
-what it carries), in `cells._remote_cell`'s own order; `answer` is the object `data.rows`
+what it carries), in `_api_cell`'s own order; `answer` is the object `data.rows`
 already read, so the second ask costs no HTTP (every reader under it is memoised for the
 request).
 
@@ -714,7 +714,7 @@ def _api_cell(one, answer, lang: str) -> str:
     vocabulary).
 
     **When the row carries no remote fact, three different facts look alike**, and this
-    cell tells them apart in `cells._remote_cell`'s own order:
+    cell tells them apart in `_api_cell`'s own order:
 
     * the API did not answer - this page has an answer object and it carries a `note`, so
       nothing is known about the remote side of *any* row;

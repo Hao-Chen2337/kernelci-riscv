@@ -28,25 +28,34 @@ The module this was, split by what each part knows:
     forms.py      one query string or form body, as the values a page may use
     models.py     `Filter`, the answer one API query gives (`Remote`), one card in
                   the table and the bytes under it (`Local`)
-    values.py     one value as a page prints it: an age, a size, an id, a state
+    values.py     one value as a page prints it (an age, a size, an id, a state), and
+                  the candidates an axis offers to be asked with (`_vocabulary`)
     urls.py       every link: one function, one spelling of a URL
-    fields.py     the filter bar's controls, and the `Gui` methods that build them
-    widgets.py    the markup primitives: tables, pills, boxes, both bars
-    cells.py      one cell of a table, and the ticks that fill a row
-    tables.py     the four tables more than one page prints
-    templates.py  the stylesheet, the poll script and the page's own markup
     sorting.py    the order a table is drawn in
-    pairs.py      two builds, and the cells that compare them
-    driftview.py  one drift: the bars, the raw configs, the doors to the two sides
-    trendview.py  one test over time: the timeline, the waves, the run's record
-    reads.py      what a page reads, per request
+    pairs.py      two builds, and the name a comparison spells them by
+    reads.py      what a page reads, per request - the rows the five screens are built
+                  from (`build_rows`, `_known_builds`) and the comparisons between
+                  adjacent rows (`_config_edges`)
     activities.py the running commands: what is busy, what each one did, the pulls
     reports.py    the three JSON answers (`/summary.json`, drift, trend)
-    actions.py    the command line a button runs, and the `Run` it starts
-    shell.py      the one template, its navigation, its live panel, and the log link
+    actions.py    the command line a button runs, the `Run` it starts, and why a
+                  one-shot button cannot be offered at all (`_one_tree`)
     server.py     the socket loop, the handler, and one request's own state
     app.py        `Gui` itself: the fields, and the mixins it is assembled from
-    pages/*.py    one module per page
+    design/       the presentation layer, and the only one: `serve.py` is `Gui.render`,
+                  `data.py` reshapes the readers into one dict per request, `ui.py`,
+                  `words.py` and `style.py` are the components, the vocabulary and the
+                  stylesheet, `shell.py` is the one writer of `<html>`, `script.py` is
+                  the shipped poll script and the words it writes, `view.py` is what a
+                  screen is handed, and `pages/*.py` is one module per screen
+
+The layer that stood beside it - `templates.py`, `widgets.py`, `fields.py`, `cells.py`,
+`shell.py`, `pages/`, and the two view modules only that layer read (`tables.py`,
+`driftview.py`, `trendview.py`) - is gone, and what this layer borrowed from it was
+**moved, not copied**: the poll script into `design/script.py`, the pill's word into
+`design/ui.py`, the axis vocabulary into `values.py`, the row readers into
+`design/data.py`, and the four reads that were reached through `Gui` itself into
+`reads.py` and `actions.py`.
 
 `from lib import gui` re-exports the surface the entry point and the tools read -
 `Gui`, `PORT`, `ROWS`, `REFRESH` and the module-level names they reach for - so a
@@ -61,9 +70,9 @@ annotation are imported under `TYPE_CHECKING`, because nothing evaluates those a
 
 from ..i18n import t
 from .app import Gui
+from .design.script import _JS, _js
 from .schema import HOST, PORT, REFRESH, ROWS
 from .server import _form_body
-from .templates import _JS, _js
 
 # What the root entry point, the tools under `docs/gui-rework/tools/` and anything
 # else that was written against `lib/gui.py` read off this module - the whole of the

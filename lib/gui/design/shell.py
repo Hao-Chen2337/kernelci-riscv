@@ -9,7 +9,7 @@ then the live activity panel, then `<main>` with the page, then the footer line 
 `#notice`.
 
 **The hooks in here are a contract with code this file may not change.**  The poll
-script (`..templates._JS`) is the shipped one and two node suites drive it:
+script (`script._JS`) is the shipped one and two node suites drive it:
 `docs/gui-rework/tools/test_dom.js` and `test_notice.js` fetch it out of `lib.gui` and
 assert what it writes.  The markup below therefore keeps `body[data-drawn]`,
 `details.live#live` as a **direct child of `<body>`**, `summary.live-tab`,
@@ -32,9 +32,11 @@ therefore what styles the script's names - `.live-row`, `.live-id`, `.live-time`
 `.spin`, `.notice*`, `.kind-group`, `td.group-first` and the rest - with the design's
 tokens and the board's own values, so the row a reader sees first and the row the poll
 writes back are the same row.  The alternative was editing those markup strings inside
-`_JS`, and that is the one thing this round may not do: the same `liveRow()` draws the
-*old* layer's panel, which keeps serving until the last screen here passes the gates,
-and `lib/gui/shell.py`'s server-side `_live_row` would have had to change with it.
+`_JS`, and that is the one thing this file may not do: `_JS` is the string
+`test_dom.js` runs and `test_notice.js` parses, `check_hooks.py` reads its selectors
+out of it, and the cells it writes are asserted against these builders cell by cell -
+so the script's names are bridged here rather than the script rewritten to the
+design's.
 
 `BRIDGE_JS` is the other bridge and it closes a real gap: the design writes both
 languages into every word (`words.both`) and into three attributes beside it
@@ -46,10 +48,10 @@ behaviour of a multi-valued axis.  It runs from the last element of `<body>`, wh
 before the first paint, so a reader arriving on `?lang=zh` sees Chinese rather than a
 flash of English.
 
-The swap lives here rather than in `templates._JS` because it is only ever needed by
-this layer's markup (the old pages carry no `data-i18n` at all) and because
-`templates.py` is deleted the day the last screen here passes the gates - a behaviour
-added to it would be deleted with it.  `_JS` is inlined byte for byte, which is also
+The swap lives here rather than in `script._JS` because it is only ever needed by this
+file's markup - the swap, the theme button and the chips are this layer's own
+`data-i18n` shape and nothing else in the console writes one - and because `_JS` is
+frozen by the two suites that drive it.  `_JS` is inlined byte for byte, which is also
 what `test_notice.js` parses.
 
 Two deliberate departures from the board's chrome, both named where they happen:
@@ -75,9 +77,9 @@ from collections.abc import Iterable
 from ... import api as api_mod
 from ...i18n import LANGS, t
 from ..schema import LIVE_KEPT, NAV_KEYS
-from ..templates import _JS, _js
 from ..urls import _url
 from . import style, ui, words
+from .script import _JS, _js
 from .words import both
 
 # route -> the navigation key of its own name.  The order is the board's, which is the
@@ -338,9 +340,9 @@ def document(view, body: str, keep: Iterable[tuple[str, str]] = (),
     """The whole file: head, top bar, panel, the page, the footer, the scripts.
 
     `keep` is the page state that is not a filter field (the worker's mode, the runs
-    page's kind and state): the language switch has to carry it, exactly as
-    `lib/gui/shell.py`'s `_shell` passes `lang_keep`, or switching language would
-    answer a question the reader did not ask.
+    page's kind and state): the language switch has to carry it - `serve.py`'s
+    `PAGE_STATE` is what collects it, one route at a time - or switching language
+    would answer a question the reader did not ask.
 
     `banners` is what this *request* ran into - an API that did not answer, a writer
     that blocks a write - and it goes above the body, which is where the old shell put
@@ -408,8 +410,9 @@ def document(view, body: str, keep: Iterable[tuple[str, str]] = (),
 #      `hidden` would otherwise be visible before the script wired it, and a box that
 #      ticks nothing is a lie.
 #
-# `_JS` as shipped keeps drawing the old layer's panel and table too, and no rule here
-# touches a name the design already styles.
+# `_JS` as shipped draws the panel and the runs table, and every name it writes is
+# either a name the design already styles or one of the bridges below - no rule here
+# touches a class the board owns.
 BRIDGE_CSS = """
 /* 1. The live panel.  The board draws this strip in the flow at the top of a screen
    (`.live`, `style.py`), and the panel here is the same box: one body, one head row,
@@ -508,11 +511,11 @@ table.grid .tally { margin-left: 6px; color: var(--ink-soft); font-size: 11.5px;
 td.group-first { border-top: 2px solid var(--line); }
 /* **The script draws a caption row the server does not.**  `drawTable` writes
    `<tr class="kind-group">` *and* the `<span class="kind-group">` in the first cell of
-   the group's first row, which is the shape `_runs_table` uses; the server writes only
+   the group's first row, which is the shape `runs.py` writes; the server writes only
    the span.  The row is the same words as the span directly under it, so it is hidden:
    the reader sees one caption per group, exactly as drawn, and the row count keeps
    meaning "one row per activity".  Deleting the block from `drawTable` is the honest
-   fix and it is not available while the old layer shares that function. */
+   fix and it is not available: `_JS` is what the two node suites drive. */
 table.grid tr.kind-group { display: none; }
 
 /* 3. The numbers strip.  The gate reads two names in it - the strip's wrapper and the

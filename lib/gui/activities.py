@@ -231,11 +231,12 @@ class ActivitiesMixin:
         `tally` is the ledger's `{verdict: n}` over the builds this activity's own
         **argv** names (`_builds_of`), and it is here rather than on the page because
         the refreshed row needs it too: the 2 s poll writes its answer back into
-        `#runs` with the same cells `_runs_table` drew (`templates._JS`), so a cell
-        the server can fill and the script cannot is a cell that empties itself two
-        seconds after the page was drawn.  It is read from `self._state()` - the one
-        `Records.load()` of this request, memoed in the request's scratch like every
-        other read here - and only when a row actually names a build: a `table.py
+        `#runs` with the same cells the runs table drew (`design/script.py`'s
+        `drawTable`), so a cell the server can fill and the script cannot is a cell
+        that empties itself two seconds after the page was drawn.  It is read from
+        `self._state()` - the one `Records.load()` of this request, memoed in the
+        request's scratch like every other read here - and only when a row actually
+        names a build: a `table.py
         index` argv names a window, not a build, so the 50 bookkeeping rows on this
         deployment cost one `--build` scan each and no ledger read at all.
         """

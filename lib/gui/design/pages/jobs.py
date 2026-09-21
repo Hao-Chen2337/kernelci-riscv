@@ -26,7 +26,7 @@ another, and a row of the other test left with a dash where its box should be.  
 is one `test` here - the filter's, which is also what selects the rows - the bar sends
 it as a hidden field (`table.py run` falls back to *all three* tests when a body
 carries no `test`), and a row whose test is not the one in force prints a **link to
-that test** rather than nothing (the old page's rule, `cells._other_test_tick`: a dash
+that test** rather than nothing (this screen's rule, `_ready_cell`: a dash
 is true of the code and unreadable to a reader).  The tick is per **build**, because
 the command carries one test: two boxes under one build would be one command twice.
 That is also why the board's per-row `run <test>` button is not drawn - the old page
@@ -88,7 +88,7 @@ from ...schema import (
 )
 from .. import ui, words
 
-# The form the gap table's boxes belong to (`cells._job_tick`'s own name).  A box in a
+# The form the gap table's boxes belong to (`_tick_cell`'s own name).  A box in a
 # table cell cannot live inside a form drawn in the panel's head, so the two are joined
 # by `form=` and the select-all by `data-all-for=`: that association is what makes the
 # bar work with the script off as well as on.
@@ -177,9 +177,9 @@ def _choices(values, current: str = "", labels=None, any_key: str = "state.any",
     a second, empty one would offer a value `one_of()` refuses - which then answers the
     axis's *default* instead of the reader's choice (`models.Filter.from_query`).
 
-    The value in force is appended when the list does not carry it, which is `_select`'s
-    own rule (`lib/gui/widgets.py`): a select with nothing selected *shows its first
-    option*, so the next `apply` would send "any" where the URL said `kernel`.
+    The value in force is appended when the list does not carry it: a select with
+    nothing selected *shows its first option*, so the next `apply` would send "any"
+    where the URL said `kernel`.
     """
     labels = labels or {}
     found = [] if any_key is None else [("", any_key)]
@@ -439,7 +439,7 @@ def _ready_cell(row, lang: str) -> str:
 def _waiting_cell(view, row, reasons: dict) -> str:
     """The artifact a row is waiting for, or the design's dash when it waits for none.
 
-    Printed **verbatim**, which is `tables._records_table`'s rule for a record's own
+    Printed **verbatim**, which is `_ledger_table`'s rule for a record's own
     words: `Build.missing(test)` answers with the artifact and what is wrong with it
     (`kernel: not downloaded yet (<path>)`), that sentence is the engine's, and a page
     that trimmed it to the first word would be rewriting a fact nobody here can

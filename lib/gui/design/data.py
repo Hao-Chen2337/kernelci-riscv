@@ -39,13 +39,13 @@ anything:
 * a gap is `re.todo()` (through `Gui.job_rows`, which merges it with the ledger);
 * a transition is `re.transitions()`, a config difference is `lib/drift.py`'s
   `Drift`, and the three numbers of a delta are `len()` of what `Drift` answered
-  - the same three numbers `driftview._config_delta` prints;
+  - the same three numbers `ui.delta` prints;
 * which builds a list is about, in what order, is `_build_rows`/`_sort_rows`, the
   same pair the shipped `/analysis` page reads;
 * a chart point is `Gui.trend`'s own point and `Records.series`'s own history, and
   a pass rate is a ratio of the record's verdict *words* accumulated over the
-  positions the page displays - the same accumulation `trendview._trend_lines`
-  documents, expressed as a share because the design's `y` axis is a percentage;
+  positions the page displays - the same accumulation `_series` below documents,
+  expressed as a share because the design's `y` axis is a percentage;
 * which artifacts a build is missing is `Build.missing()`, which is what
   `Gui.job_rows` reads for its `reason` column.
 
@@ -67,20 +67,20 @@ not read is not a number.
 
 Column-for-column the mapping, and the reader behind each key:
 
-    builds      Gui.build_rows + Gui.remote_rows + all_locals   (`pages/builds.py`)
+    builds      Gui.build_rows + Gui.remote_rows + all_locals   (`reads.py`)
     pulls       Gui.pull_acts                                   (`activities.py`)
     gap         Gui.job_rows (re.todo + Records)                (`activities.py`)
     ledger      Records                                         (`lib/re.py`)
     worker      Gui.worker_state + Gui.run_rows                 (`activities.py`)
     queue       Gui.job_node_rows                               (`activities.py`)
     runs        Gui.run_rows                                    (`activities.py`)
-    picks       _build_rows/_sort_rows + Gui._config_edges      (`pages/analysis.py`)
+    picks       _build_rows/_sort_rows + Gui._config_edges      (below, `reads.py`)
     bars        Records.for_test/for_build .tally()             (`lib/re.py`)
-    timelines   Records.series/transitions + trendview._wave_slots
+    timelines   Records.series/transitions + _wave_slots below
     series      Gui.trend + Records.series                      (`reports.py`)
     drift       Gui._config_edges' Drift reports                (`lib/drift.py`)
-    counts      pages/builds._numbers_strip's seven readers
-    option lists schema.py's constants, fields._vocabulary, Gui.apis.entries
+    counts      the seven readers `_counts` below names
+    option lists schema.py's constants, values._vocabulary, Gui.apis.entries
 
 `series` is the one key the prototype's dict does not have, and the one the
 design's chart panel needs: `lib/gui/design/ui.py` draws it with
@@ -95,20 +95,22 @@ two agree exactly - the 60 records carry `boot` (22), `kselftest-riscv` (19) and
 `kselftest-kvm` (19), and nothing else.
 """
 
+import html
+import re
 import time
-from typing import Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 from ... import api as api_mod
 from ... import errors, layout
 from ... import re as re_mod
 from ... import run as run_mod
 from ...i18n import DEFAULT_LANG, t
-from ...kbuild import Kbuilds
+from ...kbuild import Kbuild, Kbuilds
 from ...tests import DEFAULT_TESTS, TESTS
 from ..activities import WORKER_KIND
-from ..fields import _vocabulary
 from ..models import Filter
-from ..pages.analysis import _build_rows
+from ..pairs import _build_ref
 from ..schema import (
     API_TIMEOUT,
     DEFAULT_DELTA,
@@ -123,8 +125,10 @@ from ..schema import (
     SORTS,
 )
 from ..sorting import _sort_label, _sort_rows
-from ..trendview import _last_verdict_row, _wave_slots
-from ..values import _host, _human, _last_verdict, _short
+from ..values import _host, _human, _last_verdict, _short, _vocabulary
+
+if TYPE_CHECKING:
+    from ...re import Records
 
 # The three artifacts the design's card column draws, in the order it draws them:
 # `lib/build/model.py`'s `ARTIFACTS` minus `config`.  The names belong to that
@@ -239,7 +243,7 @@ def _builds(gui: Any, check: Filter, held: dict, answer: Any,
       directory next to `Local.state`'s.
     * **`api`** is the API's own answer for this row, `(state, result, node_id)`,
       or `None` when this page's answer did not carry it.  `None` covers two
-      different facts that `cells._remote_cell` tells apart (a copy with no remote
+      different facts that `builds._api_cell` tells apart (a copy with no remote
       counterpart at all, and one outside the window's cap) - the fixture's shape
       has one slot for both, and the page prints its own sentence for it.
     * **`ran`** is one `(test, verdict-or-None)` per `DEFAULT_TESTS`, from
@@ -283,7 +287,7 @@ def _pulls(acts: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     `Gui.pull_acts()` is already one row per act with the build id, the time, the
     reason it failed and the entries; the four derived cells are the ones
-    `tables._pulls_table` prints, computed the same way from the same entries:
+    `builds._pulls_panel` prints, computed the same way from the same entries:
 
     * `transferred` counts the entries whose transfer actually moved bytes (the
       act's own `transferred` flag, written by `Build.make()`), which is the one
@@ -340,9 +344,8 @@ def _ledger(records: Any) -> list[dict[str, Any]]:
     `Records` is the only reader of `var/results/`, and `source` is its own field -
     the column the design's worker panel filters on to answer "did my worker run?"
     (`worker` is the word a `pull_worker.py` run writes).  The order is the newest
-    record first, which is the order `pages/builds._correspondence` prints one
-    build's records in; the ledger's own read order is a directory walk and means
-    nothing to a reader.
+    record first, which is the order `builds.local` prints one build's records in;
+    the ledger's own read order is a directory walk and means nothing to a reader.
     """
     newest = sorted(records, key=lambda one: (one.timestamp or "", one.build_id, one.test),
                     reverse=True)
@@ -397,11 +400,11 @@ def _queue(gui: Any, check: Filter) -> list[dict[str, Any]]:
 
     Read as wide as `/worker` reads it (`QUEUE_ROWS`, because the page's own
     platform and runtime boxes are built out of the same answer) and printed as
-    wide as this filter's `limit`, exactly as `pages/worker.py` does: one read of
+    wide as this filter's `limit`, exactly as `worker.py` does: one read of
     the largest collection in the API for one question.
 
     The state is `check.state or "available"`, which is the shipped route's own
-    default (`shell.py`'s `/worker` branch): a worker page is about what a worker
+    default (`serve.py`'s `PAGE_STATE` for `/worker`): a worker page is about what a worker
     can *claim*, and a table of 200 finished nodes beside a "nothing to claim"
     badge is two true sentences that mean nothing together.  `Filter.state` also
     spells the *kbuild* state axis, and the two vocabularies overlap where they
@@ -489,6 +492,112 @@ def _live(activities: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 # --------------------------------------------------------------- the analysis
+def _build_rows(known: list[str], builds: list[Kbuild], check: Filter, records: "Records",
+                held: Mapping[str, Any], lang: str = DEFAULT_LANG) -> list[dict[str, Any]]:
+    """The builds this page can name, as rows: what it read, what it holds, what the ledger says.
+
+    **The filter decides which builds are in this list.**  `tree`, `branch`, `arch`,
+    `defconfig`, `compiler`, `state`, `result`, `text`, `origin`, `has`, `missing`,
+    `evidence`, `ran` and `verdict` go through `Filter.accepts` - the same predicates
+    every other table in this program uses - so the bar above the list means what it
+    means everywhere else and the renderer computes nothing (`00-BRIEF.md` rule 2).
+
+    Nothing here is fetched: the `Kbuild` comes from `_known_builds` (one read the page
+    was making anyway), the local copy from `all_locals()` and the record count from
+    `_state()`, both cached for this request.  The API cannot be asked for a build *by
+    id* (`lib/kbuild.py: SCAN`, 116.8-137.9 s measured), so a chooser that wanted more
+    detail per row would pay a hundred-second scan for it; everything a reader needs to
+    tell two builds apart is in the row the page already has (`06-analysis.md` §A3).
+
+    `known` is every id the page can name - including the directories under
+    `var/downloads/` that no card names, which have no `Kbuild` at all.  They are rows
+    too (the id, and what is on disk), they are simply not comparable: no card means no
+    `_config` artifact, which is one of the three refusals §A7 measured.
+    """
+    cards = {build.build_id: build for build in builds}
+    rows = []
+    for build_id in known:
+        kbuild = cards.get(build_id)
+        local = held.get(build_id)
+        if not check.accepts(kbuild, records, local):
+            continue
+        found = records.for_build(build_id)
+        revision = (kbuild.revision or {}) if kbuild is not None else {}
+        config = kbuild.artifact("_config") if kbuild is not None else ""
+        rows.append({
+            "build_id": build_id, "kbuild": kbuild,
+            "created": str(kbuild.created or "") if kbuild is not None else "",
+            "tree": str(kbuild.tree or "") if kbuild is not None else "",
+            "branch": str(kbuild.branch or "") if kbuild is not None else "",
+            "series": _series_of(revision.get("describe")),
+            "verdict": found.items[-1].verdict if found.items else "",
+            "config": bool(config), "config_url": config,
+            "records": len(found),
+            "held": bool(local is not None and local.present),
+            "ref": _build_ref(kbuild),
+            "line": _build_line(kbuild, revision, build_id),
+            "marks": _build_marks(config, local, len(found), lang),
+        })
+    return rows
+
+
+def _series_of(describe: Any) -> str:
+    """The kernel series a build belongs to, out of its `describe` (`v6.12.108-2861-…` -> `v6.12`).
+
+    The one signal this page has for "these are two different kernels" without reading a
+    config.  It is searched for rather than anchored, because this deployment's newer
+    builds carry a topic prefix (`asoc-fix-v7.3-rc3-803-g9f1c440f92830`) and an anchored
+    pattern would call all of them series-less.  A describe string with no `v<major>.<minor>`
+    (`next-20260915`) yields `''`, which `_chosen_pair` treats as *unknown* and never as
+    a series of its own - the alternative would make two unknown builds "different".
+    """
+    found = re.search(r"\bv(\d+\.\d+)", str(describe or ""))
+    return f"v{found.group(1)}" if found else ""
+
+
+def _build_line(kbuild: "Kbuild | None", revision: Mapping[str, Any], build_id: str) -> str:
+    """The two lines the operator asked for: what the build *is*, then its details.
+
+    A native `<option>` cannot wrap to two lines - its content model is text, browsers
+    render one line and ignore child elements (`06-analysis.md` §A4) - which is why the
+    chooser is a table of links rather than a select box.  Line one is the fact that
+    tells two builds apart, line two the fields a reader checks next.  The commit is
+    shortened to twelve characters because the full forty are in the record's own
+    `title` and on the correspondence page.
+    """
+    if kbuild is None:
+        return (f'<code title="{html.escape(build_id)}">{html.escape(build_id)}</code>'
+                '<br><span class="sub">-</span>')
+    named = _build_ref(kbuild)
+    detail = " · ".join(part for part in (str(kbuild.created or ""),
+                                          str(kbuild.compiler or ""),
+                                          str(kbuild.arch or ""),
+                                          str(kbuild.defconfig or ""),
+                                          str(revision.get("commit") or "")[:12]) if part)
+    return (f'<b>{html.escape(named) or html.escape(build_id)}</b>'
+            f'<br><span class="sub">{html.escape(detail)}</span>')
+
+
+def _build_marks(config: str, local: Any, records: int, lang: str = DEFAULT_LANG) -> str:
+    """Three marks per row: can this build be compared, is there a copy here, has it run.
+
+    They are the facts that decide the questions a reader is about to ask, and two of
+    them are what makes a doomed pair visible **before** it is picked: `config -` is a
+    build no comparison can use (`06-analysis.md` §A7), and the artifact URL is in the
+    `title=` for the reader who wants the raw file.
+    """
+    def mark(word: str, yes: bool, title: str = "") -> str:
+        attr = f' title="{html.escape(title)}"' if title else ""
+        return (f'<span class="{"yes" if yes else "no"}"{attr}>'
+                f'{html.escape(word)} {"&#10003;" if yes else "&mdash;"}</span>')
+
+    held = bool(local is not None and local.present)
+    return ('<span class="marks">'
+            + mark(t(lang, "word.config"), bool(config), config) + " "
+            + mark(t(lang, "col.bytes"), held) + " "
+            + f'<span>{t(lang, "mark.records")} {records}</span></span>')
+
+
 def _picks(ordered: list[dict[str, Any]], edges: list[dict[str, Any]], records: Any,
            check: Filter) -> list[dict[str, Any]]:
     """The builds this page can name, in this page's order, with their neighbours' deltas.
@@ -510,7 +619,7 @@ def _picks(ordered: list[dict[str, Any]], edges: list[dict[str, Any]], records: 
 
     The verdict and the three TAP numbers come from the record for **the test this
     page is about** (`check.test`, else `DEFAULT_TESTS[0]` - the same expression
-    `_analysis` uses), through `trendview._last_verdict_row`, so the pill and the
+    `_analysis` uses), through `_last_verdict_row` below, so the pill and the
     counts beside it are about one run.  A record whose test died before TAP ran
     holds no counts, and `_cases_text`'s rule is followed here: `0/0` is a claim
     the ledger does not make, so the three numbers are `None` and the page prints
@@ -548,7 +657,7 @@ def _delta(edges: list[dict[str, Any]], at: int) -> "tuple[int, int, int] | None
 
     The three numbers are `len()` of what `Drift` answered - `added`, `removed` and
     `changed` are dicts of config options and the page prints their sizes, exactly
-    as `driftview._config_delta` does.  An edge that was refused (`report is None`,
+    as `ui.delta` does.  An edge that was refused (`report is None`,
     with the engine's reason in `error`) has no numbers and answers `None`, which
     `_picks` documents.
     """
@@ -589,6 +698,58 @@ def _bars(ordered: list[dict[str, Any]], records: Any, check: Filter) -> list[di
     return found
 
 
+def _wave_slots(rows: list[dict[str, Any]], records: "Records",
+                test: str) -> list[dict[str, Any]]:
+    """One slot per position of the page's order: the build, and what this test has for it.
+
+    A slot is a *position*, not a run: the list is the page's whole order (gaps included),
+    and every position the ledger has no record for is a slot with `gap` - which is how
+    the chart can show a test that stopped, instead of a line that pretends it never ran.
+
+    **`gap` is `not found`, and it used to be `found is None`.**  `_last_verdict_row`
+    answers `{}` for a position with no record - it never answers `None` - so that test
+    was false at *every* position: `gap` was always `False`, every no-record slot was
+    handed on as a run whose verdict happened to be the empty string, and the two things
+    that read it were both wrong at once.  `_wave_chart` never drew a single dashed gap
+    cell or linked to `/jobs` (its gap branch is dead under `gap == False`), and
+    `chart.band_sub` - `{ran} with a record, {gap} with none`, counted from these same
+    slots - printed `50 with a record, 0 with none` over an order where the ledger had
+    19.  The empty string is what gave it away: `verdict` is `""` for exactly the
+    positions `gap` claimed did not exist, and the new line chart counted 16 runs where
+    the sentence above it claimed 50.  Found while building `_trend_lines`; the two
+    readers are correct as written and this one line was the whole of it.
+    """
+    slots = []
+    for at, row in enumerate(rows):
+        build_id = str(row["build_id"])
+        found = _last_verdict_row(records, test, build_id)
+        slots.append({
+            "at": at, "build_id": build_id, "record": found,
+            "verdict": str(found.get("verdict") or "") if found else "",
+            "gap": not found,
+        })
+    return slots
+
+
+def _last_verdict_row(records: "Records", test: str, build_id: str) -> dict[str, Any]:
+    """The newest record for one (test, build) pair, as a plain dict, or `{}`.
+
+    `Records.series` already answers this and hands back `Outcome` objects; the chart
+    wants the record's own fields (verdict, results, timestamp) per column, so this is
+    one lookup per build with no second parse - `Records` is in memory for the request.
+    """
+    found = records.series(test, build_id)
+    if not found:
+        return {}
+    newest = found[-1]
+    return {"verdict": getattr(newest, "verdict", ""),
+            "timestamp": getattr(newest, "timestamp", ""),
+            "source": getattr(newest, "source", ""),
+            "exit_code": getattr(newest, "exit_code", None),
+            "detail": getattr(newest, "detail", ""),
+            "results": getattr(newest, "results", {}) or {}}
+
+
 def _timelines(pool: list[dict[str, Any]], records: Any,
                check: Filter) -> list[dict[str, Any]]:
     """One line per test: how many records, the newest verdict, and the run of them.
@@ -604,8 +765,8 @@ def _timelines(pool: list[dict[str, Any]], records: Any,
     are the builds this page can name - the newest `check.limit` of them, which is
     the same window the `picks` list shows under the default order, kept newest
     rather than oldest so that "the last 25 builds" means the same thing in both
-    panels.  `trendview._wave_slots` is the reader that already answers exactly
-    this per position - it is what the shipped page's wave chart draws - and `None`
+    panels.  `_wave_slots` below is the reader that already answers exactly this
+    per position - it is what the wave chart of `/analysis` always drew - and `None`
     is a position and not a run: the design draws it as an empty square
     (`no record`), which is how a test that *stopped* is visible instead of a line
     that pretends it never ran.
@@ -647,7 +808,7 @@ def _series(ordered: list[dict[str, Any]], gui: Any, records: Any) -> list[dict[
     **The percentage is the record's own verdicts, accumulated over these
     positions.**  At position *i* it is the share of this test's runs up to and
     including *i* that came back `pass` - the accumulated shape
-    `trendview._trend_lines` documents as the only honest one ("a build has at most
+    `_series` below documents as the only honest one ("a build has at most
     one record for a test, so a per-class value that is not accumulated is `0` or
     `1` at every position - a rug and not a line"), expressed as a share because
     this axis is a percentage.  Nothing is classified here: the numerator is the
@@ -717,7 +878,7 @@ def _counts(gui: Any, table: Any, records: Any, held: dict, check: Filter,
             lang: str) -> list[tuple[str, str, str]]:
     """The seven numbers the console prints above its tables, and where each came from.
 
-    `pages/builds._numbers_strip` is the reader of every one of them, and every one
+    `builds._strip` is the reader of every one of them, and every one
     is read **uncapped** there for a reason worth keeping: a number a link
     reproduces cannot be a slice, so a chip counting 53 copies must not be built
     from a 50-row page.  The three parts of a row are the design's:
@@ -733,7 +894,7 @@ def _counts(gui: Any, table: Any, records: Any, held: dict, check: Filter,
       are predicates over the disk (`counts.title_bytes`, `counts.title_acts` with
       the provenance path, `counts.title_records` with the count and the ledger's
       directory), and - for the gap - the strip's own `label.gap` plus the name of
-      the function that answers it (`re.todo()`), which is what `_numbers_strip`
+      the function that answers it (`re.todo()`), which is what `builds._strip`
       prints and the one entry here that is a mechanism rather than a path.
 
     `gap` is this filter's own gap (`Gui.todo(check)`, already walked for

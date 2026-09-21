@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Serving the design's screens: the one place a path becomes a page.
 
-    gui.py --design                 # the console, drawn by lib/gui/design/pages/*
+    gui.py                          # the console, drawn by lib/gui/design/pages/*
 
-`DesignGui` is `Gui` with `render` replaced and **nothing else**.  The readers, the
-actions, the ledger, the activity poll, the language negotiation, the JSON endpoints
-and every gate are the same code the old pages use - which is the whole reason the
-two layers can be served side by side from one engine, and the reason this class is
-twenty lines of dispatch instead of a second console.
+`DesignRenderMixin` is `Gui`'s `render` and **nothing else**, mixed into `Gui` by
+`app.py`.  The readers, the actions, the ledger, the activity poll, the language
+negotiation, the JSON endpoints and every gate are the engine's, untouched - which is
+why this is twenty lines of dispatch instead of a console of its own, and why one class
+can be the whole console: `from lib import gui; gui.Gui(...)` draws these screens.
 
 What the glue owns, and why each is here rather than in a page:
 
@@ -18,30 +18,28 @@ What the glue owns, and why each is here rather than in a page:
   from every link the page writes.  A detail route (`/local/<id>`, `/analysis/<id>`)
   is the station's module drawing one row.
 * **Page state.**  `kind` (`/runs`) and `mode`/`platform`/`runtime`/`since`
-  (`/worker`) are keys a route reads that are *not* filter conditions - the old
-  layer's own `/runs` docstring says so - so they are not `Filter` fields and
-  `to_query()` leaves them out.  The pages ask for them on the check, which is what
-  the old shell did by handing them to `_runs`/`_worker` as arguments; this is that
-  hand-off, in the one place that builds the check.
+  (`/worker`) are keys a route reads that are *not* filter conditions, so they are not
+  `Filter` fields and `to_query()` leaves them out.  The pages ask for them on the
+  check, which is what the retired shell did by handing them to its drawers as
+  arguments; this is that hand-off, in the one place that builds the check.
 * **The shells' own links.**  `keep` is what the top bar, the language switch and the
   refresh link carry, so a reader who switches language or reloads stays on the
   question they asked instead of landing on its default.
 
-A page that is not written yet is a 404 with the same sentence the old layer uses -
-the port is finished screen by screen, and the screens that are done have to be
-reachable while the others still are not.
+A path no drawer answers is a 404: the five stations are all the screens there are, and
+`error.no_page` names them, so a hand-edited URL that names nothing gets a sentence
+instead of a blank page.
 """
 
 from ... import errors
 from ...i18n import DEFAULT_LANG, t
-from ..app import Gui
 from ..models import Filter
 from ..schema import PAGES as STATION_NAMES
 from . import data, pages, shell
 from .view import View
 
-# The paths that are a station in the old layer and an alias here: the board spells
-# the builds screen `/builds` and every existing link and gate spells it `/`.
+# The paths that are the board's names for a station: the board spells the builds
+# screen `/builds` and every existing link and gate spells it `/`.
 ALIASES = {"": "/", "/index.html": "/", "/builds": "/"}
 
 # A station's drill-down: the path prefix, the module under `pages/`, and the drawer
@@ -103,8 +101,15 @@ def _drawer(path: str):
     return page, pages.PAGES.get(page)
 
 
-class DesignGui(Gui):
-    """The console drawn by the design's screens; the engine underneath is `Gui`."""
+class DesignRenderMixin:
+    """The route dispatch: `Gui.render` is this method and there is no second one.
+
+    A mixin and not a subclass, because `Gui` is the one name the entry point, the
+    tools and every gate build (`app.py` mixes this in where the retired `ShellMixin`
+    was).  Two classes that both answered `render` would be two consoles - one of them
+    reachable only by a flag - and the whole point of this round is that there is one
+    screen per route, drawn from one set of readers.
+    """
 
     def render(self, page: str = "/", query=None, lang: str = DEFAULT_LANG) -> str:
         """One screen as HTML: the path chooses it, the query string is its state."""

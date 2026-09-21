@@ -62,14 +62,14 @@ timeline's sub-line states the date axis, the chart's caption states the order, 
 hint under the chart names the difference in one sentence.
 
 **The pair, and where it lives.**  The reader ticks two rows; the ticks travel as `pick`
-(`Filter.pick`, the key `shell.py` resolves into `older`/`newer` for this route), the
+(`Filter.pick`, the key `serve.py` resolves into `older`/`newer` for this route), the
 upper tick is the older end - which is the engine's own reading of `picks[0]` - and the
 bar above the table says so.  From there the pair is spelled `older`/`newer` in every
 link this page writes, which is the pair of keys the shipped shell reads and the pair
 `ROUTE_KEYS["/analysis"]` carries.  One seam is worth stating rather than discovering:
 **`older`, `newer` and `vs` are not `Filter` fields** - `Filter.from_query` drops them
 and `to_query` never writes them - so a page can read them only if the wiring puts them
-on the check (which is exactly what `lib/gui/shell.py` does for the shipped route).
+on the check (which is exactly what `serve.py` does for this route).
 `getattr(check, "older", "")` is therefore how this module reads them, `pick` is the
 fallback that always arrives, and the wiring is what makes a pair survive a link.
 
@@ -146,7 +146,7 @@ _MAIN = ("api", "tree", "branch", "arch", "defconfig", "compiler", "test", "limi
 _FOLD = ("state", "result", "origin", "evidence", "missing", "days")
 
 # How many rows of one config-difference category are printed before the rest folds
-# away.  The number is `driftview._DRIFT_FIRST`'s and the reason is measured: the pair
+# away.  The number is the one this page always printed, and the reason is measured: the pair
 # `accept.py` names differs by 616 + 618 + 99 options, and printing all of them inline
 # was 265 KB and 67 % of the whole page.  The rest of the rows are still in the document
 # (inside a `details`), which is what keeps the whole comparison one click away with the
@@ -352,7 +352,7 @@ def _picked(view) -> list:
 
     `Filter.pick` is page state and a tuple, and the order is the order the boxes appear
     in the document - which is the table's order, which is the page's order.  That is what
-    makes "the upper tick is the older end" a fact rather than a hope: `shell.py` reads
+    makes "the upper tick is the older end" a fact rather than a hope: `serve.py` reads
     `picks[0]` as `older` and `picks[1]` as `newer` for the shipped route, and this page
     reads the same two the same way.
     """
@@ -536,7 +536,7 @@ def _verdict_cell(row, lang: str) -> str:
     pass nor a failure: it says `no record`, which is what the ledger answered.  The three
     numbers are the TAP counts of the record that spoke, and a record which died before
     TAP ran holds none - printing `0/0` for it would be a claim the ledger does not make
-    (`trendview._cases_text`'s own rule), so the cell shows the design's dash and its
+    (`data._picks` states the same rule), so the cell shows the design's dash and its
     tooltip says why.
     """
     verdict = str(row.get("verdict") or "")

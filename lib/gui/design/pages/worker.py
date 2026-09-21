@@ -150,7 +150,7 @@ def _bar(view, queue, picked, state) -> str:
     the bar), so what is printed under the button is what the button will run.
 
     Every key this route reads and this bar does not draw rides as a hidden field
-    (`widgets._form`'s `rendered=` rule, moved here because the form is the page's): an
+    (`ui.filters`' `hidden=`, which is the same rule: the form is this page's): an
     `apply` is a GET, and a GET replaces the whole query string, so a key left out is a
     condition silently dropped.  `mode`/`platform`/`runtime`/`since` are page state and
     are carried the same way - here and through every link (`view.url(keep=...)`).
@@ -179,8 +179,8 @@ def _api_box(view) -> str:
     """Which API this page reads: one box, whose value is the key a URL carries.
 
     An empty `?api=` is a real choice and not a missing one - it is the base this process
-    started on - and the box shows that choice under the *name* of that base (the old
-    page's `fields._api_field` rule), so the value in force is one of the options rather
+    started on - and the box shows that choice under the *name* of that base (the rule
+    `analysis._api_field` keeps too), so the value in force is one of the options rather
     than a word like "any".  The labels are addresses and the values are keys: the short
     form the address bar and every link carry, with the address beside it, so picking one
     is not picking a name the reader has to guess at.
@@ -200,7 +200,7 @@ def _launch_name(view, base: str) -> str:
 
 
 def _launch_base(view) -> str:
-    """The address an empty `?api=` stands for, as `fields._api_field` prints it."""
+    """The address an empty `?api=` stands for, as `_api_box` prints it."""
     if view.gui is None:
         return view.check.api_base
     return view.gui.launch_base()

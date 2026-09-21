@@ -6,7 +6,7 @@
     python3 tools/check_hooks.py --route /runs   # a real screen, when the pages exist
     python3 tools/check_hooks.py --body FILE     # a body under review, read from a file
 
-`lib/gui/templates.py`'s `_JS` is the console's interaction - the two-second poll,
+`lib/gui/design/script.py`'s `_JS` is the console's interaction - the two-second poll,
 the finish notice, the POST take-over, the value rails, the select-all boxes - and
 it finds the page by *selector*.  A restyle that drops one of those selectors does
 not fail anything: it silently stops polling, or stops announcing a finished run,
@@ -32,8 +32,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from lib import api as api_mod
-from lib.gui import app, templates
+from lib.gui import app
 from lib.gui.design import data as design_data
+from lib.gui.design import script as design_script
 from lib.gui.design import shell as design_shell
 from lib.gui.design.view import View
 from lib.gui.models import Filter
@@ -208,7 +209,7 @@ def main(argv=None) -> int:
     # `input[name=selected]`).  They are listed rather than judged: a stub body has
     # none of them, and calling that a failure would train the reader to ignore this
     # tool exactly when the ported screens are what it is for.
-    body_level = [one for one in queried(templates._JS)
+    body_level = [one for one in queried(design_script._JS)
                   if one not in wanted and not present(markup, one.split(",")[0])]
     for selector, symptom in missing:
         print(f"  MISSING {selector:24s} {symptom}")

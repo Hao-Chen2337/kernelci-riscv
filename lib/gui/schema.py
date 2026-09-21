@@ -447,7 +447,7 @@ RUNTIMES_KNOWN = RUNTIMES_FIXED + tuple(one for one in _runtimes_from_config()
 def _worker_platforms() -> tuple[str, ...]:
     """What `/worker` may be pointed at, and the only list `command()` accepts.
 
-    **One list, two readers** (`pages/worker.py`'s quick links and
+    **One list, two readers** (`worker.py`'s rails and
     `actions.py::command`'s `_offered`).  They have to be the same list: `_offered`
     *refuses* a value it was not offered (`error.not_an_option_n`), so a dropdown
     widened on one side only is a button whose Start answers 409.  The page reads
@@ -545,8 +545,8 @@ FILTER_ORDER = ("api", "tree", "branch", "arch", "defconfig", "compiler",
                 "ran", "verdict", "evidence", "origin", "missing", "has", "text",
                 "sort")
 
-# The four axes a reader may name **several values of at once**, offered as tick
-# boxes rather than as one box (`fields._check_group`).  The set is a judgement with
+# The four axes a reader may name **several values of at once**, offered as a set
+# they compose rather than as one box (`design/ui.py::multi`).  The set is a judgement with
 # a reason and not a rule about `Filter`: these four are the axes whose values are
 # *orthogonal to the row* - a build is in `riscv` or `mainline` and nothing about the
 # page changes if both are asked for - while `branch` is bound to the tree it belongs

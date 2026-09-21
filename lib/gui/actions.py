@@ -11,7 +11,14 @@ off the form.
 
 `_argv_of`/`_argv_of_ticked` print the same argv under the button, so the bar and the
 process cannot disagree; `cancel`, `log` and `status`/`state_poll` are what the page's
-poll reads while something runs."""
+poll reads while something runs.
+
+`_one_tree` is the other side of the same knowledge: a button whose command takes one
+tree (`run_latest.py`, `runday.py` and `table.py index` each declare a single `--tree`,
+which `command()` reads with `_named`) cannot be offered honestly against a filter that
+names two, so it says why in its `title=` instead of being clickable and refusing.  It
+moved here from the retired filter-bar module because the fact it states is about this
+argv."""
 
 import os
 import sys
@@ -30,12 +37,14 @@ from .forms import (
     _flag,
     _iso_stamp,
     _named,
+    _names,
     _numbers,
     _offered,
     _pairs,
     _ticks,
     _token,
 )
+from .models import Filter
 from .schema import (
     ACTIONS,
     KINDS,
@@ -194,6 +203,28 @@ class ActionsMixin:
             return entry("drift.py") + ["--older", older, "--newer", newer, *api]
         raise errors.ConfigError(t(lang, "error.unknown_action", name=repr(name),
                                    known=", ".join(ACTIONS)))
+
+    def _one_tree(self, check: Filter, lang: str = DEFAULT_LANG) -> str:
+        """Why a one-shot bar cannot be offered here - `""` when this filter names one tree.
+
+        `--tree` is single-valued in every entry point these bars start
+        (`run_latest.py`, `runday.py` and `table.py index` each declare one `--tree`,
+        none with `action="append"`), and `command()` reads it with `_named`, which
+        refuses a comma-joined value as the non-name it is.  So a filter that names two
+        trees cannot be handed to a one-shot button honestly, and the button must say
+        so rather than be clickable and refuse: that is `_action_bar(blocked=…)`'s
+        rule, and the reader's own gesture (unticking a box) is the way out.
+
+        This is the one string in the bar and it is a `title=`, not a paragraph: the
+        fact is about this button, and `05-i18n-prose.md` §B.1 puts a fact like that
+        where the button is.  The list is spelled out because it is short by
+        construction - the reader chose it two controls above.
+        """
+        named = _names(check.tree)
+        if len(named) <= 1:
+            return ""
+        return t(lang, "filter.one_tree", trees=", ".join(named))
+
 
     def start(self, name: str, form: Mapping[str, list[str]],
               lang: str = DEFAULT_LANG) -> dict[str, Any]:

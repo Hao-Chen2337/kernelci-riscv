@@ -501,9 +501,10 @@ PART: dict[str, dict[str, str]] = {
 
     # ... and the case the ledger answers with no counts at all: a record whose test died
     # before TAP ran holds `results: {}`, and `0/0` for it would be a claim the ledger does
-    # not make (`trendview._cases_text`'s rule).  The tooltip is the per-cell version; the
-    # panel's sub-line carries the same fact once when every row in the list is a dash,
-    # because 25 identical dashes with no sentence over them read as a broken page.
+    # not make (`design/data.py::_picks` states the same rule).  The tooltip is the
+    # per-cell version; the panel's sub-line carries the same fact once when every row
+    # in the list is a dash, because 25 identical dashes with no sentence over them read
+    # as a broken page.
     "page.analysis.no_tap": {"en": "this run reported no TAP counts",
                                "zh": "这次运行没有报 TAP 计数"},
 

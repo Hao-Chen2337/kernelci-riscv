@@ -9,6 +9,16 @@ request by `lib/api.py`.  `remote_rows`/`remote_query` are the two halves of one
 question (what the page asked, and what came back), `all_locals`/`filtered_locals`/
 `local_rows` are the disk side of it, and `todo` is the gap between the two.
 
+The three that turn those answers into the rows a screen draws are here too, for the
+same reason: `build_rows`/`build_row` merge the API's window with this disk into one row
+per build id, `_known_builds` is the pool a comparison page can name (both reads it was
+going to make anyway, handed on as `Kbuild` objects so `Drift` need not scan for ids the
+page is already holding), and `_config_edges` is the comparisons between *adjacent rows
+of one order* - one `Drift.series` per contiguous run of comparable rows, so each config
+is read once.  They moved here from the retired page modules: a read belongs with the
+reads, and a page that computed its own rows would be a second answer to "what do we
+have".
+
 `Reads` is the one place a page asks "what do we have"; the pages themselves only
 decide what to print."""
 
@@ -18,13 +28,21 @@ from .. import api as api_mod
 from .. import errors, layout
 from .. import re as re_mod
 from ..build import Build, Builds
+from ..drift import Drift
 from ..i18n import DEFAULT_LANG, t
-from ..kbuild import Kbuild, Kbuilds
+from ..kbuild import KBUILD_JOB, Kbuild, Kbuilds
 from ..re import Records
 from ..tests import DEFAULT_TESTS
 from .forms import _api_query, _axis_pairs, _query_text, _tests_of
 from .models import Apis, Filter, Local, Remote
-from .schema import API_FILTERS, API_TIMEOUT, FILTER_ORDER, MAX_AXIS_COUNTS, NO_WINDOW
+from .schema import (
+    API_FILTERS,
+    API_TIMEOUT,
+    FILTER_ORDER,
+    MAX_AXIS_COUNTS,
+    MAX_LIMIT,
+    NO_WINDOW,
+)
 from .server import _request_scratch
 from .values import _dirs, _short_state
 
@@ -346,6 +364,209 @@ class ReadsMixin:
                               else t(lang, "state.not_held_here")),
                 "here_short": (_short_state(local.state, lang) if local is not None
                                else t(lang, "state.not_here"))}
+
+    def build_rows(self, check: Filter, held: dict[str, "Local"], answer: Remote,
+                   lang: str = DEFAULT_LANG) -> list[dict[str, Any]]:
+        """One row per build id over the API's window and this disk, newest first, capped once.
+
+        The union is the honest page: a build the API answered and we hold is one row
+        carrying both halves, a build only the API knows shows `card -`, and a copy
+        only this machine knows (a directory no card names) is the row the operator
+        could not see anywhere before the merge.  Both halves arrive already filtered
+        (`remote_rows` judges every API row against the real `{build_id: Local}`, and
+        `filtered_locals` judges every copy), so this is a set union and not a second
+        pass of the same question.
+
+        The cap is applied **after** the merge, once: a page that capped both halves
+        and then merged would print twice the rows it promised.
+
+        The order is `created`, with two fallbacks that matter.  A card-less copy has
+        no `created`, and its newest pull act is the newest thing anybody knows about
+        it - without that fallback every such copy sorted to the bottom and fell off
+        the end of the row cap, which is exactly how the build the operator pulled and
+        ran became invisible on the page that lists local copies (`accept.py`'s S7
+        read "not on the local listing page at all").
+        """
+        remote = {one.build_id: one for one in answer}
+        # The API can answer one build id more than once, and the list built straight
+        # from the answer printed it once per node: this deployment's own stack holds
+        # three kbuild nodes for `6aade015d96a8203de6dff37`, so `/` printed that build
+        # three times - on the page whose docstring promises one row per build id, and
+        # whose row count the operator is asked to trust.  A build is one row; which
+        # node answered is in the row's own `node_id`, and the answer's order (newest
+        # first, which is how `remote_rows` read it) decides which of them it keeps.
+        found = list(dict.fromkeys(one.build_id for one in answer))
+        for local in self.filtered_locals(check):
+            if local.build_id not in remote:
+                found.append(local.build_id)
+        rows = [self.build_row(remote.get(build_id), held.get(build_id), lang)
+                for build_id in found]
+        rows.sort(key=lambda one: (one["created"], one["build_id"]), reverse=True)
+        # **In card mode the cap is not the page's to apply.**  `accepts()` lets
+        # nothing but a carded row through when `origin=card`, so the row count *is* the
+        # local table - and capping it meant the operator's own view of his cards hid
+        # the oldest ones (`?origin=card` at the default `limit` showed 50 of 52, with
+        # three cards missing entirely from `/`).  A cap on the disk is not a cap on a
+        # query.  `limit` keeps its other job in that mode: the width of the API read.
+        cap = check.limit if check.origin != "card" else MAX_LIMIT
+        return rows[check.offset:check.offset + cap]
+
+
+    def build_row(self, kbuild: "Kbuild | None", local: "Local | None",
+                  lang: str = DEFAULT_LANG) -> dict[str, Any]:
+        """One row's three facts, kept apart: the card, the bytes and the pull record.
+
+        The dict is what the cells read, and its keys say which fact each value came
+        from - `in_table`/`node_id`/`act_node_id` are three different answers to "what
+        do we know about this build", and `Local.node_id` collapses two of them on
+        purpose (`node_id` falls back to the record).  The `card` cell needs to know
+        *which* of the two spoke, so both are here.
+        """
+        card = local.card if local is not None else None
+        records = self._state()[1]
+        said = [card.created if card is not None else "",
+                kbuild.created if kbuild is not None else "",
+                str(local.latest.get("at") or "") if local is not None else ""]
+        # Which of the three spoke, so the cell can say when the date is the pull's and
+        # not the build's: a copy whose card we do not have has no `created` at all, and
+        # the newest thing anybody knows about it is when it was pulled.
+        when = next((one for one in said if one), "")
+        build_id = (kbuild.build_id if kbuild is not None
+                    else local.build_id if local is not None else "")
+        # `Records.last` once per test, for every row: the ledger is keyed by build id
+        # and does not care whether a card, a directory or only the API named this
+        # build, so a row the API answered and we do not hold still shows what has been
+        # run against that id - which is half of what `/jobs` computes its gap from.
+        verdicts = {}
+        for test in DEFAULT_TESTS:
+            found = records.last(test, build_id)
+            verdicts[test] = found.verdict if found is not None else ""
+        return {
+            "build_id": build_id,
+            "describe": (card.describe() if card is not None
+                         else kbuild.describe() if kbuild is not None else ""),
+            "tree": (card.tree if card is not None
+                     else kbuild.tree if kbuild is not None else ""),
+            "branch": (card.branch if card is not None
+                       else kbuild.branch if kbuild is not None else ""),
+            "created": when,
+            "created_from_act": bool(when) and not (card.created if card is not None else "")
+                                 and not (kbuild.created if kbuild is not None else ""),
+            "in_table": card is not None,
+            "node_id": local.node_id if local is not None else "",
+            "act_node_id": str(local.pull.get("node_id") or "") if local is not None else "",
+            "local": local, "remote": kbuild,
+            "state": local.state if local is not None else "",
+            "present": sorted(local.present) if local is not None else [],
+            "size": local.size() if local is not None else 0,
+            "acts": len(local.acts) if local is not None else 0,
+            "act_at": str(local.latest.get("at") or "") if local is not None else "",
+            "act_hosts": local.hosts() if local is not None else [],
+            "act_error": str(local.latest.get("error") or "") if local is not None else "",
+            # How many artifacts are on disk *right now* (`Local.present` is an
+            # `os.path.isfile` read per artifact), which is what a retry message owes the
+            # reader: the act's own `entries` count says what that attempt did.
+            "here_n": len(local.present) if local is not None else 0,
+            "pull_failed": bool(local is not None and local.latest.get("error")),
+            "state_text": local.state_text(lang) if local is not None else "",
+            "verdicts": verdicts,
+        }
+
+
+    def _known_builds(self, api: str = "", rows: int = 0) -> tuple[list[str], list[Kbuild]]:
+        """The builds a page can name: their ids, and the builds themselves.
+
+        Two sources, and both are reads this page was going to make anyway:
+
+        * **what we hold** (`all_locals()`): the table's cards, plus the directories
+          under `var/downloads/` that no card names - a directory is still bytes, and
+          its id may still be worth offering.  A card carries its own `Kbuild`
+          (`Build.kbuild`, the row the API answered when it was registered), and that
+          is the object to hand on: it is the row the artifacts were pulled from.
+        * **what the API just answered** (`remote_rows`, capped like every read of a
+          page).  Its rows are `Kbuild` objects already.
+
+        The ids come out in one stable order - what we hold first, then the API's
+        answers - deduplicated: the same list the page has always offered, from the same
+        two reads (step 6 draws it as a table of links rather than as two `<select>`es,
+        and sorts it for display; this is the *pool*, so a row that is off the end of a
+        sort is still an id the page can name and compare).  The objects are what
+        `/analysis` hands to `Drift` - it needs both builds' artifacts, and it must not
+        scan the window again for ids this page is looking at right now (`drift()`, and
+        `lib/kbuild.py: SCAN` for what that scan costs).
+
+        `api` is the page's key: which API the box offers ids from is the same
+        decision as which one the page reads - a box built from the local stack while
+        the page asks production would offer two ids nobody there has heard of.
+
+        `rows` is how many the API read may return, and it is the *reader's* `rows`
+        and not a constant.  It used to be a hard `200`, and on this page that was
+        the single most expensive line in the whole program: `/analysis` renders
+        about 190 ids whether the reader asked for 50 rows or 500, and the API's
+        cost is per row, not per query (`06-analysis.md` §A0 measured a 189-row
+        read at 687 565 B and 31.14s where the same offset at `limit=50` answered
+        the *identical page* in 153 651 B and 2.01s).  So the cap here is the one
+        the reader chose, and a reader who wants a long chooser asks for more rows -
+        which is exactly the control `rows` is.
+        """
+        ids: list[str] = []
+        items: list[Kbuild] = []
+        for build_id, local in self.all_locals().items():
+            ids.append(build_id)
+            if local.card is not None:
+                items.append(local.card)
+        for kbuild in self.remote_rows(Filter(limit=rows or self.rows, origin="any", api=api)):
+            if kbuild.build_id not in ids:
+                ids.append(kbuild.build_id)
+                items.append(kbuild)
+        return ids, items
+
+
+    def _config_edges(self, rows: list[dict[str, Any]], catalogue: Kbuilds,
+                      check: Filter, lang: str = DEFAULT_LANG) -> list[dict[str, Any]]:
+        """The comparisons between consecutive rows of the page's own order.
+
+        One `Drift.series` call per **contiguous run of comparable rows**, so each
+        build's config is read once and the six-millisecond difference is not the point -
+        *one read per build, N-1 comparisons* is a sentence a reader can check
+        (`lib/drift.py`).  Every read goes through `var/configs/`, so the first look at
+        a pair downloads it and every look after that is a file read; nothing here
+        fetches in a loop beyond the cap the reader set.
+
+        A row with no card (`var/downloads/<id>/` and nothing in the table) has no
+        `Kbuild` at all, so it cannot be a side of a comparison and it breaks the run:
+        the two edges around it are recorded as refusals rather than skipped, because a
+        list whose adjacency silently jumped a row would compare the wrong two builds
+        (`这个为什么比不了` has to be answerable *per row*).
+
+        A refused pair keeps its place and carries the engine's own words.
+        """
+        client = self._client(self.api_base(check))
+        edges: list[dict[str, Any]] = []
+        at = 0
+        while at < len(rows) - 1:
+            if rows[at]["kbuild"] is None or rows[at + 1]["kbuild"] is None:
+                edges.append({"older": rows[at]["kbuild"], "newer": rows[at + 1]["kbuild"],
+                              "report": None,
+                              "error": t(lang, "state.no_card_in_table"),
+                              "why": t(lang, "state.no_card_in_table")})
+                at += 1
+                continue
+            run = [rows[at]]
+            while at + 1 < len(rows) and rows[at + 1]["kbuild"] is not None:
+                run.append(rows[at + 1])
+                at += 1
+            found = Drift.series(client, [row["kbuild"] for row in run],
+                                 job=KBUILD_JOB, catalogue=catalogue)
+            for older, newer, outcome in found:
+                if isinstance(outcome, errors.KciError):
+                    edges.append({"older": older, "newer": newer, "report": None,
+                                  "error": str(outcome), "why": ""})
+                else:
+                    edges.append({"older": older, "newer": newer, "report": outcome,
+                                  "error": "", "why": ""})
+        return edges
+
 
     def todo(self, check: "Filter | None" = None) -> list[Any]:
         """`re.todo()` for this request, walked once per set of tests.
