@@ -11,6 +11,7 @@ answer, not a failure.
 """
 
 import argparse
+import json
 import os
 import sys
 
@@ -53,8 +54,12 @@ def _main(argv=None):
     args = parser.parse_args(argv)
 
     if args.list:
-        for build_id in re_mod.Records.builds():
-            print(build_id)
+        builds = re_mod.Records.builds()
+        if args.json:
+            print(json.dumps(builds, indent=1))
+        else:
+            for build_id in builds:
+                print(build_id)
         return errors.EXIT_PASS
 
     records = re_mod.Records.load(args.build or None)
