@@ -188,11 +188,12 @@ class Kbuilds:
                 extra: Mapping[str, str] | None = None) -> list[Kbuild]:
         """Every usable build of `tree` from the last `days` days, newest first.
 
-        `days` <= 0 is not "nothing": it asks the API for the job's whole history
-        (no `created__gte` at all).  `limit` caps the *read*, so it is the newest
-        `limit` nodes that get looked at - the usable filter still runs
-        afterwards, which is why a page must print both the number it asked for
-        and the number it got.
+        `days` = 0 is not "nothing": it asks the API for the job's whole history
+        (no `created__gte` at all), and a negative window is refused by `_window`
+        rather than read as that same whole history.  `limit` caps the *read*, so
+        it is the newest `limit` nodes that get looked at - the usable filter still
+        runs afterwards, which is why a page must print both the number it asked
+        for and the number it got.
 
         `extra` is any further API filter key this read has to carry, in the
         API's own spelling (`data.arch`, `state`, `result`: `gui.API_FILTERS`).
@@ -261,9 +262,12 @@ class Kbuilds:
                extra: Mapping[str, str] | None = None) -> list[Kbuild]:
         """The job's kbuild nodes of the last `days` days, as builds, newest first.
 
-        `days` <= 0 asks for the whole history: the API is only askable by window
+        `days` = 0 asks for the whole history: the API is only askable by window
         (`created__gte`), and "no window" has to be a query it can answer, not the
-        `created__gte` of a window of zero days.
+        `created__gte` of a window of zero days.  Every window is put through
+        `_window` **before** the read, so the bound the refusal states and the
+        bound the arithmetic obeys are the same one - see that function for what
+        a negative `days` used to do instead.
 
         `extra` is applied **first**, so the four keys spelled here overwrite it
         rather than the other way round - the same precedence the deleted
@@ -275,8 +279,9 @@ class Kbuilds:
         filters: dict[str, Any] = {str(key): str(value)
                                    for key, value in dict(extra or {}).items()}
         filters["name"] = KBUILD_JOB
-        if days and int(days) > 0:
-            filters["created__gte"] = _iso_ago(int(days))
+        days = _window(days)
+        if days > 0:
+            filters["created__gte"] = _iso_ago(days)
         if tree:
             filters[TREE_FILTER] = tree
         if branch:
@@ -344,18 +349,37 @@ def _stamp() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _window(days: int) -> int:
+    """`days` as a window this tree may ask for: 0 (whole history) to `MAX_WINDOW_DAYS`.
+
+    **One bound, so the refusal and the arithmetic agree.**  `_iso_ago` refused a
+    window outside 0..`MAX_WINDOW_DAYS` with `a window of N day(s) is outside
+    0..3650` - but it was only reached when `days` was positive, so `table.py
+    index --days -3` never got there: the read treated every `days` below 1 as
+    "no window asked for" and quietly fetched the job's whole history, exit 0,
+    while the message a reader would have seen for `--days 99999` said the legal
+    range starts at 0.  A negative window is a typo (`--days -3` for `--days 3`),
+    and reading it as the widest possible query is the one answer nobody asked
+    for: the same three lines `--limit 0` and `prune.py --keep 0` answer with, in
+    the same shape, before any request is made.
+    """
+    days = int(days)
+    if days < 0 or days > MAX_WINDOW_DAYS:
+        raise ConfigError(f"a window of {days} day(s) is outside 0..{MAX_WINDOW_DAYS}")
+    return days
+
+
 def _iso_ago(days: int) -> str:
     """The ISO-8601 timestamp `days` days back (UTC, seconds).
 
     Every caller clamps a window; this is the second guard, because an absurd
     one reaches `time.gmtime` as an epoch outside the platform's range and comes
     back as `OSError: [Errno 75]` - which on a page is an HTTP 500, and a typo in
-    a URL must not be able to produce one.
+    a URL must not be able to produce one.  The bound is `_window`'s, so the
+    number this refuses is the number that function refuses.
     """
-    days = int(days)
-    if days < 0 or days > MAX_WINDOW_DAYS:
-        raise ConfigError(f"a window of {days} day(s) is outside 0..{MAX_WINDOW_DAYS}")
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - days * 86400))
+    return time.strftime("%Y-%m-%dT%H:%M:%S",
+                         time.gmtime(time.time() - _window(days) * 86400))
 
 
 def _age(created: str) -> str:
