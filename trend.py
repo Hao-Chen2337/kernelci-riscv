@@ -88,7 +88,15 @@ def _main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--job", action="append", default=[],
                         help="job node names to read (default: the three pull-lab jobs)")
-    config.run_flags(parser)
+    # `--api-url` and nothing else.  This entry reads the API's history and never
+    # builds a `RunConfig`, so the run flags `config.run_flags()` used to hang here
+    # (`--device`, `--timeout`, `--parameter`, `--rootfs`, ...) were decoration: the
+    # parsed values were dropped on the floor, and a `--parameter bad` was accepted
+    # with exit 0 while the same input to `table.py` is `X --parameter wants K=V,
+    # got 'bad'` and exit 3.  A flag that reaches nothing is worse than an absent
+    # one - the operator is told the command succeeded with a value nothing read -
+    # so the flags are gone and argparse refuses them instead (exit 2).
+    parser.add_argument("--api-url", default=None)
     args = parser.parse_args(argv)
 
     api = config.client(args)

@@ -59,7 +59,15 @@ def _main(argv=None):
     parser.add_argument("--tree", default="riscv",
                         help="which tree's builds to choose from (default: riscv)")
     parser.add_argument("--branch", default=None)
-    config.run_flags(parser)
+    # `--api-url` and nothing else.  Provisioning has no job to run: it reads the
+    # API, fetches a kernel and publishes a symlink, and never builds a `RunConfig`
+    # - so the run flags `config.run_flags()` used to hang here (`--device`,
+    # `--timeout`, `--parameter`, `--rootfs`, ...) were decoration, and a bad value
+    # among them (`--parameter bad`) was accepted with exit 0 while `table.py` says
+    # `X --parameter wants K=V, got 'bad'` and exits 3.  They are gone; argparse
+    # refuses them now (exit 2).  A flag that reaches nothing is worse than an
+    # absent one.
+    parser.add_argument("--api-url", default=None)
     # This line reads PRODUCTION unless told otherwise, exactly as `run_latest.py`
     # does: provisioning is the "serve the newest production build here" act, while
     # the worker and the table are about this deployment's own API.  Leaving it to

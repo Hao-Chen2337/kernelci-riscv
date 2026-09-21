@@ -62,7 +62,15 @@ def _main(argv=None):
                         help="job node name (repeatable; default: the three pull-lab jobs)")
     parser.add_argument("--limit", type=int, default=3,
                         help="how many nodes per name to show (default 3)")
-    config.run_flags(parser)
+    # `--api-url` and nothing else.  This entry reads the API and never builds a
+    # `RunConfig`, so the run flags `config.run_flags()` used to hang here
+    # (`--device`, `--timeout`, `--parameter`, `--rootfs`, ...) were decoration: the
+    # parsed values were dropped on the floor, and a `--parameter bad` was accepted
+    # with exit 0 while the same input to `table.py` is `X --parameter wants K=V,
+    # got 'bad'` and exit 3.  A flag that reaches nothing is worse than an absent
+    # one - the operator is told the command succeeded with a value nothing read -
+    # so the flags are gone and argparse refuses them instead (exit 2).
+    parser.add_argument("--api-url", default=None)
     args = parser.parse_args(argv)
     if args.limit < 1:
         raise errors.ConfigError(f"--limit must be at least 1, got {args.limit}")
