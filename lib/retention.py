@@ -86,7 +86,19 @@ def plan(downloads=None, keep=DEFAULT_KEEP, served=None):
     by provenance.
     """
     downloads = downloads or layout.downloads()
+    # Two different facts, two different sentences.  A path that is *not there* and
+    # a path that is there and is a file both prune nothing, but `does not exist`
+    # about a file sends the operator looking for a spelling mistake that is not
+    # there either - the one thing a message about his own path must not do.
+    # Only `isdir` false *and* the path absent is "does not exist".
+    #
+    # This is not a second gate in front of the `os.listdir` below: a directory
+    # this cannot *enter* is still a directory (`os.path.isdir` asks the parent,
+    # not the mode), so `chmod 000 var/downloads` keeps reaching `entries()` and
+    # keeps leaving as the `DiskError` (exit 3) that M5 made it.
     if not os.path.isdir(downloads):
+        if os.path.exists(downloads):
+            return [f"nothing to prune: {downloads} is not a directory"], []
         return [f"nothing to prune: {downloads} does not exist"], []
     served = served if served is not None else build_mod.served()
     served_id = str(served.get("build_id") or "")
