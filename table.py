@@ -190,23 +190,35 @@ def _main(argv=None):
     # that showed a selftest fail, and reporting an unreachable artifact as one
     # would invent a regression.
     #
-    # One guard travels with the skip: a run where everything was skipped has no
-    # outcomes, and `any(...)` over nothing is False, so without the early return
-    # the exit status would say PASS - a day with nothing to do reported as a day
-    # that passed its tests.
+    # One guard travels with the skip, and it reads the records the skip is
+    # about.  A run where everything was skipped has no outcomes, and `any(...)`
+    # over nothing is False, so the exit status would say PASS - a day with
+    # nothing to do reported as a day that passed its tests.  The guard that was
+    # meant to prevent that returned `EXIT_PASS` itself, which is the opposite of
+    # what it was there for: the second run of `table.py run --build <id> --test
+    # boot` against an unreachable artifact host printed its `skip` line and
+    # exited 0 over a record the ledger holds as `incomplete` / `exit_code: 3`,
+    # so a CI script that ran the command twice read its own infrastructure
+    # failure as a green run.  A skipped pair is not "nothing happened": it is an
+    # earlier run of that exact (build, test), and the record carries the verdict
+    # and the exit status that run ended with - which is why the skips are kept
+    # as records and not counted.  They are classified by the same two lines the
+    # outcomes are, below; only a run that was given no pair at all (nothing ran
+    # and nothing was skipped) is a PASS, because there is no verdict to report.
     source = "table"
     records = None if args.redo else re_mod.Records.load()
     outcomes = []
-    skipped = 0
+    skipped = []
     # `table.get()` hands back a Build already (`pull` above says the same):
     # wrapping it in Build() again makes its `kbuild` a Build, and the first
     # artifact lookup then dies on `Build` having no `artifacts`.
     wanted = [table.get(one) for one in args.build] if args.build else list(table)
     for build in wanted:
         for one in job_mod.Jobs.for_build(build, tests=tests):
-            if records is not None and records.last(one.test, build.build_id) is not None:
+            recorded = records.last(one.test, build.build_id) if records is not None else None
+            if recorded is not None:
                 print(f"skip {build.build_id} {one.test} (already recorded)")
-                skipped += 1
+                skipped.append(recorded)
                 continue
             # `append`, not `+=`: `Job.run()` answers with one `Outcome`, and only
             # the collection's `Jobs.run()` answers with a list.  Iterating the
@@ -223,10 +235,16 @@ def _main(argv=None):
                 print(f"! {build.build_id} {one.test}: {outcome.detail}", flush=True)
     for outcome in outcomes:
         outcome.print()
-    if skipped and not outcomes:
-        print(f"nothing to run: the ledger already has all {skipped} pair(s)")
     if not outcomes:
-        return errors.EXIT_PASS
+        if not skipped:
+            # No pair was asked for at all: nothing ran and the ledger was not
+            # consulted, so there is no verdict for an exit status to report.
+            return errors.EXIT_PASS
+        print(f"nothing to run: the ledger already has all {len(skipped)} pair(s)")
+        # What the ledger already answered is this run's answer (see the guard
+        # above): the records take the outcomes' place, so the exit status is
+        # their verdict rather than a PASS nobody earned.
+        outcomes = skipped
     if any(one.exit_code == errors.EXIT_INFRA for one in outcomes):
         return errors.EXIT_INFRA
     return errors.EXIT_TEST_FAIL if any(not o.passed for o in outcomes) else errors.EXIT_PASS
