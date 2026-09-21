@@ -59,8 +59,20 @@ def _main(argv=None):
     parser.add_argument("--api-url", default=None)
     args = parser.parse_args(argv)
 
+    # **Half a pair of files is not "no files".**  This was `if both ... else`,
+    # so one `--*-config` fell through to the API path and the answer was about
+    # the network, never about the flag that was left out: `--older-config F`
+    # alone said "need two builds to compare; this job has 0 finished and
+    # passing" (or a connection error), while the operator had asked for a local
+    # comparison.  Two files or none; the middle case names the flag it wants.
     if args.older_config and args.newer_config:
         report = drift.Drift.from_files(args.older_config, args.newer_config)
+    elif args.older_config or args.newer_config:
+        given = "--older-config" if args.older_config else "--newer-config"
+        missing = "--newer-config" if args.older_config else "--older-config"
+        raise errors.ConfigError(
+            f"{given} without {missing}: a local comparison needs two files - give "
+            "both config paths, or neither to compare two builds")
     else:
         report = drift.Drift.between(config.client(args), args.job,
                                      args.older or None, args.newer or None)
