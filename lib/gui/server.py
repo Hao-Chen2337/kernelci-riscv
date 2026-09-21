@@ -478,7 +478,17 @@ def handler_for(gui: Any) -> type[BaseHTTPRequestHandler]:
 
 
 def serve(gui: Any) -> int:
-    """Serve `gui` until interrupted; a taken port is reported, never silently swapped."""
+    """Serve `gui` until interrupted; an impossible or taken port is reported, never swapped."""
+    # A port outside the 16 bits a socket address has is refused here, before the
+    # bind: `socket.bind()` answers it with `OverflowError`, which is an
+    # `ArithmeticError` and **not** an `OSError`, so the `except` below never saw it
+    # and `gui.py --port 99999` left as a traceback with exit 1 - the one way this
+    # function could still fail.  0 is refused along with them, because `bind()` reads
+    # it as "any free port": the page comes up on a port nobody chose while the line
+    # below prints `http://127.0.0.1:0`, a URL that opens nothing.  Checking the range
+    # here rather than in `gui.py` is what every caller of the server inherits.
+    if not 1 <= gui.port <= 65535:
+        raise errors.ConfigError(f"--port must be 1-65535, got {gui.port}")
     try:
         server = ThreadingHTTPServer((gui.host, gui.port), handler_for(gui))
     except OSError as exc:
