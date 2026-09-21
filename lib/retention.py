@@ -30,6 +30,7 @@ import time
 
 from . import build as build_mod
 from . import layout
+from .atomic import DiskError
 
 # The newest builds kept when the caller does not say.  The number is the old
 # tree's policy value (`kcilib/core/policy.py: downloads_keep = 5`) and it is
@@ -44,22 +45,31 @@ def entries(downloads):
     A file (not a directory) is ignored, and an unreadable file inside a build
     counts as 0 bytes rather than failing the whole listing: a prune must not be
     stopped by one protected or vanished file.
+
+    A directory this cannot *list* is the other case, and it is not a smaller
+    table: `chmod 000 var/downloads` used to reach the entry point as the
+    `PermissionError` of the `os.listdir` below - a traceback and exit 1, this
+    tree's "a test failed" - which reads as a retention verdict about a directory
+    nobody looked inside.  It is a `DiskError` (exit 3) naming the directory.
     """
     found = []
     if not os.path.isdir(downloads):
         return found
-    for name in sorted(os.listdir(downloads)):
-        path = os.path.join(downloads, name)
-        if not os.path.isdir(path):
-            continue
-        size = 0
-        for root, _dirs, files in os.walk(path):
-            for filename in files:
-                try:
-                    size += os.path.getsize(os.path.join(root, filename))
-                except OSError:
-                    pass
-        found.append((os.path.getmtime(path), name, path, size))
+    try:
+        for name in sorted(os.listdir(downloads)):
+            path = os.path.join(downloads, name)
+            if not os.path.isdir(path):
+                continue
+            size = 0
+            for root, _dirs, files in os.walk(path):
+                for filename in files:
+                    try:
+                        size += os.path.getsize(os.path.join(root, filename))
+                    except OSError:
+                        pass
+            found.append((os.path.getmtime(path), name, path, size))
+    except OSError as error:
+        raise DiskError(f"cannot list {downloads}: {error}") from error
     found.sort(reverse=True)
     return found
 
@@ -120,6 +130,11 @@ def prune(downloads=None, keep=DEFAULT_KEEP, served=None, dry=False,
     parameters so a test can drive both faces of this without deleting anything or
     capturing stdout - the old tree's module took the same two, and for the same
     reason: this is the one deleting path, and a test has to be able to reach it.
+
+    A removal the filesystem refuses stops here as a `DiskError` (exit 3) naming
+    the build that would not go: the builds before it are gone and the ones after
+    it are not, so the one answer that must not be given is a finished table.
+    `out` has already printed the whole decision when that happens.
     """
     downloads = downloads or layout.downloads()
     lines, removals = plan(downloads, keep, served)
@@ -130,7 +145,10 @@ def prune(downloads=None, keep=DEFAULT_KEEP, served=None, dry=False,
     freed = sum(size for _path, size in removals)
     if not dry:
         for path, _size in removals:
-            remove(path)
+            try:
+                remove(path)
+            except OSError as error:
+                raise DiskError(f"cannot remove {path}: {error}") from error
     out(("would remove" if dry else "removed")
         + f" {len(removals)} build(s), {freed / 1e6:.1f} MB"
         + (" (dry run: nothing was deleted)" if dry else ""))
