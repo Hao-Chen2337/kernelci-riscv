@@ -60,9 +60,13 @@ def main(argv=None):
     # about this deployment.
     parser.set_defaults(api_url=os.environ.get("KCI_API_URL") or api_mod.PRODUCTION)
     args = parser.parse_args(argv)
-    run = config.run_from(args)
 
     try:
+        # `run_from` belongs inside the `try` with everything else that can refuse
+        # this command line: `--parameter bad` is a `ConfigError`, and raised from
+        # out here it escaped as a traceback and exit 1 - which this project reads
+        # as "the tests failed".  The refusal is infrastructure (3), like `table.py`.
+        run = config.run_from(args)
         return _run(args, run)
     except errors.KciError as exc:
         # An infrastructure failure is exit 3, not a traceback: the exit status
