@@ -95,7 +95,19 @@ def _main(argv=None):
         return errors.EXIT_PASS
 
     if command == "todo":
-        for build, test, reason in re_mod.todo(table, tests):
+        # **`--build` is read here, as it is by `jobs`, `pull` and `run`.**  It was
+        # parsed and then never mentioned again on this branch (nor on `summary`), so
+        # `table.py todo --build <id>` printed the whole table byte for byte - 98
+        # lines of every build's debt under a flag that named one build, exit 0, with
+        # nothing in the output to say the id had been ignored.  Filtering is what the
+        # flag means on the three sibling commands and what an operator typing it is
+        # asking for, so it narrows the same listing rather than becoming the one
+        # subcommand that refuses it.  An id the table does not hold is refused by
+        # `get()` exactly as `jobs` refuses it (`X no build ... in builds.json`, exit
+        # 3), and the named builds keep the table's own order (`Builds.__iter__`,
+        # newest first): a filter narrows a listing, it does not reorder it.
+        builds = build_mod.Builds(table.get(one) for one in args.build) if args.build else table
+        for build, test, reason in re_mod.todo(builds, tests):
             print(f"{build.build_id}  {test:<16} {reason or 'ready'}")
         return errors.EXIT_PASS
 
