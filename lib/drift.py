@@ -323,10 +323,46 @@ def _kept_config(url):
     return kept
 
 
+def _already_kept(url, raw, note):
+    """Is `var/configs/` already holding exactly `raw` for `url`, under exactly `note`?"""
+    try:
+        with open(_config_path(url), "rb") as handle:
+            kept = handle.read()
+        with open(_config_note(url), encoding="utf-8") as handle:
+            kept_note = json.load(handle)
+    except (OSError, ValueError):
+        return False
+    return kept == raw and kept_note == note
+
+
 def _keep_config(url, text):
-    """Keep `text` as the copy of `url`, with the note that makes it checkable."""
+    """Keep `text` as the copy of `url`, with the note that makes it checkable.
+
+    **An identical copy is not written again.**  The bytes are compared first, and
+    a file the workspace already holds is left completely alone - no temporary
+    file, no `os.replace`, and so no new mtime.  That matters because "read a page
+    and write nothing" is a promise this tree makes out loud, and a rewrite that
+    changes no byte still breaks it: a page render that re-downloads a `.config`
+    whose content is unchanged used to restamp every file it touched, which is
+    indistinguishable from a real update to anyone watching the workspace (`find
+    var -newermt ...`, a backup, an rsync) - the bytes and the sha256 stayed the
+    same, so nothing on screen could tell the reader it had happened.
+
+    The **note** is compared too, and not only the `.config`: a sidecar that
+    disagrees with the file beside it is what `_kept_config` refuses on the next
+    request, so leaving one in place would trade a needless rewrite now for a
+    refused read later.
+
+    Content that really changed is still written - that is the cache update this
+    function exists for - and so is a damaged or deleted copy: a `.config` edited
+    by hand matches neither `raw` nor its note and is repaired here, which is what
+    `_kept_config`'s own refusal points at ("delete it to download the config
+    again") and what `?fresh=1` asks for.
+    """
     raw = text.encode("utf-8")
     note = {"url": url, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+    if _already_kept(url, raw, note):
+        return
     for path, body in ((_config_path(url), text), (_config_note(url), json.dumps(note))):
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -352,7 +388,9 @@ def _config_text(api, url):
     operator asked for that in as many words ("我刷新一次界面起码我运行时候能够在外
     重新读文件").  A disk cache that ignored the control would be the same lie the
     in-process one is forbidden to tell, so the fetch happens and the cache is
-    rewritten rather than merely bypassed.
+    refreshed from it rather than merely bypassed - and refreshed *only* when the
+    bytes differ, so a fresh read of an unchanged config leaves the kept copy, and
+    its mtime, exactly where they were (`_keep_config`).
 
     Two things are **not** kept: a failure, and anything that fails its check.
     An HTTP error page parses to no options and `_refuse_empty` calls that "not a
