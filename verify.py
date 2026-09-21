@@ -52,7 +52,11 @@ if hasattr(sys.stdout, "reconfigure"):
 from lib import errors
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-TOOLS = os.path.join(ROOT, "docs", "gui-rework", "tools")
+# The checks' own scripts, inside the tree: they were under `docs/gui-rework/tools/`
+# while the rework was happening, and `docs/*` is gitignored - so a fresh clone had
+# no gate at all (five checks FAILED, not skipped, because `python3` exists and the
+# file does not).  They are published with the tree now; see docs/RUNBOOK.md.
+TOOLS = os.path.join(ROOT, "tools", "gate")
 PIPELINE = os.path.join(ROOT, "kernelci-pipeline")
 
 # `(name, argv, cwd, needs)` - `needs` is a path that must exist for the check to
@@ -104,7 +108,7 @@ def main(argv=None):
     """The command line: a bad flag is exit 3 with a message, never a traceback.
 
     The same shape every entry point of this tree keeps, and
-    `docs/gui-rework/tools/check_structure.py` checks it - including for this file,
+    `tools/gate/check_structure.py` checks it - including for this file,
     which it failed the first time it ran (the check was written, then pointed at
     its own author).
     """
