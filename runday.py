@@ -22,6 +22,7 @@ nothing twice.
 import argparse
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -49,13 +50,41 @@ def main(argv=None):
         return exc.exit_code
 
 
+def _day_filters(day: str):
+    """The API's own filters for the one calendar day `day`, in UTC.
+
+    The API is askable by revision field - `created__gte` / `created__lt`, both
+    ISO-8601 timestamps, the same spelling `Kbuilds` uses for its window - so a
+    day is the half-open range [00:00:00, next 00:00:00).  A closed
+    `created__lte` of `23:59:59` would drop a build created in the day's last
+    second, and a day that silently loses a build is the failure this flag was
+    fixed for.
+
+    The date is read here and not handed on: `--day not-a-date` used to be
+    accepted in silence, and an API asked for `created__gte=not-a-date` answers
+    `0` - a day with no builds and "nothing ran" reported as success.
+
+    UTC, and spelled out as such: the window is the day the API's own clock is
+    on, which is the clock `created` is stamped with and the one `_iso_ago()`
+    reads for the rolling window next to it.
+    """
+    try:
+        start = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise errors.ConfigError(
+            f"--day wants an ISO date (YYYY-MM-DD), got {day!r}") from None
+    return {"created__gte": start.strftime("%Y-%m-%dT%H:%M:%S"),
+            "created__lt": (start + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")}
+
+
 def _main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tree", default="riscv")
     parser.add_argument("--branch", default=None)
     parser.add_argument("--day", default="",
-                        help="ISO date to run (default: yesterday)")
-    parser.add_argument("--days", type=int, default=1)
+                        help="ISO date (YYYY-MM-DD, UTC) to run, instead of --days")
+    parser.add_argument("--days", type=int, default=1,
+                        help="how many days back to look (default: 1); --day names one day")
     parser.add_argument("--test", action="append", choices=sorted(job_mod.TESTS))
     parser.add_argument("--redo", action="store_true",
                         help="run even what the ledger already has a record for")
@@ -69,7 +98,18 @@ def _main(argv=None):
     run = config.run_from(args)
 
     api = config.client(args)
-    builds = kbuild.Kbuilds(api).getdays(args.tree, args.days, args.branch)[:args.limit]
+    # **One selector, not two.**  `--day` names a calendar day and the day
+    # *replaces* the rolling `--days` window; `--days` is what is left for a
+    # caller that names no day.  `days=0` is how `getdays` is told to bring no
+    # window of its own - which is exactly what lets the day's own
+    # `created__gte`/`created__lt` through, per its `extra` rule ("a
+    # `created__gte` in it is kept only when `days` asked for no window").  The
+    # reading this replaced was no reading at all: `args.day` was parsed and
+    # never mentioned again, so `--day 2020-01-01` sent yesterday's window and
+    # `--day not-a-date` was accepted in silence.
+    day = _day_filters(args.day) if args.day else None
+    builds = kbuild.Kbuilds(api).getdays(
+        args.tree, 0 if day else args.days, args.branch, extra=day)[:args.limit]
     records = None if args.redo else re_mod.Records.load()
     tests = tuple(args.test or ()) or job_mod.DEFAULT_TESTS
 
