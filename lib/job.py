@@ -338,8 +338,18 @@ class Jobs:
         return len(self.items)
 
     def print(self, stream=None):
-        for job in self.items:
-            job.print(stream)
+        """One line per job: `<build>  <test>  <reason>`, `ready` when it can run.
+
+        The third column is what `for_build()`'s docstring above has always
+        promised and what `Jobs.runnable()` has always computed - and nothing
+        printed: `table.py jobs` showed two columns while `table.py todo` showed
+        three, so the one command that answers "what can this build run" hid the
+        answer for every test that cannot run, which is the gap worth reporting.
+        The line is spelled exactly as `table.py todo` spells it (same padding,
+        same `ready`), because the two commands are the same table over two sets.
+        """
+        for job, reason in self.runnable():
+            print(f"{job.build_id}  {job.test:<16} {reason or 'ready'}", file=stream)
 
 
 # How often a run that has not answered yet says so in its own log file.  The
