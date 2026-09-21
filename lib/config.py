@@ -133,8 +133,27 @@ def parse_poll(argv=None):
     carry: `client()`, which reads `--api-url` off a parsed command line and refuses a URL
     string.  Rationale: docs/gui-rework/round2/06-worker.md F2 - passing `poll.api_url`
     there is what made every worker start exit 1.
+
+    **The usage line is named after the file that was typed.**  It said `prog="worker"`,
+    so `pull_worker.py --help` printed `usage: worker` and a refusal read `worker: error:
+    ...` - a name no operator can type, from the only entry point this parser serves.
+    Every other entry point leaves `prog` to argparse, which is argv[0]'s own name
+    (`table.py --help` says `table.py`), so this is that and nothing else.
+
+    **The run config is built here too, because this is where tuxrun is configured.**
+    The worker is the one process that really executes a job and it had no `--device` /
+    `--tuxrun-bin` / `--timeout` / `--parameter`: those argv were argparse's
+    `unrecognized arguments` (exit 2), so a worker could only ever run with
+    `RunConfig()`'s defaults.  The four are the fields the worker's own path reads -
+    `runner.argv()` the binary and the device, `Job.run()` the timeout, `runner`'s
+    parameters the extras - and they are spelled exactly as `run_flags()` spells them,
+    so one flag keeps one meaning on every entry point.  `--rootfs` and `--callback-url`
+    are deliberately left out: `RunConfig.rootfs` has no reader anywhere in this tree
+    (the guest disk comes from the definition's own artifact) and the worker's sinks
+    come from the definition the pipeline sent (`Poller.handle`), so both flags would be
+    accepted and quietly change nothing.
     """
-    parser = argparse.ArgumentParser(prog="worker")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--api-url", default=None)
     parser.add_argument("--platform", default=DEFAULT_DEVICE,
                         help="only claim jobs for this platform (data.platform)")
@@ -147,11 +166,21 @@ def parse_poll(argv=None):
     parser.add_argument("--max-retries", type=_positive, default=5)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--since", default="")
+    # The run flags, for the jobs this process claims: `--platform` above is the
+    # claim filter, this is what tuxrun boots when a definition names no platform.
+    parser.add_argument("--device", default=DEFAULT_DEVICE,
+                        help="the device a job definition that names none runs on")
+    parser.add_argument("--tuxrun-bin", default=os.environ.get("TUXRUN_BIN", "tuxrun"))
+    parser.add_argument("--timeout", type=_positive, default=DEFAULT_TIMEOUT)
+    parser.add_argument("--parameter", action="append", default=[], metavar="K=V")
     args = parser.parse_args(argv)
-    return None, PollConfig(api_url=api_url(args.api_url), platform=args.platform,
-                            runtime=args.runtime, container_runtime=args.container_runtime,
-                            state_file=args.state_file, period=args.poll_period,
-                            max_retries=args.max_retries, once=args.once, since=args.since), args
+    run = RunConfig(device=args.device, tuxrun_bin=args.tuxrun_bin,
+                    timeout=args.timeout, params=_pairs(args.parameter))
+    poll = PollConfig(api_url=api_url(args.api_url), platform=args.platform,
+                      runtime=args.runtime, container_runtime=args.container_runtime,
+                      state_file=args.state_file, period=args.poll_period,
+                      max_retries=args.max_retries, once=args.once, since=args.since)
+    return run, poll, args
 
 
 def _positive(value):

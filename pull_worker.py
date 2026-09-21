@@ -53,8 +53,10 @@ def main(argv=None):
 def _main(argv=None):
     run, poll, args = config.parse_poll(argv)
     # The claim filters come from the poll config; what tuxrun runs in comes from
-    # the run config, built here from the same command line.
-    run = replace(run or config.RunConfig(), container_runtime=poll.container_runtime)
+    # the run config `parse_poll` built off the same command line.  The container
+    # runtime is the one field both configs carry, and this entry point's
+    # `--container-runtime` lands in the poll config, so it is taken from there.
+    run = replace(run, container_runtime=poll.container_runtime)
     # `args`, not `poll.api_url`: `client()` reads `--api-url` off a parsed command
     # line and refuses a URL string (its guard is load-bearing - see lib/config.py).
     api = config.client(args)
