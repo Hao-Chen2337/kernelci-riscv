@@ -127,14 +127,26 @@ class Builds:
                     build.make(entry["needs"])
 
     def __iter__(self):
-        return iter(self.items)
+        """Every build here, **newest first** - the order this table is read in.
+
+        `items` is in the file's own order, and `save()` writes the file with
+        `sort_keys=True`, so iterating the list directly meant build_id order:
+        `table.py todo` printed the oldest unrun pair first while `summary`
+        (`print()` below), `jobs` and `results.py` all print newest first, and
+        `todo | head -1` named the wrong end of the table.  The sort is here and
+        not in each reader because every reader of this table wants this order -
+        `print()` sorts by the same key, `newest()` takes the same maximum, and
+        two spellings of one order is how they drift apart.  A build the file
+        gives no `created` (an entry with no card) sorts last, as it did before.
+        """
+        return iter(sorted(self.items, key=_created, reverse=True))
 
     def __len__(self):
         return len(self.items)
 
     def print(self, stream=None):
-        """One line per build, newest first."""
-        for build in sorted(self.items, key=_created, reverse=True):
+        """One line per build, newest first - `__iter__`'s order, not a second one."""
+        for build in self:
             build.print(stream)
 
 
