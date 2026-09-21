@@ -59,6 +59,18 @@ def _main(argv=None):
     parser.add_argument("--api-url", default=None)
     args = parser.parse_args(argv)
 
+    # **A negative cap is not a cap.**  `--max-lines` reaches
+    # `lib/drift.py: lines()` as both a slice and a count, and the two disagree
+    # about the sign: `rows[:-1]` prints no row at all while `len(rows) -
+    # max_lines` *adds*.  Over a one-row list `--max-lines -1` therefore printed
+    # `... 2 more`, and an empty list printed `... 1 more`.  Refused here, before
+    # any read, for the reason `runday.py: --limit` and `prune.py: --keep` refuse
+    # theirs: exit 3 and one line beats a report whose arithmetic is wrong.
+    if args.max_lines < 0:
+        raise errors.ConfigError(
+            f"--max-lines must not be negative, got {args.max_lines} "
+            "(0 shows every row)")
+
     # **Half a pair of files is not "no files".**  This was `if both ... else`,
     # so one `--*-config` fell through to the API path and the answer was about
     # the network, never about the flag that was left out: `--older-config F`
