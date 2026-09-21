@@ -27,6 +27,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
 
 from lib import errors, layout
+from lib import job as job_mod
 from lib import re as re_mod
 
 
@@ -48,7 +49,16 @@ def main(argv=None):
 def _main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--build", default="")
-    parser.add_argument("--test", default="")
+    # The catalogue, never a list spelled out here: `table.py`, `runday.py` and
+    # `run_latest.py` all take their `--test` choices from `lib/job.TESTS`, and
+    # this command was the one that took anything.  `--test nosuchtest` exited 0
+    # with no output, which is this command's answer for "that test has no
+    # records" - so a typo was indistinguishable from an empty history.  The
+    # empty default is not a problem for `choices`: argparse only checks the
+    # values actually given, so no `--test` still means "every test", and a name
+    # that IS in the catalogue but has no records is still exit 0 (that is "I
+    # looked and there are none", not a bad argument).
+    parser.add_argument("--test", default="", choices=sorted(job_mod.TESTS))
     parser.add_argument("--list", action="store_true", help="the build ids the ledger has")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
