@@ -30,6 +30,8 @@ build, and how it maps to tuxrun arguments.  One table, one owner.
 """
 
 import os
+import threading
+import time
 from dataclasses import dataclass, field
 
 from . import build as build_mod
@@ -204,9 +206,18 @@ class Job:
         still produces an Outcome (infra, exit 3) and still writes the ledger,
         because the record most worth having is the failed run's.  A bug is a
         different thing: it is recorded first, then allowed to be loud.
+
+        **The run's log file exists while the run does.**  It used to be written
+        once, out of the console in hand, after tuxrun had answered - so a run
+        killed mid-flight (a hang, a SIGTERM on the activity, a reboot) left
+        nothing at all: no `logs/`, no record, and a screen whose only evidence
+        was one `running: …` line.  `_InFlight` now opens the file before tuxrun
+        starts and keeps it current until the console replaces it here, so an
+        interrupted run is still diagnosable.
         """
         started = _stamp()
         console = ""
+        flight = _InFlight(self._log_path(started))
         try:
             self.catalog()
             self.make()
@@ -214,6 +225,7 @@ class Job:
             self.workspace = layout.workspaces(f"{self.build_id}.{self.test}.{started}")
             os.makedirs(self.workspace, exist_ok=True)
             _announce(argv, label)
+            flight.start(label, argv)
             result = runner.execute(argv, cwd=self.workspace,
                                     timeout=self.timeout or config.timeout)
             console = result.console
@@ -225,11 +237,13 @@ class Job:
             # still written.
             outcome = Outcome.infra(str(exc), build_id=self.build_id, test=self.test)
         except Exception:
+            flight.stop()
             self._file(source, started, console,
                        Outcome(build_id=self.build_id, test=self.test, verdict="error",
                                exit_code=errors.EXIT_INFRA, detail="internal error"), sinks)
             raise
 
+        flight.stop()
         self._file(source, started, console, outcome, sinks)
         return outcome
 
@@ -244,7 +258,7 @@ class Job:
         outcome.build_created = self.build.kbuild.created if self.build else ""
         outcome.revision = self.build.kbuild.revision if self.build else {}
         outcome.artifacts_dir = self.build.path if self.build else ""
-        outcome.log = self._keep_console(console, outcome)
+        outcome.log = self._keep_console(console, self._log_path(started))
         # The ledger is unconditional and first: with no sinks at all, it is
         # still written, so "every run leaves a record" is not a caller's job.
         for one in (sinks if sinks is not None else (sink.Ledger(),)):
@@ -254,16 +268,26 @@ class Job:
             if note.startswith("NOT "):
                 print(f"! {self.id()}: {note}", flush=True)
 
-    def _keep_console(self, console, outcome):
-        """Archive the console out of the workspace; its path goes into the record.
+    def _log_path(self, started: str) -> str:
+        """Where one run's console is archived: `<build>.<test>.<start>` under `logs()`.
+
+        One spelling, used twice: `_InFlight` opens this file when the run starts,
+        and `_keep_console` puts the console in it when the run ends.  The name is
+        the existing contract (it is what the record's `log` field points at), so
+        nothing about it changes here - only *when* the file comes into being.
+        """
+        return layout.logs(f"{self.build_id}.{self.test}.{started}.log")
+
+    def _keep_console(self, console, path):
+        """Archive the console out of the workspace, at the path the run already opened.
 
         The console is the only copy of what a real run printed, so it is written
         before anything can delete the workspace - and failing to write it must
-        not cost the result.
+        not cost the result.  A run that printed nothing keeps the start line
+        `_InFlight` wrote, which is the one thing left to read about it.
         """
         if not console:
             return ""
-        path = layout.logs(f"{self.build_id}.{self.test}.{outcome.timestamp}.log")
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8", errors="replace") as handle:
@@ -316,6 +340,74 @@ class Jobs:
     def print(self, stream=None):
         for job in self.items:
             job.print(stream)
+
+
+# How often a run that has not answered yet says so in its own log file.  The
+# console cannot stream from here - `runner.execute` collects it in two pipes and
+# hands it over at the end - so this beat is what makes a run in flight a fact on
+# disk rather than a fact only the operator's scrollback holds.
+BEAT = 30
+# How long the beat is waited for when a run ends.  The thread is inside an
+# `Event.wait(BEAT)` or a write of a few dozen bytes, so it leaves at once; the
+# bound is there because nothing about a finished run may wait for a file.
+BEAT_JOIN = 5
+
+
+class _InFlight:
+    """One run's log file, on disk for as long as the run lasts.
+
+    `Job.run()` starts it before tuxrun does and stops it before the console is
+    archived, and what a reader finds in between is the line the operator already
+    saw (`running: …`, with the argv the run was really started with) followed by
+    one beat per `BEAT` seconds.  That is the difference between "still running"
+    and "was killed" - the question a hung run leaves unanswerable today, because
+    everything the run printed lives in this process's memory until it ends.
+
+    The file is at the path `_keep_console` will write, so a run that does end
+    leaves exactly what it always left: the marker and the beats are replaced by
+    the console, byte for byte.  Nothing here may raise - a log that cannot be
+    written is not a reason to lose a run - which is why every write is guarded
+    and `stop()` is safe on a run that never started one.
+    """
+
+    def __init__(self, path: str, beat: int = BEAT):
+        self.path = path
+        self.beat = beat
+        self._started = 0.0
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self, label: str, argv) -> "_InFlight":
+        """Create the file and start the beat; a failure to write leaves the run alone."""
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            with open(self.path, "w", encoding="utf-8", errors="replace") as handle:
+                handle.write(f"# {_stamp()} running: {label}: {' '.join(argv)}\n")
+        except OSError:
+            return self
+        self._started = time.monotonic()
+        self._thread = threading.Thread(target=self._beat, args=(label,), daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        """Stop the beat and leave the file for `_keep_console` to replace."""
+        self._stop.set()
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(timeout=BEAT_JOIN)
+
+    def _beat(self, label: str) -> None:
+        """Append one line per `beat` seconds, so the file grows while the run is waited for."""
+        while not self._stop.wait(self.beat):
+            if self._stop.is_set():       # `stop()` may have landed since the wait returned
+                return
+            try:
+                with open(self.path, "a", encoding="utf-8", errors="replace") as handle:
+                    handle.write(f"# {_stamp()} still running after "
+                                 f"{int(time.monotonic() - self._started)}s: {label}\n")
+            except OSError:
+                return                    # the workspace is gone; the run is not our business
 
 
 def _announce(argv, label):
