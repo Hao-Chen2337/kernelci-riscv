@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """The tuxrun argv, and running it: one spelling, never a shell.
 
-A timed-out run still returns the console it produced, and the whole process
-group is killed.
+A timed-out run still returns the console it produced, and both the whole process
+group and the container that outlived it are killed.
 
 接口形状（C++，只有声明）：include/kci/engine.hpp §11 Runner。
 """
 
+import contextlib
 import os
 import re
 import shlex
@@ -26,6 +27,16 @@ if TYPE_CHECKING:
 # gets on top of the job's own timeout before we stop waiting for it.
 TIMEOUT = 60 * 30
 GRACE = 180
+# How long the cleanup after a timeout waits for an answer: the pipes that
+# outlived the kill have this long to reach end-of-file, the container runtime
+# this long to remove the container, and the killed child this long to be reaped.
+# None of the three may be waited for without a bound - that is this bug.
+DRAIN = 20
+
+# The container runtimes a job is started with (`config.container_runtime`).
+# Their client is not in our child's process group, so the container it attached
+# to is the one thing `killpg` cannot reach and `_remove` has to name.
+CONTAINER_RUNTIMES = ("docker", "podman")
 
 # The two test types whose flag set differs from the others.  `tests.TESTS` owns
 # the catalogue; this module only knows how a name is spelled on the command line.
@@ -99,8 +110,11 @@ def execute(argv: Sequence[str], cwd: str | None = None,
 
     `returncode` is None when the timeout hit, and the console collected up to
     that point comes back either way - a timed-out boot is exactly when it is
-    worth reading.  A timeout kills the child's whole process group, because
-    tuxrun's container runtime outlives tuxrun itself.
+    worth reading.  A timeout kills the child's whole process group and the
+    container it started, because tuxrun's container runtime outlives tuxrun
+    itself; the wait that follows the kill is bounded (`_drain`), because a
+    writer that survived it is what used to hold this function - and the worker
+    calling it - on a pipe that never reached end-of-file.
     """
     process = subprocess.Popen(
         argv,
@@ -114,7 +128,7 @@ def execute(argv: Sequence[str], cwd: str | None = None,
         stdout, stderr = process.communicate(timeout=timeout + GRACE)
     except subprocess.TimeoutExpired:
         _kill(process)
-        stdout, stderr = process.communicate()
+        stdout, stderr = _drain(process)
         return Result(None, _console(stdout, stderr))
     return Result(process.returncode, _console(stdout, stderr))
 
@@ -211,11 +225,132 @@ def _kvm_tests(names: "Sequence[str] | str | None") -> list[str]:
 
 
 def _kill(process: subprocess.Popen) -> None:
-    """Kill the child's whole process group; start_new_session made it the leader."""
+    """Kill the child's whole process group, and the container it started.
+
+    `start_new_session` made the child the leader of a session, so `killpg`
+    reaches tuxrun and everything tuxrun started in that session - but not its
+    container runtime: tuxrun starts that client with `preexec_fn=os.setpgrp`
+    (`tuxrun.runtimes.Runtime.run`), so it is a process group of its own, and it
+    is the client that holds both the container and the write end of the pipes
+    we are still reading.  A killed tuxrun therefore left exactly that behind:
+    a live `docker run`, a container `Up` with a qemu booting inside it, and a
+    `communicate()` waiting for an end-of-file only that client could deliver.
+    The container tuxrun named on its command line is removed by name, and the
+    clients are read out of `/proc` *before* the kill - tuxrun is their parent
+    until it dies, and that is what makes them findable at all.
+    """
+    clients = _clients(process.pid)
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:  # already gone; the reap that follows is what matters
         pass
+    for runtime, container in clients:
+        _remove(runtime, container)
+
+
+def _drain(process: subprocess.Popen) -> tuple[str, str]:
+    """Whatever a killed run's pipes still hold, and the reap that goes with it.
+
+    One `communicate()`, bounded: it normally returns at once, because every
+    writer was killed and the pipes are at end-of-file - and it reaps the child
+    on its way out.  If a writer is still out there it returns at `DRAIN` anyway,
+    and what the reads had already collected comes back on the exception
+    (`TimeoutExpired` carries it, as bytes whether the pipes are in text mode or
+    not) instead of being waited for.  A console with a hole in it is worth more
+    than a run that never returns; `_reap` still takes the killed child off the
+    process table.
+    """
+    try:
+        return process.communicate(timeout=DRAIN)
+    except subprocess.TimeoutExpired as exc:
+        _reap(process)
+        return _decoded(exc.output, process), _decoded(exc.stderr, process)
+
+
+def _reap(process: subprocess.Popen) -> None:
+    """Take a killed child off the process table rather than leaving it a zombie."""
+    try:
+        process.wait(timeout=DRAIN)
+    except subprocess.TimeoutExpired:  # SIGKILL cannot be refused; a last resort
+        pass
+
+
+def _decoded(data: "bytes | None", process: subprocess.Popen) -> str:
+    """Output an abandoned `communicate()` had read, as the text its pipes hold.
+
+    Text mode is decoded at the *end* of `communicate()`, so what the exception
+    carries is still bytes - and `process.encoding` spells the locale's own
+    encoding as `"locale"`, which is `io.TextIOWrapper`'s word for it and not one
+    `bytes.decode` knows.  A hole is already the exception here, so undecodable
+    bytes are replaced rather than raised over.
+    """
+    if not data:
+        return ""
+    codec = process.encoding or "utf-8"
+    return data.decode("utf-8" if codec == "locale" else codec,
+                       process.errors or "replace")
+
+
+def _clients(pid: int) -> list[tuple[str, str]]:
+    """The containers *pid* started, as `(runtime, container)`; read while it lives."""
+    found = []
+    for child in _children(pid):
+        try:
+            with open(f"/proc/{child}/cmdline", "rb") as handle:
+                argv = [one.decode(errors="replace")
+                        for one in handle.read().split(b"\0") if one]
+        except OSError:
+            continue                  # it exited between the listing and this read
+        if not argv or os.path.basename(argv[0]) not in CONTAINER_RUNTIMES:
+            continue
+        # The container is named where tuxrun names it (`DockerRuntime.cmd`):
+        # `--name` and the name as two argv elements, before the image.
+        name = next((argv[at + 1] for at, one in enumerate(argv[:-1])
+                     if one == "--name"), "")
+        if name:
+            found.append((argv[0], name))
+    return found
+
+
+def _children(pid: int) -> list[int]:
+    """The pids whose parent is *pid*, from /proc; [] where /proc cannot be read."""
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return []
+    found = []
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", "rb") as handle:
+                stat = handle.read()
+        except OSError:
+            continue                  # it exited between the listing and this read
+        # `/proc/<pid>/stat` is `pid (comm) state ppid ...`, and the command name
+        # is parenthesised and may hold spaces and parentheses of its own, so the
+        # fields are read from after its last `)` - where [0] is the state.
+        try:
+            if int(stat[stat.rindex(b")") + 1:].split()[1]) == pid:
+                found.append(int(entry))
+        except (ValueError, IndexError):
+            continue                  # a process that stopped being readable
+    return found
+
+
+def _remove(runtime: str, container: str) -> None:
+    """Stop and delete the container a killed run left behind; never raises.
+
+    `rm -f` is the one call that covers the two states that container can be in:
+    running (the timeout landed on the boot), or created and never started (it
+    landed during the pull) - and `--rm` does not clean up after a client that
+    was killed rather than allowed to exit.  A failure here is not the run's
+    business: the timeout is already the answer to report, and the runtime may
+    simply be gone (a `--container-runtime` that is not installed).
+    """
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run([runtime, "rm", "-f", container], timeout=DRAIN, check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def _console(stdout: str, stderr: str) -> str:
