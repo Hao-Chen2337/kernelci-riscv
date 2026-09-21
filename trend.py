@@ -21,7 +21,8 @@ commit `?`, counted in the pass/fail line and tracked again as if they were
 history (`scripts/tools/regression_tracker.py` learned that the hard way).
 
 Exit status: 0 whatever the trend says (a red trend is a *result*), 3 when the
-API or the flags are impossible.
+API or the flags are impossible, and 0 when the reader closed the pipe early
+(`trend.py | head -1`): a `head` that has seen enough is not a failure.
 """
 
 import argparse
@@ -76,12 +77,41 @@ def as_records(jobs):
         for job in jobs])
 
 
+def _reader_left():
+    """The pipe was closed under us: point stdout at /dev/null and call it a day.
+
+    `trend.py | head -4` reads four lines and exits, and the write after that is
+    `BrokenPipeError` - which is how every Unix filter is used, not a fault.  It used
+    to escape `main()`: a traceback on stderr and **exit 120**, the code the
+    interpreter uses when it cannot flush stdout at shutdown, from a command whose own
+    docstring promises a traceback never means anything here.
+
+    Two steps, both from Python's own recipe for this (the `signal` module's note on
+    `SIGPIPE`).  The redirect comes **first**, because the interpreter flushes
+    `sys.stdout` once more on the way out and a second `BrokenPipeError` from that
+    flush is exactly the "Exception ignored in: <_io.TextIOWrapper name='<stdout>'>"
+    line that followed the traceback - the buffered tail now lands in `/dev/null`
+    instead.  Then 0: the exit status is this command's answer about the trend, and
+    the reader walking away early is not a verdict about anything.
+    """
+    try:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    except (OSError, ValueError, AttributeError):
+        # stdout with no file descriptor cannot have raised EPIPE, and one that
+        # refuses the redirect has nothing worth flushing.  The exit status stands
+        # either way, so this is not a second failure to report.
+        pass
+    return errors.EXIT_PASS
+
+
 def main(argv=None):
     try:
         return _main(argv)
     except errors.KciError as exc:
         print(f"X {exc}", file=sys.stderr)
         return exc.exit_code
+    except BrokenPipeError:
+        return _reader_left()
 
 
 def _main(argv=None):
