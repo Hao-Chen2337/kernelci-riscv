@@ -381,8 +381,27 @@ def _refuse_empty(options, where):
 
 
 def _read(path):
-    with open(path, encoding="utf-8", errors="replace") as handle:
-        return handle.read()
+    """One local `.config` as text; a path this cannot open is an INFRA failure.
+
+    **A `ConfigError`, not the `OSError`.**  `drift.py`'s `main()` answers a
+    `KciError` with one `X ...` line and that error's own exit status (3, infra);
+    an `OSError` it does not catch escapes as a traceback and the interpreter's
+    exit 1 - and 1 is this tool's *answer*, "the two configs differ".  So a
+    misspelled `--newer-config`, a `chmod 000` file or a directory handed to
+    `--older-config` was reported as a detected configuration regression, which
+    is the one false positive a caller gating on the exit status can act on; with
+    `--json` the traceback also went to stdout, where the caller was reading JSON.
+
+    The error is wrapped rather than caught and turned into "no drift" for the
+    same reason `_refuse_empty` exists: a read that did not happen must never be
+    an answer about the configs.  Naming the file and keeping the OS's own reason
+    is `sink.py:488`'s spelling of the same repair.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError as error:
+        raise ConfigError(f"config {path} is unreadable: {error}") from error
 
 
 def _name(one):
