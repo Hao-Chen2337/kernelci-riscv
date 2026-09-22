@@ -35,7 +35,7 @@ ANSI_RE = re.compile(
 # One top-level TAP line: "<timestamp> ok 3 selftests: riscv: hwprobe".  The
 # prefix tolerates a leading token (LAVA stamps every line) and the patterns
 # tolerate whitespace splits and glued variants ("notok", "NOT OK", "not  ok").
-_TAP_LINE = r"(?m)^[ \t]*(?:\S+ )?"
+_TAP_LINE = r"^[ \t]*(?:\S+ )?"
 
 # An argparse refusal exits 2; that is the only return code this module reads.
 REFUSED_RC = 2
@@ -243,7 +243,7 @@ def _tap_pattern(label: str) -> re.Pattern[str]:
         _TAP_LINE + rf"not[ \t\r]*ok \d+ {marker}\s+(?P<failed>\S+)"
         + "|" + _TAP_LINE + rf"(?<!not)ok \d+ {marker}\s+(?P<passed>\S+)(?P<rest>.*)"
         + "|" + _TAP_LINE + rf"# {marker}\s+(?P<started>\S+)",
-        re.IGNORECASE,
+        re.IGNORECASE | re.MULTILINE,
     )
 
 
