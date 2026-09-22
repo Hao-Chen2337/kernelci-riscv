@@ -177,11 +177,12 @@ class ActionsMixin:
             # reader who presses it is asking for a window the file cannot overrule.
             #
             # Refused rather than repaired, and refused *here* rather than at the page:
-            # `poller.iso_ago()` reads one shape of stamp and treats every other value
-            # as "now", so a stamp of another shape is not an error the worker reports -
-            # it silently scans the last 15 minutes, which is the window the reader was
-            # trying to widen.  `_iso_stamp` is the one judge, and an empty value is
-            # simply the flag left out (the page's "(no `--since`)" choice).
+            # `poller.iso_ago()` reads the API's own stamp shapes (`poller.parse_iso`)
+            # and treats every other value as "now", so a stamp of another shape is not
+            # an error the worker reports - it silently scans the last 15 minutes,
+            # which is the window the reader was trying to widen.  `_iso_stamp` is the
+            # one judge, and an empty value is simply the flag left out (the page's
+            # "(no `--since`)" choice).
             since = _first(form, "since")
             if since and not _iso_stamp(since):
                 raise errors.ConfigError(t(lang, "error.not_a_stamp", key="since",

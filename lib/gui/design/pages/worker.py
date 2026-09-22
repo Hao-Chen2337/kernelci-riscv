@@ -269,7 +269,7 @@ def _picked(view) -> dict:
 
     `since` is normalised through `forms._iso_stamp`, the one judge of that flag's shape
     (`Gui.command` refuses a stamp it cannot read, and `poller.iso_ago()` would silently
-    read any other shape as "now" - the 15-minute window the flag exists to widen).  The
+    read one it cannot parse as "now" - the 15-minute window the flag exists to widen).  The
     raw value is kept beside it so the button can be blocked by the sentence the POST
     would have answered with, instead of quietly running a narrower window.
     """

@@ -20,7 +20,7 @@ import urllib.parse
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING
 
-from .. import errors
+from .. import errors, poller
 from ..build import ARTIFACTS
 from ..i18n import DEFAULT_LANG, t
 from ..kbuild import KBUILD_JOB
@@ -244,43 +244,29 @@ def _iso_days(days: int) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - days * 86400))
 
 
-# The stamp shapes `_iso_stamp` will read, in the order they are tried: the canonical
-# one, and the near misses a reader copies off this console.  `/worker`'s `created`
-# column prints `created[:16]` (`2026-09-20T08:20`), the API's own node timestamps
-# carry microseconds, and the wire's stamps end in `Z` - so a value taken from the page
-# is a value the page must accept, or the refusal would be about punctuation rather
-# than about the timestamp.
-ISO_STAMP_SHAPES = ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M")
-
-
 def _iso_stamp(value: str) -> str:
     """One timestamp as the stamp the poller reads, or `""` for anything it cannot.
 
-    `--since` is handed to `poller.iso_ago()`, and that function parses **one** shape
-    (`%Y-%m-%dT%H:%M:%SZ`, `strptime`'s `%S` being whole seconds) and treats every
-    other string as "now" - deliberately, so a bad cursor cannot stop the worker.
-    That tolerance is what makes a validator necessary here: `?since=2026-09-20 08:20`
-    would not be refused by the worker, it would be *silently* replaced by a 15-minute
-    window, which is precisely the window the reader was trying to widen.  A value this
-    page cannot honour is refused (`error.not_a_stamp`), never printed into an argv the
-    child would ignore.
+    `--since` is handed to `poller.iso_ago()`, so which stamps can be read at all is
+    `poller.parse_iso`'s to say, and this asks it rather than restating the list - the
+    page and the worker disagreeing about the shape is the failure being guarded
+    against, and two copies of the answer would be a way to have it.  What is left
+    here is the refusal.  A stamp `parse_iso` cannot read is not an error the worker
+    reports: it is *silently* replaced by a 15-minute window, which is precisely the
+    window `?since=2026-09-20 08:20` was passed to widen.  So a value this page cannot
+    honour is refused (`error.not_a_stamp`), never printed into an argv the child
+    would ignore.
 
-    The noise a stamp arrives with - the trailing `Z` the wire uses, and the fractional
-    seconds **every API node timestamp carries** (`created`/`updated` are
-    `2026-09-20T08:20:00.123456`) - is stripped before parsing, and the result is
-    normalised to the canonical shape, so what the page prints is a value the worker's
-    own parser reads back as the same instant.  A fractional part left in would not be
-    an error either: `strptime` is not asked to read it here, and `iso_ago` would fall
-    back to "now" on the whole string - the silence this function exists to prevent.
+    The value is re-spelled in the canonical shape rather than echoed back, so what
+    the page prints is one shape whichever shape was pasted - and a shape the reader
+    is likelier to recognise.  The pasted shape is rarely the canonical one: `/worker`'s
+    `created` column prints `created[:16]` (`2026-09-20T08:20`), and the API's own node
+    timestamps carry microseconds and no `Z`.
     """
-    text = str(value or "").strip().removesuffix("Z")
-    text = text.split(".", 1)[0]
-    for shape in ISO_STAMP_SHAPES:
-        try:
-            return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.strptime(text, shape))
-        except ValueError:
-            continue
-    return ""
+    parsed = poller.parse_iso(value)
+    if parsed is None:
+        return ""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(parsed))
 
 
 def _axis_pairs(name: str, path: str, value: str) -> list[tuple[str, str]]:

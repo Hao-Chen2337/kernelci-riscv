@@ -35,6 +35,7 @@ What it guarantees, each of which was a real bug once:
 接口形状（C++，只有声明）：include/kci/flow.hpp §15 Poller。
 """
 
+import calendar
 import fcntl
 import json
 import os
@@ -468,15 +469,49 @@ class _Forward(sink.Sink):
         return " ".join(note for note in notes if note)
 
 
+# The shapes `parse_iso` reads, in the order they are tried.  `_iso_now` and the
+# console write the canonical one, but the stamp this parse is actually handed the
+# most is neither of those: the cursor is a **node timestamp straight off the API**,
+# and every one of those carries fractional seconds and no `Z`
+# (`2026-09-20T08:20:00.123456`).  The console's `/worker` column prints a third
+# near miss, `created[:16]`, which is why the seconds are optional here too.
+ISO_SHAPES = ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M")
+
+
+def parse_iso(stamp):
+    """The instant `stamp` names, as epoch seconds - or None for anything unreadable.
+
+    The cursor is stored *raw* and read here, rather than normalised on the way into
+    the state file.  `_drain` keeps it up to date by string comparison (`node.created
+    > newest`), and those comparisons are only meaningful while both sides are the
+    API's own spelling: a cursor re-spelled with a trailing `Z` would sort *above*
+    every node stamp sharing its second, since `Z` > `.`.  So the mismatch is
+    repaired at the read, where it is a mismatch, and not at the write, where it
+    would quietly become an ordering bug.
+
+    The fractional part and the trailing `Z` are noise rather than information - the
+    feed's own stamps are whole seconds.
+    """
+    text = str(stamp or "").strip().removesuffix("Z").split(".", 1)[0]
+    for shape in ISO_SHAPES:
+        try:
+            # `timegm`, not `time.mktime(parsed) - time.timezone`: the stamp is UTC
+            # by construction (`Z`, or the API's own clock).  The mktime form reads
+            # it as local time and then corrects by the *standard* offset, which is
+            # an hour out wherever DST is in effect.
+            return calendar.timegm(time.strptime(text, shape))
+        except ValueError:
+            continue
+    return None
+
+
 def iso_ago(stamp, seconds):
     """`stamp` minus `seconds`, in the ISO shape the events feed wants.
 
     An unparsable stamp is treated as "now": a bad cursor must not stop the
     worker, and scanning a window twice is free - `seen` answers it.
     """
-    try:
-        parsed = time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")
-        base = time.mktime(parsed) - time.timezone
-    except (TypeError, ValueError):
+    base = parse_iso(stamp)
+    if base is None:
         base = time.time()
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(base - seconds))
