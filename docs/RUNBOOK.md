@@ -162,7 +162,7 @@ therefore which database) a deployment owns; every port is overridable:
 ```bash
 export KCI_COMPOSE_PROJECT=kcirv-clean KCI_API_PORT=18001 KCI_STORAGE_PORT=18002 \
        KCI_CB_PORT=18003 KCI_SSH_PORT=18022 KCI_MONGO_PORT=18017 KCI_SERVE_PORT=18999 \
-       KCI_API_URL=http://127.0.0.1:18001
+       KCI_API_URL=http://127.0.0.1:18001 KCI_RESULTS_DIR=var/results-kcirv-clean
 ```
 
 Defaults are 8001 api, 8002 storage, 8003 callback, 8022 ssh, 8017 mongo, 8999 artifact server.
@@ -170,6 +170,26 @@ Every port is probed before a service starts on it, and a conflict is refused by
 the holder and the `KCI_*_PORT` variable that moves this deployment. The two cannot run *at the
 same time* (kernelci-api's compose file hardcodes `container_name`), so stop the first stack
 before starting the second.
+
+`$KCI_RESULTS_DIR` is what keeps the two ledgers apart; without it the second deployment writes
+its history into the first one's `var/results/`. It moves that directory alone - `var/state/`,
+`var/serve/` and `var/downloads/` stay shared by both.
+
+Two things the second deployment cannot inherit, and neither of them is a port:
+
+- **The ssh image.** The `ssh` service carries `build:` and no `image:`, so compose names its
+  image after the project (`<project>-ssh`) and builds it - which on a dockerd with no registry
+  route dies on `debian:bullseye-slim`. Tag what is already on the machine instead
+  (`docker tag kcirv-ssh:latest kcirv-clean-ssh:latest`) and compose reuses that.
+- **An admin, and a token, in the new database.** The initial admin and `KCI_API_TOKEN` are made
+  by `deploy/instance-init.sh` against the database that existed *when it ran*, so the second
+  deployment starts with an empty one and its scheduler dies on `401 Unauthorized` at
+  `/latest/subscribe/node` - which is what makes `stack.sh --seed` exit 1 while every container
+  is up and healthy. With this `KCI_*` environment still exported, run `deploy/instance-init.sh`
+  and then `deploy/stack.sh --seed` **again**: the first mints the admin and the token, the second
+  is what starts the scheduler that needed it. Both `.env` files are shared, so the way back to
+  the first deployment is the same two commands with the first deployment's ports - its
+  `stack.sh --seed` keeps failing on `401` at port 8001 until they are run.
 
 ## The gate
 
@@ -225,8 +245,10 @@ message rather than a traceback.
 
 ## Where the rest is
 
-- `python3 <entry>.py --help` - the flags, from the entry itself. The deployment scripts
-  (`deploy/setup.sh`, `deploy/stack.sh`, `deploy/stop.sh`) document themselves the same way.
+- `python3 <entry>.py --help` - the flags, from the entry itself. The deployment scripts do
+  **not** take one, so `deploy/stop.sh --help` stops the stack and `deploy/setup.sh --help` runs
+  the setup - both ignore the argument rather than refusing it. Their usage is the header comment
+  at the top of each script; `deploy/stack.sh` is the one with a `# Usage:` line.
 - **The test profile** the scheduler reads is YAML in the cloned upstream, applied by
   `config/pr1-config.patch`: the three `*-riscv-pull-labs` jobs in
   `kernelci-pipeline/config/jobs-pull-labs.yaml`, the `pull-labs-riscv` runtime in
