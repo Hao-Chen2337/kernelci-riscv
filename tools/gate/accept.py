@@ -202,6 +202,71 @@ def _table_row_counts(markup: str) -> set[int]:
     return counts
 
 
+# One `±` cell's three numbers.  `ui.delta` writes them as added / removed / changed
+# inside their own spans, and that is the only place the page says how far apart two
+# builds are - so it is where a reader wanting to know which pair is worth opening has
+# to look, and where this gate looks too.
+_DELTA_CELL = re.compile(
+    r'<span class="delta"><span class="plus">\+(\d+)</span>'
+    r'<span class="minus">&minus;(\d+)</span><span class="same">~(\d+)</span></span>')
+
+
+def _delta_total(cell: str) -> int:
+    """`a + r + c` for one `±` cell, or 0 when the cell carries no number at all.
+
+    A cell with no number is not a zero: it says "the first row in this order",
+    "beyond the delta cap (n)", or names the engine's refusal as a door.  None of
+    those is a difference there is anything to go and look at.
+    """
+    found = _DELTA_CELL.search(cell)
+    return sum(int(one) for one in found.groups()) if found else 0
+
+
+def _pick_rows(markup: str) -> list[tuple[str, int, int]]:
+    """`(build_id, above, below)` per picks-table row, each cell read as its total.
+
+    The pairing is the table's own order: the cell drawn *above* a build is its
+    comparison with the row before it, and the cell *below* is its comparison with
+    the row after - exactly how `analysis._edge_cell` fills them (`delta_up` from
+    `picks[at - 1]`, `delta_down` from `picks[at + 1]`).  Read out of the document
+    rather than rebuilt, because the ids are the row's own and the order is the page's.
+    """
+    table = re.search(r'(?s)<table[^>]*class="[^"]*picks[^"]*".*?</table>', markup)
+    if not table:
+        return []
+    rows = []
+    for row in re.findall(r"(?s)<tr\b.*?</tr>", table.group(0))[1:]:
+        box = re.search(r'name="pick" value="([^"]+)"', row)
+        cells = re.findall(r"(?s)<td\b.*?</td>", row)[-2:]
+        if box and len(cells) == 2:
+            rows.append((box.group(1), _delta_total(cells[0]), _delta_total(cells[1])))
+    return rows
+
+
+def _widest_pair(markup: str):
+    """The pair this listing advertises as differing most: `(first, second, total, where)`.
+
+    `None` when the listing advertises no difference at all - which is a fact about the
+    instance and not a defect in the page, so the `X2` check says it rather than failing
+    on it.  The two ids are in the table's order and *not* in the engine's oldest-first
+    one: the order is the reader's sort, and this gate has no way to tell which end is
+    which.  It does not need to - the comparison prints the same option names whichever
+    way round it is asked, because a difference is symmetric even though its `+`/`−`
+    signs are not (measured on both directions of the same pair).
+    """
+    rows = _pick_rows(markup)
+    best = None
+    for at, (build_id, above, below) in enumerate(rows):
+        for other, total, side in ((at - 1, above, "above"), (at + 1, below, "below")):
+            if not total or not 0 <= other < len(rows):
+                continue
+            if best is None or total > best[2]:
+                first, second = ((rows[other][0], build_id) if other < at
+                                 else (build_id, rows[other][0]))
+                best = (first, second, total, f"row {at + 1}'s {side} `±` cell")
+    return best
+
+
 def check(results, name, ok, evidence):
     """Record one verdict; `evidence` is what a reader needs to believe it."""
     results.append((name, bool(ok), evidence))
@@ -563,14 +628,23 @@ def main(argv=None) -> int:
     # The summary is three numbers; a reader who wants detail needs the option
     # names themselves.
     #
-    # Asked of a **named pair**, not of whatever the page defaults to.  The default
-    # pair is a product decision and it moves: when this check counted the default
-    # it went 120 names -> 1, which looked like a regression and was not - the merge
-    # had simply chosen two builds that differ by a single option, so "1" was the
-    # honest answer for that pair.  What the operator asked for is the *capability*
-    # ("显示太少了... 也可以稍微详尽一点，或者说可以打开一个文本查看"), so this asks the
-    # page for two builds known to differ by hundreds of options and counts what
-    # comes back.  Skipped, loudly, when the instance does not hold that pair.
+    # **The pair is discovered, not named.**  This check used to carry two node ids
+    # measured where it was written (`6aa3689720239ade90209d50` /
+    # `6aac1402fc1857a999e11514`, 616/618/99 names) and ask for those.  That quietly
+    # made it a check on *that database*: a deployment holding neither id - every
+    # fresh one, this tree's own `deploy/` recipe among them - was told FAIL for
+    # "asked for a pair you do not have", which is not a defect in the page.  The
+    # comment above it claimed a skip there, and the harness has no way to make one
+    # (`check()` writes PASS or FAIL and nothing else).
+    #
+    # What the *capability* needs is two builds that differ by something, and the
+    # listing already says which pairs do: every `±` cell prints `+a −r ~c`, so the
+    # widest pair on this instance is in a page this gate had already fetched.  So the
+    # check takes that pair and asks the page to print exactly the names it promised -
+    # a stronger reading of the same requirement than "at least fifty", and one that
+    # holds at any scale instead of only on a database with hundreds of differences.
+    # Measured here (widest pair `~1`): every advertised `+a −r ~c` prints `a + r + c`
+    # distinct `CONFIG_` names, 4 of 4 pairs.
     #
     # **Round 2 moved the detail one click away, on purpose.**  Printing 265 KB of
     # `CONFIG_` names inline - 67 % of `/analysis` - under a page whose question is
@@ -579,41 +653,53 @@ def main(argv=None) -> int:
     # comparison is printed there.  The capability is unchanged; the check follows
     # the link, because a check that insisted on the old placement would be testing
     # the layout rather than the requirement.
-    big = ("6aa3689720239ade90209d50", "6aac1402fc1857a999e11514")   # 616/618/99 measured
-    wide = Page(args.base, "/analysis", "en", args.timeout,
-                query=f"older={big[0]}&newer={big[1]}")
-    wide_options = re.findall(r"CONFIG_[A-Z0-9_]+", wide.body)
-    # The doors the page draws for its config list (`table.picks`, one per row: each row's
-    # `±` is a door).  This checks **two** things with them: that the door a reader of the
-    # config list clicks really opens a comparison, and that a pair known to differ by
-    # hundreds of options prints the names.  Following an arbitrary row's door and
-    # demanding fifty names would be wrong - neighbours in a list are usually *similar*,
-    # and the page is honest about that: `+0 −0 ~0` is the true answer for most adjacent
-    # pairs, and the neighbour cell says so rather than inventing a difference.
-    picks = re.search(r'<table[^>]*class="[^"]*picks[^"]*".*?</table>', wide.body, re.DOTALL)
-    config_doors = [html.unescape(one).split("#")[0] for one in
-                    re.findall(r'href="(/analysis/[^"#]+)', picks.group(0))] if picks else []
-    door_error = ""
-    if config_doors:
-        follow = config_doors[0]
-        path, _, query = follow.partition("?")
-        detail = Page(args.base, path, "en", args.timeout, query=query)
-        if detail.status != 200:
-            door_error = f" but the door {follow} answered {detail.status or detail.error}"
+    widest = _widest_pair(read["/analysis"]["en"].body)
+    # The doors the page draws for its config list (`table.picks`): a door appears on a
+    # row whose pair the engine put **no number** beside - past the delta cap, or refused
+    # - so for those rows the door is the only way to the comparison at all, and it has
+    # to open.  A door names its pair in the query (`?vs=...`), which is what tells it
+    # apart from the row's own `/analysis/<id>` link: the earlier version of this check
+    # counted those plain links as doors and so "found" three where this page draws none.
+    # Following an arbitrary row's door and demanding names would be wrong - neighbours
+    # in a list are usually *similar*, and the page is honest about that (`+0 −0 ~0` is
+    # the true answer for most adjacent pairs), which is why only the count above is
+    # compared against a number.
+    table = re.search(r'(?s)<table[^>]*class="[^"]*picks[^"]*".*?</table>',
+                      read["/analysis"]["en"].body)
+    doors = [html.unescape(one) for one in
+             re.findall(r'href="(/analysis/[^"]*\?[^"]*)"', table.group(0))] if table else []
+    door_ok, door_note = True, ""
+    if doors:
+        path, _, query = doors[0].partition("?")
+        opened = Page(args.base, path, "en", args.timeout, query=query.split("#")[0])
+        if opened.status == 200:
+            door_note = f"; the door {doors[0]} opens ({opened.status})"
+        else:
+            door_ok = False
+            door_note = (f"; the door {doors[0]} answered"
+                         f" {opened.status or opened.error}")
+    if widest is None:
+        # Nothing to open, and that is a fact about this instance rather than a fault in
+        # the page: with no pair differing by anything there is no detail to show.  Said
+        # out loud, because "no pair differs" and "the names did not print" would
+        # otherwise read the same from a green line.
+        held = len(_pick_rows(read["/analysis"]["en"].body))
+        check(results, "X2 drift shows the changed options", door_ok,
+              f"no pair in the picks table differs, so this instance has no comparison"
+              f" to open ({held} build(s) listed){door_note}")
     else:
-        door_error = " and no door into a comparison was drawn"
-    detail = Page(args.base, "/analysis/" + big[0], "en", args.timeout, query=f"vs={big[1]}")
-    wide_options = re.findall(r"CONFIG_[A-Z0-9_]+", detail.body)
-    where = f"on /analysis/{big[0][:12]} (the pair's own comparison page)"
-    if not wide_options:
-        check(results, "X2 drift shows the changed options", False,
-              f"asked for the {big[0][:12]}..{big[1][:12]} pair and got no CONFIG_ name; "
-              f"the page shows counts and no detail{door_error}")
-    else:
-        check(results, "X2 drift shows the changed options", len(wide_options) >= 50,
-              f"{len(wide_options)} CONFIG_ name(s) for the named pair {where}; "
-              f"the config list draws {len(config_doors)} door(s) into comparisons"
-              f"{door_error}")
+        first, second, want, where = widest
+        shown = Page(args.base, "/analysis/" + first, "en", args.timeout,
+                     query=f"vs={second}")
+        names = sorted(set(re.findall(r"CONFIG_[A-Z0-9_]+", shown.body)))
+        check(results, "X2 drift shows the changed options", len(names) == want and door_ok,
+              f"{len(names)} CONFIG_ name(s) on /analysis/{first[:12]}?vs={second[:12]}, "
+              f"which is the {want} the {where} advertises"
+              + (f" ({', '.join(names[:4])}{', ...' if len(names) > 4 else ''})"
+                 if names else "")
+              + ("" if len(names) == want else
+                 f" - the page's own `±` says {want}, its detail printed {len(names)}")
+              + door_note)
 
     # --- S7: a build with bytes must not read as "no card" -----------------
     # Two halves own this: a pull must register its card (so no new orphans), and
