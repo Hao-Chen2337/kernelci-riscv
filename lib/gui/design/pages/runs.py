@@ -41,9 +41,21 @@ the fourteen build axes are questions about an API *node* - there is no `arch` o
 state on the request's check (`check.kind`), while `state` is read as the `Filter` field
 it shares with `/builds`.  A page that read neither would draw the folded default, ignore
 a `?kind=` the reader typed, and answer a question the URL did not ask - which is the one
-thing a filter bar must never do.  `api` is carried and drawn for the same reason it was
-carried before: `/runs` reads no API, but the key decides which stack the *next* page
-reads, and this page's own links hand it on.
+thing a filter bar must never do.  `api` is carried and **no longer drawn**: `/runs` reads
+no API, but the key decides which stack the *next* page reads, and this page's own links
+hand it on - which is the half that was ever load-bearing.  Drawn as well, it was a select
+whose two options changed nothing: an activity is this deployment's own process tree, so
+`?api=local` and `?api=production` rendered the same fifty-one rows line for line.  A
+control that narrows nothing is worse than no control, because a reader who sets it
+believes the table narrowed (`_bar`'s `hidden=` is the half that keeps it).
+
+**Both axes are sets, and both boxes are chips.**  `kind` always was one - the fold makes
+a set the default - and `state` became one when the `Filter` field grew the multi-valued
+spelling `/jobs` asked for.  A select drew a seven-kind default as one `(current: …)`
+word, and compared a comma list of states against a single row's state, so the box could
+not say what the table was doing and the table answered nothing.  `kind` being page state
+and not a `Filter` field is why the chips needed one thing from the engine:
+`schema.MULTI_PAGE_STATE` names the page-state keys read as a set (`design/serve.py`).
 
 **Nothing here is computed.**  A state is the record's own word, a kind is the
 activity's own field, an age is `Run.age()`'s and an exit code is `run.json`'s.  The two
@@ -51,12 +63,12 @@ numbers this page prints are both counts of the rows it was handed - the table's
 count and each group's - so a caption and the rows under it cannot disagree.
 """
 
-from functools import partial
 
 from .... import layout
 from .... import run as run_mod
-from ....i18n import CATALOGUE
-from ...schema import FOLDED_KINDS, KIND_ORDER, ROUTE_KEYS
+from ...forms import _names
+from ...schema import FOLDED_KINDS, KIND_ORDER, ROUTE_KEYS, _labels
+from ...urls import _carried
 from .. import ui, words
 
 # The keys this page reads: `kind` and `state` are its question, `api` is the stack it
@@ -78,23 +90,38 @@ def runs(view) -> str:
     """The activities screen: the bar, the fold it states, and the table it draws."""
     rows = list(view.rows.get("runs") or ())
     stated = str(getattr(view.check, "kind", "") or "")
+    # **A state is one of a set, not one word.**  `state` is the `Filter` field this page
+    # shares with `/builds`, and `Filter.from_query` reads a multi-valued axis as every
+    # value the query carried (`_named_many`), so `?state=done,failed` arrives here as the
+    # comma-joined `"done,failed"` - a string no single row's state ever equals.  Compared
+    # with `==` the page answered an empty table to a question that reads as "either",
+    # with nothing said: the silent 0 this package refuses everywhere else, and the worse
+    # for arriving where a select box used to **refuse the comma outright** - the change
+    # that made the field a set turned one loud refusal into one quiet wrong answer.
+    # Membership is the fix and the spelling `Filter.accepts` already uses for the same
+    # question one page over.
     state = str(getattr(view.check, "state", "") or "")
+    states = {one for one in _names(state)}
     folded = not stated and bool(FOLDED_KINDS)
     kinds = stated or (_unfolded(rows) if folded else "")
-    wanted = {one for one in kinds.split(",") if one}
+    wanted = {one for one in _names(kinds)}
     shown = _grouped([one for one in rows
                       if (not wanted or str(one["kind"]) in wanted)
-                      and (not state or str(one["state"]) == state)])
-    opens, counts = _groups(shown)
+                      and (not states or str(one["state"]) in states)])
+    # Only the counts, and over the whole list: `_panel` asks `_groups` for the opening
+    # rows of the page it draws, and a caption's number is a fact about the list.
+    _, counts = _groups(shown)
     disk = sorted({str(one["kind"]) for one in rows})
     # Every activity is on screen exactly when the filter removed none of them: an empty
     # `kind` means "every kind" (`run_rows`' own rule), and a stated one that covers
     # everything on disk hides nothing either.
-    whole = not state and (not wanted or set(disk) <= wanted)
+    whole = not states and (not wanted or set(disk) <= wanted)
     body = [_bar(view, kinds, state)]
     if folded and kinds:
         body.append(_fold_line(view, ",".join(disk)))
-    body.append(_panel(shown, opens, counts, whole, view.lang))
+    # This page's own address, filter and all: what each row's 日志 tab leads back to
+    # when the reader presses "back to the list" (`ui.log_link`).
+    body.append(_panel(view, shown, counts, whole, view.url()))
     return "".join(body)
 
 
@@ -128,6 +155,12 @@ def _groups(rows) -> tuple:
     The caption is drawn inside the opening row's first cell, so the number of `<tr>`s on
     this page keeps meaning the number of activities - the count a caption row would
     silently change.
+
+    The two answers are asked of different rows, and the caller says which: `opens` is
+    read off the page being drawn (the page's first row of a kind is the one that carries
+    the caption, or a page that starts mid-group would draw its rows under the previous
+    page's heading), while `counts` is read off the whole list (a caption says how many
+    of that kind there are, not how many of them happen to be on this page).
     """
     opens, counts = {}, {}
     for one in rows:
@@ -138,17 +171,45 @@ def _groups(rows) -> tuple:
 
 
 def _bar(view, kinds, state) -> str:
-    """The filter bar: the two axes this page reads, the stack it carries, and apply."""
+    """The filter bar: the two axes this page reads, the stack it carries, and apply.
+
+    **Both axes are sets, so both are chips.**  `kind` because this page's own default
+    is already seven of the eight kinds, and a select drew that as one `(current: a,b,…)`
+    entry: the table was filtered and the box did not say so.  `state` because `runs()`
+    compares a row's state by membership now - the select that used to draw it sent one
+    value, so a comma list was accepted and then matched nothing (`runs()` says why the
+    empty table was the bug and not the filter).
+
+    A value neither menu offers renders as a chip anyway: `ui.multi` draws the chosen
+    set, not the offered one, which is the property `_kind_options` used to hand-roll by
+    appending a `(current: …)` option so the browser could not fall back to the first
+    one.  With chips there is no fallback to prevent.
+
+    **`api` used to be a third field here and is gone.**  It was a select with two
+    options that changed nothing: `/runs`'s rows are the activity tree (`var/runs/` and
+    the worker's own state), which is this deployment's and not the remote API's, so
+    `?api=local` and `?api=production` rendered the same fifty-one rows line for line -
+    a control that answers a question the page does not ask is worse than no control,
+    because a reader who sets it believes the table narrowed.  The *key* still rides
+    (`_carried` below), which is what it is for: the rest of the console is on one API
+    and this page must not be the one that changes it.
+    """
     lang = view.lang
-    label = partial(ui.word, lang=lang)
     return ui.filters(
         ui.field(words.both(lang, "word.kind"),
-                 ui.select("kind", _kind_options(view, kinds), kinds, labeler=label))
+                 ui.multi("kind", _names(kinds), _offered(view, "kinds"),
+                          placeholder="state.any", label="word.kind", lang=lang))
         + ui.field(words.both(lang, "word.state"),
-                   ui.select("state", _state_options(view, state), state, labeler=label))
-        + ui.field(words.both(lang, "filter.api"),
-                   ui.select("api", _api_options(view), _api_in_force(view), labeler=label)),
-        _buttons(view), action=view.route, auto=True)
+                   ui.multi("state", _names(state), _offered(view, "run_states"),
+                            labels=_labels("run_state", lang),
+                            placeholder="state.any", label="word.state", lang=lang)),
+        _buttons(view), action=view.route, auto=True,
+        # Everything this route reads that this bar draws no control for.  The clock is
+        # the one that showed: `tz` is a `Filter` field outside `FILTER_ORDER` and the
+        # top bar's switch is the one control (`shell.tz_switch`), so without this an
+        # `apply` here answered in the default clock while the bar above still said
+        # otherwise.  `text`, and anything the reader set by hand, ride the same way.
+        hidden=_carried(view.route, view.check, ("kind", "state")))
 
 
 def _buttons(view) -> str:
@@ -164,83 +225,19 @@ def _buttons(view) -> str:
             + words.both(view.lang, "btn.apply") + "</button>")
 
 
-def _kind_options(view, kinds) -> list:
-    """The `kind` box: the kinds a button can start, plus the value the URL actually asked for.
+def _offered(view, key) -> list:
+    """The values a box's menu offers: what this console can start, not what is on disk.
 
-    The list is `rows["kinds"]` - the eight kinds this console's own buttons start, which
-    is the list the board draws - and not the kinds that happen to be on disk: a kind
-    nobody has run yet is still one a button can start.  A URL naming a kind no option
-    carries is **appended** rather than dropped: with nothing selected the browser falls
-    back to the first option, so the next apply would send a different value than the one
-    in the URL - how `?missing=kernel` used to become "(any)".  A kind is a value, so it
-    stays the same word in both languages and only the two bracketed options are words.
+    The list is the board's own - `rows["kinds"]` is the eight kinds a button can start,
+    `rows["run_states"]` the four an activity can be in - and not the values that happen
+    to be present: a kind nobody has run yet is still one a button can start.
+
+    A value the menu does not carry is **not dropped**: `ui.multi` draws the chosen set
+    whatever the menu holds, so a URL naming something this console has never heard of
+    still shows the reader the value it asked about.  A state with no catalogue word for
+    it loses its translation and not its chip, which is `_labels`' own rule.
     """
-    offered = [str(one) for one in view.rows.get("kinds") or ()]
-    options = [("", "state.any_paren")]
-    options += [(one, one) for one in offered]
-    if kinds and kinds not in offered:
-        options.append((kinds, words.both(view.lang, "state.current_paren", value=kinds)))
-    return options
-
-
-def _state_options(view, state) -> list:
-    """The `state` box: the four states an activity can be in, and the URL's own value.
-
-    The values are code vocabulary and stay as they are in both languages - which is what
-    the catalogue's four `run_state.label.*` entries spell - and a value the box cannot
-    offer is appended, never dropped, for `_kind_options`' reason.
-    """
-    offered = [str(one) for one in view.rows.get("run_states") or ()]
-    options = [("", "state.any_paren")]
-    options += [(one, _state_label(one)) for one in offered]
-    if state and state not in offered:
-        options.append((state, words.both(view.lang, "state.current_paren", value=state)))
-    return options
-
-
-def _state_label(value) -> str:
-    """A state's catalogue key, or the value itself when the catalogue has no word for it.
-
-    `_labels`' own rule (`lib/gui/schema.py`): a state this console grows loses its
-    translation and not its box.  The fallback matters because `ui.word` prints what it is
-    given, so the *key* of a state nobody has written a word for would reach the reader as
-    `run_state.label.paused`.
-    """
-    key = f"run_state.label.{value}"
-    return key if key in CATALOGUE else value
-
-
-def _api_options(view):
-    """The `api` box: the stacks this deployment knows, and the one this page carries.
-
-    An activity is not a build and this page reads no API, but the key decides which stack
-    the reader's *next* page reads, and dropping it silently is what the old layer's `/runs`
-    was fixed for: walking `/remote` -> `/runs` -> `/remote` used to land back on the
-    startup base with nothing said.  So the key is drawn and posted rather than hidden, and
-    the option is the name while the label is the address, which is the shape
-    `Apis.entries()` answers in.
-    """
-    found = [(str(name), str(base)) for name, base in view.rows.get("apis") or ()]
-    here = _api_in_force(view)
-    if here and here not in [name for name, _base in found]:
-        found.append((here, words.both(view.lang, "state.current_paren", value=here)))
-    return found
-
-
-def _api_in_force(view) -> str:
-    """Which stack this page carries, as the name a URL spells (`local`, `production`).
-
-    The option has to name the base **in force** and not the key a URL carries: the key is
-    empty for the base this process started on (`Apis.key`), so a box selected on the key
-    would leave the browser showing its first option - a different stack, on a process
-    that started on production.  A value nothing here resolves falls back to the launch
-    base, which is what the engine reads in that case too.
-    """
-    apis = getattr(view, "apis", None)
-    check = view.check
-    base = str(getattr(check, "api_base", "") or "") or str(getattr(apis, "launch", "") or "")
-    named = str(apis.name(base)) if apis is not None else ""
-    return named or str(getattr(check, "api", "") or "")
+    return [str(one) for one in view.rows.get(key) or ()]
 
 
 def _fold_line(view, every) -> str:
@@ -254,21 +251,44 @@ def _fold_line(view, every) -> str:
     return ui.hint(view.t("runs.folded_note", link=link))
 
 
-def _panel(shown, opens, counts, whole, lang) -> str:
-    """The table in a panel of its own: how many rows, then one row per activity.
+def _panel(view, shown, counts, whole, back: str = "") -> str:
+    """The table in a panel of its own: how many rows, then one page of activities.
 
     The spacer is the board's own: a `flush` body has no padding, and the table needs the
-    gap above it that the design draws.
+    gap above it that the design draws.  `back` rides down to the log links in the last
+    column, which are the only cells on this page that leave it.
+
+    The page is `Filter.offset`'s - this page's own list, so the bare key and no
+    `schema.LIST_OFFSETS` name - and `counts` is asked of the **whole** list while `opens`
+    is asked of the page: a caption says how many of that kind there are, and the row
+    that carries it has to be a row this page actually draws.
+
+    `data-rows="all"` is the shipped script's licence to rewrite this table every two
+    seconds (`drawTable`, `liveTableAll`), and it is true only while the table **is**
+    every activity - unfiltered, first page, nothing paged out.  Past that the attribute
+    is left off and the poll stops rewriting the table: rows the reader paged to are not
+    rows a two-second timer gets to replace.  What still arrives live is the panel above
+    and the finish notice; a change to the digest reloads the page, which lands the
+    reader back on the page they asked for.
     """
+    lang = view.lang
+    limit = max(1, view.check.limit)
+    total = len(shown)
+    # An offset past the end (a URL typed by hand, a list that shrank under the reader)
+    # lands on the last page rather than on an empty table under a sub-line counting rows.
+    offset, page = ui.page_slice(shown, view.check.offset, limit)
+    opens, _ = _groups(page)
+    whole = whole and offset == 0 and total <= limit
     body = ('<div style="height:10px"></div>'
-            + ui.table(_cols(opens, counts, lang), shown,
+            + ui.table(_cols(opens, counts, lang, back), page,
                        empty=words.both(lang, "empty.no_activity"), table_id="runs",
-                       rows_of="all" if whole else "", kinds=KIND_ORDER, lang=lang))
+                       rows_of="all" if whole else "", kinds=KIND_ORDER, lang=lang)
+            + ui.pager(view, total, limit, offset))
     return ui.panel("counts.activities", body, flush=True, lang=lang,
-                    sub=words.both(lang, "filter.cap_rows", n=len(shown)))
+                    sub=words.both(lang, "filter.cap_rows", n=total))
 
 
-def _cols(opens, counts, lang) -> tuple:
+def _cols(opens, counts, lang, back: str = "") -> tuple:
     """The eight columns, in the vocabulary the script that re-draws them writes.
 
     The headers are the board's own words for these cells (`word.id` is 编号 and `word.kind`
@@ -284,7 +304,7 @@ def _cols(opens, counts, lang) -> tuple:
         ui.Col("col.exit", kind="num", draw=lambda one: _exit_cell(one, lang)),
         ui.Col("col.what_run", kind="wrap", draw=lambda one: ui.esc(one["what"])),
         ui.Col("word.argv", kind="wrap", draw=lambda one: _argv_cell(one)),
-        ui.Col("", kind="act", width="130px", draw=lambda one: _acts_cell(one, lang)),
+        ui.Col("", kind="act", width="130px", draw=lambda one: _acts_cell(one, lang, back)),
     )
 
 
@@ -337,20 +357,20 @@ def _argv_cell(one) -> str:
     return ui.code(argv[:ARGV_SHOWN], title=argv)
 
 
-def _acts_cell(one, lang) -> str:
+def _acts_cell(one, lang, back: str = "") -> str:
     """What a row can do: read its log, and cancel it while it is still running.
 
-    The log is the route itself - `/runs/<id>/log` answers the whole file as `text/plain` -
-    in a tab of its own, so a click, a middle-click and a copied address all give the same
-    thing; there is no inline box because this page holds no log text to put in one.  Cancel
-    is an empty-bodied POST: the id is in the path, the answer is JSON, and `_JS` is what
-    keeps the reader on the page where the row is about to end.  A finished row has no
-    cancel, because `Run.cancel` on a settled process is a button that cannot do what it
-    says.
+    The log is the route itself - `/runs/<id>/log` answers the whole file - in a tab of its
+    own, so a click, a middle-click and a copied address all give the same thing; there is
+    no inline box because this page holds no log text to put in one.  That tab carries this
+    page as its `?back=`, because a tab of its own has no Back button into the table it was
+    opened from (`ui.log_link`).  Cancel is an empty-bodied POST: the id is in the path, the
+    answer is JSON, and `_JS` is what keeps the reader on the page where the row is about to
+    end.  A finished row has no cancel, because `Run.cancel` on a settled process is a
+    button that cannot do what it says.
     """
     home = ui.esc(one["id"])
-    acts = [(f'<a href="/runs/{home}/log" target="_blank" rel="noopener">'
-             f'{words.both(lang, "link.log")}</a>')]
+    acts = [ui.log_link(one["id"], words.both(lang, "link.log"), back)]
     if str(one["state"]) == run_mod.RUNNING:
         acts.append(f'<form method="post" action="/api/runs/{home}/cancel">'
                     f'<button class="btn">{words.both(lang, "js.cancel")}</button></form>')

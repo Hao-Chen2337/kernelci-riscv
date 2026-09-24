@@ -79,6 +79,55 @@ def _builds_of(argv: Iterable[str]) -> set[str]:
     return found
 
 
+def _parent_of(job) -> str:
+    """The build id a job node belongs to: its `parent`, or `""` when it names none.
+
+    A pipeline job node carries no build id of its own - `name` is the template's
+    (`kselftest-riscv-pull-labs`) and `data` is the kernel revision - so the only
+    field on the document that points back at the build is `parent`, which is the
+    id of the `kbuild` node the job was dispatched for.  That id is the same string
+    this console files a build under (`Build.build_id`), which is what makes the
+    link from a queue row to `/local/<build_id>` a fact rather than a guess.
+
+    Read off `job.node` rather than added to `Kjob`: the class says in its own
+    docstring that the raw node is there "for readers that need a field this class
+    does not name", and one consumer wanting one field is exactly that case.  A
+    node with no `parent`, or one whose `parent` is not a string, answers `""` -
+    the cell then prints the design's dash instead of a link to a build that is not
+    there.
+    """
+    parent = job.node.get("parent") if isinstance(job.node, dict) else None
+    return parent if isinstance(parent, str) else ""
+
+
+def _path_of(job) -> list[str]:
+    """The pipeline route a node sits on: its `path`, as the names it was dispatched under.
+
+    Every node the API serves carries the chain of names it was built along, and it is
+    the one field on the document that says *where in the pipeline this node is* rather
+    than what it is:
+
+        ["checkout", "kbuild-gcc-14-riscv", "baseline-riscv-pull-labs"]
+
+    The last element is this node's own `name` (drawn in a column of its own) and the
+    one before it is the `kbuild` node the job was dispatched for.  That middle name is
+    the point: `_parent_of` answers the *id* of that build node, and an id is what a
+    link needs and not what a reader needs - the route is where the name lives.
+
+    A `kbuild` node's own path stops one short of this shape, which is why the worker
+    page can show the shape at all: `getjob` reads `kind="job"`, so the build step is
+    upstream of every row here and is named by these paths rather than by a row.
+
+    Read off `job.node` for the reason `_parent_of` does.  A node with no `path`, or
+    one that is not a list, answers `[]` - the cell prints the design's dash rather
+    than half a route.
+    """
+    path = job.node.get("path") if isinstance(job.node, dict) else None
+    if not isinstance(path, list):
+        return []
+    return [one for one in path if isinstance(one, str) and one]
+
+
 class ActivitiesMixin:
     def job_rows(self, check: "Filter | None" = None) -> list[dict[str, Any]]:
         """One row per (build, test): the local table minus the ledger, vizualised."""
@@ -121,6 +170,14 @@ class ActivitiesMixin:
         and an instance attribute would put one request's failure on another
         request's page.  An empty string means the API answered.
 
+        Three of the row's keys are the state file read against the node, and they
+        are three because they are three different facts: `claimed` is "the loop has
+        dealt with this id", `held` is "a report of its run is still waiting to be
+        posted" (the one case that is certainly a run that happened here), and
+        `refused` is the poller's own sentence for why it put the node down unrun.
+        `claimed` alone cannot separate the last two, which is the whole reason the
+        page used to draw one word for "ran it" and "looked at it".
+
         `limit` is how wide *this caller* wants the read to be, and the read is as
         wide as the widest caller of one page needs: `Filter.limit` (50 by default)
         is a table's print cap, and reading the queue at that width and then reading
@@ -136,7 +193,10 @@ class ActivitiesMixin:
                 state=state or None, limit=max(limit, check.limit))
         except errors.KciError as exc:
             return [], str(exc)
-        seen = set(self.worker_state().get("seen") or [])
+        held = self.worker_state()
+        seen = set(held.get("seen") or [])
+        pending = held.get("pending") or {}
+        refused = held.get("refused") or {}
         rows = []
         for job in found:
             if check.job and job.name != check.job:
@@ -147,8 +207,28 @@ class ActivitiesMixin:
             rows.append({"node_id": job.node_id, "name": job.name, "state": job.state,
                          "result": job.result, "platform": job.platform, "runtime": job.runtime,
                          "created": job.created, "definition": bool(job.definition_url),
-                         "claimed": job.node_id in seen})
+                         "claimed": job.node_id in seen,
+                         "held": job.node_id in pending,
+                         "refused": str(refused.get(job.node_id) or ""),
+                         "build_id": _parent_of(job),
+                         "path": _path_of(job),
+                         "definition_url": job.definition_url})
         return rows[:limit or check.limit], ""
+
+    def job_definition(self, url: str) -> dict[str, Any]:
+        """One job definition, fetched by the artifact URL a node carries.
+
+        The return-path panel reads one of these and nothing else does, which is why it
+        is a method of its own rather than a key on every queue row: fetching the
+        definition is an HTTP read per node, the queue is thirty nodes wide, and the
+        operator's question - *where does a report go, and what signs it* - has one
+        answer for the whole queue because every node was dispatched by the same lab.
+
+        Raising is the point: the page has to say "the definition could not be read"
+        rather than draw an empty callback URL, because an empty URL and an unread
+        definition look the same on the page and mean opposite things.
+        """
+        return self._client().get(url)
 
     def worker_bases(self, kept: int = LIVE_KEPT) -> list[str]:
         """The API bases the worker activities **on this screen** are claiming from.

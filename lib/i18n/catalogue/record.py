@@ -65,6 +65,13 @@ PART: dict[str, dict[str, str]] = {
     "log.head": {"en": "activity {run} - state {state}, exit {exit_code}",
                    "zh": "活动 {run} — 状态 {state}，退出 {exit_code}"},
 
+    # The one door out of that page.  It opens in a tab of its own, so the browser's
+    # own Back button does not lead where the reader came from - the page has to say
+    # it.  Where it goes is this page's `?back=` (the filter it was opened from), and
+    # it is drawn only when that key is there: a log someone opened by typing its
+    # address gets no link, because there is no page to go back to.
+    "log.back": {"en": "back to the list", "zh": "回到列表"},
+
     "log.empty": {"en": "this activity has written nothing to its log yet",
                     "zh": "这个活动还没往日志里写任何东西"},
 
@@ -158,6 +165,67 @@ PART: dict[str, dict[str, str]] = {
     # `verdict.label.*` - one vocabulary for a verdict, not two.
     "run_end.tally_one": {"en": "{n} {word}", "zh": "{n} {word}"},
 
+    # --- one pair's run history (`builds._run_history_panel`) ----------------
+    #
+    # A (build, test) pair can be run as many times as a reader likes and the ledger's
+    # *current* record for it is ONE: `var/results/<build>/<test>.json` is one file that
+    # every run rewrites, so that file alone cannot answer "how often".  Two things can:
+    # `var/logs/`, one console per run, and - since re-running became a button
+    # (`btn.run_redo`) - `var/results/<build>/<test>.history.jsonl`, which `Ledger.write`
+    # appends to.  These strings are the whole vocabulary of that difference, and every
+    # one of them exists to keep the facts apart: the sub-line names the directory the
+    # list really comes from, the rows say *why* a cell is empty instead of leaving a
+    # dash that reads as "never recorded", and the four words of `col.kept`'s column
+    # separate "this is the record" from "the record moved on" from "there was never
+    # one" - three facts a single `—` would flatten into one.
+    #
+    # `page.history.title` is an `<h2>`, so it names no file, module or call
+    # (`words.heading` refuses one that does).  `sub`, `empty` and `record_not_here`
+    # carry a `<code>` path and are therefore `t()`-only - the swap has no html mode.
+    "page.history.title": {"en": "run history", "zh": "运行历史"},
+
+    "page.history.sub": {"en": "{test} on this build, newest first - every console in {dir}; the ledger keeps the newest record for the pair and writes each earlier one to its history file, so a run whose console is gone is still in the ledger",
+                           "zh": "{test} 在这个 build 上的每一次运行，最新的在前 —— {dir} 里的每一份控制台输出；账本对这个配对留的是最新的那条记录，更早的每一条都写进它的历史文件，所以控制台已经不在的运行账本里还有"},
+
+    # The two headers of the two columns that exist only here: which run the surviving
+    # record is about, and the console file itself.  "console" and not "log" because
+    # this console has a 日志 link everywhere else (`link.log`) and it points at an
+    # *activity*'s log (`/runs/<id>/log`); one word for two files is how a reader ends
+    # up at the wrong one.
+    "page.history.col_record": {"en": "the ledger's record", "zh": "账本记录"},
+
+    "page.history.col_log": {"en": "console", "zh": "控制台"},
+
+    "page.history.kept": {"en": "this run is the one kept", "zh": "这次运行就是留下的那次"},
+
+    "page.history.overwritten": {"en": "a later run overwrote its record", "zh": "后来的运行把它的记录覆盖了"},
+
+    # The third case, and it is a real one rather than a defensive one: a run's console
+    # is opened before the run starts and its record is written after it ends (`Job.run`),
+    # so a run killed mid-flight leaves exactly this - a console and no record.  "A later
+    # run overwrote it" would name a run that never happened, and the panel above every
+    # such row would be contradicting itself.
+    "page.history.unrecorded": {"en": "the ledger has no record of this run",
+                                  "zh": "账本里没有这次运行的记录"},
+
+    # Said under the table and not in a cell: no row is this run, so there is no row to
+    # say it in.  It is a different fact from `overwritten` - the ledger remembers a run
+    # whose console is not among these - and printing "overwritten" on every row would
+    # be this panel inventing one.
+    "page.history.record_not_here": {"en": "the ledger's record for this pair names a console that is not in {dir}",
+                                       "zh": "账本这个配对的记录指向的控制台不在 {dir} 里"},
+
+    "page.history.empty": {"en": "no console in {dir} for this pair", "zh": "{dir} 里没有这个配对的控制台输出"},
+
+    "page.history.open": {"en": "the console this run printed, archived as {file}",
+                            "zh": "这次运行打印的控制台，存档为 {file}"},
+
+    # The `title=` on a verdict pill on `/`.  The pill's own text is untouched - one
+    # word, one verdict, as it always was - and this is what says the pill is now a
+    # door, so a reader who clicks it is not surprised by a page about one pair.
+    "page.history.link_title": {"en": "every run of {test} on this build, with each run's console",
+                                  "zh": "这个 build 上 {test} 的每一次运行，以及每次运行的控制台"},
+
     # --- a request that was refused (409/404, plain text on the wire) -------
 
     "error.not_an_option": {"en": "{key}={value} is not one of: {options}",
@@ -182,6 +250,14 @@ PART: dict[str, dict[str, str]] = {
     "error.not_a_stamp": {"en": "{key}={value} is not a timestamp; the shape is 2026-09-20T08:20:00Z",
                             "zh": "{key}={value} 不是时间戳；形状是 2026-09-20T08:20:00Z"},
 
+    # A value that becomes part of a command line, refused for *shape* rather than for
+    # membership: `_parameter_url` is what stands between a typed address and an argv,
+    # and the three things it will not pass are a scheme that is not `file`/`http`/
+    # `https`, whitespace (which would end the argument early and start another one),
+    # and anything that is neither an absolute URL nor a `/`-rooted path.
+    "error.not_a_url": {"en": "{key}={value} is not an address; use http(s)://host/path, file:///path, or /path",
+                          "zh": "{key}={value} 不是地址；请用 http(s)://host/path、file:///path 或 /path"},
+
     "error.two_build_ids": {"en": "two build ids are needed", "zh": "需要两个 build id"},
 
     "error.unknown_action": {"en": "unknown action {name}; known: {known}",
@@ -200,22 +276,51 @@ PART: dict[str, dict[str, str]] = {
     "error.body_no_boundary": {"en": "a multipart/form-data body without a boundary names no fields",
                                  "zh": "multipart/form-data 的 body 没有 boundary，读不出任何字段"},
 
-    "error.run_needs_build": {"en": "run needs at least one ticked build",
-                                "zh": "跑至少要勾一个 build"},
+    # The one refusal `run` makes, and it names what a tick is: `/jobs`' boxes send
+    # `<build_id>:<test>` (`jobs._tick_cell`) and `table.py run` takes them as `--pair`,
+    # so "build" here would be half of what is being asked for.  `pull` above keeps its
+    # own words, because a pull really does tick builds.
+    "error.run_needs_build": {"en": "run needs at least one ticked (build, test) pair",
+                                "zh": "跑至少要勾一个 (build, test) 对"},
 
     "error.drift_needs_two": {"en": "drift needs two build ids, one in each select box",
                                 "zh": "drift 要两个 build id，两个选择框各一个"},
+
+    # The smart run's own refusal.  It ticks *builds* and not pairs (its phase 3 makes
+    # the pairs itself, out of `tests.DEFAULT_TESTS`), so it says "build" the way `pull`
+    # above does; a press with nothing ticked cannot even be told which of the three
+    # steps it is, which is why this is a refusal and not an empty answer.
+    "error.smart_needs_build": {"en": "smart run needs at least one ticked build: the tick says which rows there are to decide about",
+                                  "zh": "智能运行至少要勾一个 build：勾选才说明要对哪些行做决定"},
 
     "error.writer_busy": {"en": "{writer} is writing right now; one writer at a time - the ledger, the download tree and the table have one writer each",
                             "zh": "{writer} 现在正在写；一次只允许一个写者 - 账本、下载目录和本地表各自只有一个写者"},
 
     "error.no_activity": {"en": "no activity {run_id}", "zh": "没有这条活动 {run_id}"},
 
+    # The `/worker` forget button's id check, and the same alphabet every other value
+    # that reaches a command line is held to (`forms.TOKEN`): the id is not a command
+    # line here, but it does become a **path segment** of the POST that carries it, so
+    # it may not be anything a path can say something with.
+    "error.no_node": {"en": "{node_id} is not a node id", "zh": "{node_id} 不是节点 id"},
+
+    # The `/worker` callback box's refusal, and it names the rule rather than saying
+    # "invalid": the operator typed a URL that a *token* gets POSTed to, and the two
+    # ways it can be wrong (no scheme, no host) are both things the sentence can fix
+    # in the reader's head before they retype it.
+    "error.callback_url": {"en": "{url} is not a callback URL: it needs http:// or https:// and a host, because a report is POSTed to it",
+                            "zh": "{url} 不是回调地址：要有 http:// 或 https:// 和主机名 —— 报告是要 POST 过去的"},
+
     "error.no_page": {"en": "no page {page}; the pages are {routes} and /local/<build_id>",
                         "zh": "没有这个页面 {page}；页面有 {routes}，以及 /local/<build_id>"},
 
     "error.no_local_copy": {"en": "no local copy {build_id} (see /local)",
                               "zh": "没有这份本地拷贝 {build_id}（见 /local）"},
+
+    # One archived console, by name: `/logs/<file>` serves `var/logs/<file>` and this is
+    # its 404.  A name is the reader's own words back at them (the row they clicked
+    # printed it), so it is `repr()`-ed by the caller like `error.no_local_copy`'s id.
+    "error.no_such_log": {"en": "no console log {name}", "zh": "没有这份控制台日志 {name}"},
 
     "error.no_such_action": {"en": "no such action", "zh": "没有这个动作"},
 

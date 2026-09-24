@@ -9,6 +9,10 @@ Read-only, and the only tool here that fetches a *text* artifact (a `.config`)
 rather than bytes to run.  Two configs of the same job, parsed to option ->
 value, then three lists: added, removed, changed.
 
+A config is read from wherever this workspace already has it - the kept copy under
+`var/configs/`, else the copy a pull left under `var/downloads/<build-id>/` - and
+only then from the artifact store (`_config_text` says which, and in what order).
+
 An empty parse is an ERROR: an HTML index page also parses to no options, and
 "no drift" must never be the answer to a download that failed.
 
@@ -24,13 +28,11 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 from . import api as api_mod
-from . import atomic, layout
+from . import atomic
+from .build import Build
+from .build.model import config_note, config_path
 from .errors import ConfigError, KciError
 from .kbuild import PASSED_FILTER, Kbuilds
-
-# The fallback for a node with no `_config` artifact: this deployment's own
-# storage layout.  Read from the environment at call time, never at import.
-STORAGE_ENV = "KCI_STORAGE_URL"
 
 
 @dataclass
@@ -82,10 +84,11 @@ class Drift:
             # and both are already in `catalogue.items` (`getdays` kept them), so
             # that lookup costs no second read.
             newer, older = recent[0].build_id, recent[1].build_id
-        older_url = _config_url(catalogue.get(older), job)
-        newer_url = _config_url(catalogue.get(newer), job)
-        left = parse(_config_text(api, older_url))
-        right = parse(_config_text(api, newer_url))
+        older_build, newer_build = catalogue.get(older), catalogue.get(newer)
+        older_url = _config_url(older_build, job)
+        newer_url = _config_url(newer_build, job)
+        left = parse(_config_text(api, older_url, _config_local(older_build)))
+        right = parse(_config_text(api, newer_url, _config_local(newer_build)))
         _refuse_empty(left, older_url)
         _refuse_empty(right, newer_url)
         added, removed, changed = diff(left, right)
@@ -124,9 +127,10 @@ class Drift:
         parsed: dict[str, dict] = {}
 
         def one(build):
-            url = _config_url(catalogue.get(build.build_id), job)
+            known = catalogue.get(build.build_id)
+            url = _config_url(known, job)
             if url not in parsed:
-                options = parse(_config_text(api, url))
+                options = parse(_config_text(api, url, _config_local(known)))
                 _refuse_empty(options, url)
                 parsed[url] = options
             return parsed[url]
@@ -259,47 +263,34 @@ def _drop_comment(value):
 
 
 def _config_url(kbuild, job):
-    """Where a build's config lives: its own artifact, else this deployment's storage."""
-    url = kbuild.artifact("_config") or kbuild.artifact(".config")
-    if url:
-        return url
-    storage = os.environ.get(STORAGE_ENV) or "http://127.0.0.1:8002"
-    return f"{storage.rstrip('/')}/{job or 'kbuild'}-{kbuild.node_id or kbuild.build_id}/.config"
+    """Where a build's config lives: its own artifact, else this deployment's storage.
+
+    The definition is `Build.config_url` (`lib/build/model.py`), because a page's
+    config mark asks the same question and two answers to "which URL is this
+    build's config" is a mark that disagrees with the fetch it predicts.  The
+    storage environment variable and its default moved with it, so this module no
+    longer names either.
+    """
+    return Build(kbuild).config_url(job)
 
 
 def _config_path(url):
-    """Where one URL's `.config` is kept between downloads: `var/configs/<digest>`.
+    """Where one URL's `.config` is kept between downloads: `model.config_path`.
 
-    The digest is of the URL, because that is what identifies the bytes: a config
-    served under a different address is a different file, and the same address
-    serving different bytes is the artifact store contradicting its own build id.
-    The `.config` suffix is kept so a reader who finds the directory can open the
-    file without asking what it is.
+    A wrapper, and only for the name: the digest itself is the build half's, since
+    `Build.config_cache` looks a kept copy up by it.
     """
-    return layout.configs(hashlib.sha256(url.encode("utf-8")).hexdigest()[:32] + ".config")
+    return config_path(url)
 
 
 def _config_note(url):
-    """The sidecar that says what the kept file is supposed to be.
+    """The sidecar that says what the kept file is supposed to be (`model.config_note`).
 
-    A `.config` is a text file a reader may open, so the checksum cannot live in
-    it.  It sits beside it: the URL it came from, how many bytes, and the sha256
-    of those bytes.
-
-    **Why a checksum and not just a size.**  A cache is only worth having if a
-    damaged entry is *detected*, and a truncated config does not announce itself:
-    a config cut off at 5 000 of 192 231 bytes still parses into 166 options, so
-    the comparison answers **+5426 -8 ~1 instead of +618 -616 ~99, with zero HTTP
-    calls and no sign that anything is wrong** - a confident, wrong drift report,
-    which is the exact failure this whole module refuses elsewhere ("an empty parse
-    is an ERROR").  The same is true of a download truncated in transit: without a
-    recorded size it would be cached as the truth for ever.
-
-    So a kept file that does not match its note is not used.  It is refused, and
-    the refusal is loud, because silently refetching would hide a corrupted cache
-    that a reader may want to know about.
+    What the note *contains* - the URL, the byte count, the sha256 - and why a
+    checksum is the whole point of it are stated where the note is defined and
+    where it is checked (`_kept_config`); this only says where it sits.
     """
-    return _config_path(url)[:-len(".config")] + ".json"
+    return config_note(url)
 
 
 def _kept_config(url):
@@ -371,13 +362,63 @@ def _keep_config(url, text):
             return                      # a cache that cannot be written is not a failure
 
 
-def _config_text(api, url):
-    """One `.config` as text: from `var/configs/` when it is there, else fetched.
+def _config_local(kbuild):
+    """The `.config` a pull of this build already left here, or `""` when there is none.
+
+    A config is one of the artifacts a pull fetches (`ARTIFACTS["config"]`,
+    `lib/build/model.py`), so a build this deployment has already downloaded has
+    its config on disk - and until this function existed a comparison of it asked
+    the artifact store for bytes this workspace was already holding.  `present()`
+    is the downloader's own answer to "which of this build's artifacts are here",
+    so the file's name and its directory are asked of the owner rather than spelled
+    again here.
+
+    **The copy has to have been proven whole to be on disk at all**:
+    `fetch.download` publishes an artifact only when it is complete, writing to
+    `<dest>.part` until then, so what this returns is not a half-written file.
+    """
+    return Build(kbuild).present().get("config", "")
+
+
+def _local_config(path):
+    """A pulled build's `.config` as text, or `""` when it is not one.
+
+    Never an error, unlike `_read`: a copy that cannot be opened, or that holds
+    something other than a kernel config, is simply *not an answer* - the read
+    below it is the one that answers.  Raising here would fail a comparison of two
+    builds whose configs the artifact store still has, over a damaged file in the
+    download tree that the reader never asked about.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError:
+        return ""
+    return text if parse(text) else ""
+
+
+def _config_text(api, url, local=""):
+    """One `.config` as text: the kept copy, else this build's own pulled copy, else fetched.
 
     Why this exists at all: `Drift.between` used to call `api.text(url)` on every
     render, so each look at the analysis page re-downloaded both configs over the
     internet - measured at 8-12s and ~194KB each, ~18s of that page's ~43s, spent
     again on every single load including a reload of a page nobody had changed.
+
+    Three places, in this order, and each one is cheaper than the one after it:
+
+    * **`var/configs/`** - what an earlier comparison of this URL already fetched,
+      checked against the note that was written with it.  This is the copy the
+      whole cache exists for: a reader who compares the same builds twice pays for
+      it once.
+    * **`var/downloads/<build-id>/.config`** (`local`, `_config_local`) - a build
+      that was *pulled*, whose config therefore came down with it.  It is seeded
+      into `var/configs/` as it is read, so it is paid for once too, and a pull
+      followed by a comparison is one download rather than two.  This is the step
+      the engine was missing: the bytes were on disk and it went to the network
+      anyway.
+    * **the URL** - `api.text`, counted (`api.note_fetch`) because this is the read
+      the reader pays for, and the page says how many of them a render made.
 
     A config is a pure function of its URL, so caching one is not a claim about
     the world that can go stale in a way a reader would act on differently; and
@@ -392,6 +433,12 @@ def _config_text(api, url):
     bytes differ, so a fresh read of an unchanged config leaves the kept copy, and
     its mtime, exactly where they were (`_keep_config`).
 
+    It does **not** skip the pulled copy, and it is not meant to: `?fresh=1` asks
+    for a page whose files were re-read and whose API answers were asked for again,
+    and a `.config` sitting in `var/downloads/` is one of *this workspace's* files -
+    reading it is the "re-read the files" half, and a config is a pure function of
+    its build, so the URL has nothing newer to say about those bytes.
+
     Two things are **not** kept: a failure, and anything that fails its check.
     An HTTP error page parses to no options and `_refuse_empty` calls that "not a
     kernel config", so keeping it would turn one bad download into a permanent
@@ -404,6 +451,13 @@ def _config_text(api, url):
         if kept is not None and parse(kept):
             return kept
 
+    if local:
+        pulled = _local_config(local)
+        if pulled:
+            _keep_config(url, pulled)
+            return pulled
+
+    api_mod.note_fetch()
     text = api.text(url)
     if not parse(text):
         return text                 # let `_refuse_empty` say so, and keep nothing

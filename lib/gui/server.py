@@ -15,6 +15,7 @@ posts `application/x-www-form-urlencoded` and the script this page serves posts
 handed and could not read, so every action silently fell back to its defaults."""
 
 import hashlib
+import html
 import json
 import os
 import re
@@ -188,6 +189,22 @@ def _state_digest() -> str:
     return hashlib.sha256("\n".join(sorted(marks)).encode("utf-8")).hexdigest()[:16]
 
 
+# One archived console's file name, and nothing else: what the `/logs/` route admits.
+# `lib/job.py`'s `_log_path` writes `<build>.<test>.<stamp>.log` - a hex id, a test
+# name, a UTC stamp - so this is that shape and not a general file name.  It is a
+# whitelist rather than a blacklist of `..` because the two failures are not the same
+# size: a name outside this pattern is refused here, and `layout.logs()` is only ever
+# joined with a name that cannot leave its directory.
+#
+# `:` is in the set and it is not decoration: the stamp is `%Y-%m-%dT%H:%M:%SZ`, so
+# every real name has two of them.  A pattern that dropped it refused every console
+# this tree has ever written - measured against
+# `6aade015d96a8203de6dff37.boot.2026-09-22T16:25:49Z.log`, which answered 404 while
+# the file was on disk.  What the set excludes is what matters: no `/`, no backslash,
+# no whitespace, so the join cannot leave `var/logs/`.
+_CONSOLE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+-]*\.log$")
+
+
 def _part_name(head: str) -> str:
     """The `name="…"` of one multipart part's `Content-Disposition`, or `""`."""
     for line in head.splitlines():
@@ -250,8 +267,25 @@ def _form_body(content_type: str, body: bytes, lang: str = DEFAULT_LANG) -> dict
     raise errors.ConfigError(t(lang, "error.body_not_a_form", kind=kind))
 
 
-def log_body(payload: Mapping[str, Any], lang: str = DEFAULT_LANG) -> str:
-    """One activity's log as the bytes a browser shows at `/runs/<id>/log`.
+def _back_link(back: str, lang: str) -> str:
+    """`?back=` as a link, or nothing at all.
+
+    Only a path *on this console* is obeyed: a value that does not start with `/`, or
+    that starts with `//` (which a browser reads as another host), is dropped rather
+    than reflected.  The value arrives in a URL, so anyone can put anything in it; the
+    one thing this page does with it is write it into an `href`, and an `href` that can
+    be made to point anywhere is how a console becomes a redirector.  Dropping it is
+    not a complaint - a log opened by typing its own address has no list to go back to,
+    and that is the whole of it.
+    """
+    if not back.startswith("/") or back.startswith("//"):
+        return ""
+    return (f'<a class="log-back" href="{html.escape(back, quote=True)}">'
+            f'{html.escape(t(lang, "log.back"))}</a>')
+
+
+def log_body(payload: Mapping[str, Any], lang: str = DEFAULT_LANG, back: str = "") -> str:
+    """One activity's log as the page a browser shows at `/runs/<id>/log`.
 
     The payload is `Gui.log(id, 0)`'s - the whole file from the start, so the page the
     reader lands on and the address they could have typed cannot show different logs.
@@ -259,14 +293,70 @@ def log_body(payload: Mapping[str, Any], lang: str = DEFAULT_LANG) -> str:
     because a log with no name on it is a wall of text in a tab the reader then cannot
     identify; an activity with an empty log gets a sentence instead of a blank page,
     which is the same complaint ("打开不了") arriving a second way.
+
+    `back` is where the reader came from (the `?back=` the 日志 link carried), and it is
+    what makes the page a page rather than a dead end: this opens in a tab of its own,
+    so Back does not lead to the table the click was made in, and a reader who has to
+    retype the filter they were looking at loses it.  The bytes are HTML now, not
+    `text/plain`, because that link has to be markup; the file itself is inside one
+    `<pre>`, escaped, so the log still reads as the log - same lines, same characters,
+    selectable and searchable.  What a machine reads is unchanged and still one branch
+    down: `/api/runs/<id>/log` answers the same text as JSON, which is what the script
+    polled then and what a caller wanting the bytes should ask for.
     """
     text = str(payload.get("text") or "")
     head = t(lang, "log.head", run=str(payload.get("id") or ""),
              state=str(payload.get("state") or ""),
              exit_code="-" if payload.get("exit_code") is None else str(payload["exit_code"]))
-    if not text:
-        return head + "\n\n" + t(lang, "log.empty") + "\n"
-    return head + "\n\n" + text
+    file_text = text or t(lang, "log.empty")
+    return (
+        "<!doctype html>\n"
+        f'<html lang="{html.escape(lang, quote=True)}"><head>'
+        '<meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{html.escape(head)}</title>"
+        "<style>"
+        "body{margin:0;background:#fff;color:#111;"
+        "font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}"
+        ".log-back{display:inline-block;margin:12px 16px 0;color:#0366d6}"
+        "pre{margin:12px 16px 32px;white-space:pre-wrap;word-break:break-word}"
+        "</style></head><body>"
+        + _back_link(back, lang)
+        + f"<pre>{html.escape(file_text)}</pre>"
+        "</body></html>\n"
+    )
+
+
+def console_log(name: str, lang: str = DEFAULT_LANG) -> str:
+    """One archived console, as the plain text it is: what `/logs/<name>` serves.
+
+    This is the *other* log.  `/runs/<run_id>/log` above is one **activity**'s output -
+    a process this console started and can still show the state of - and this is the
+    console `lib/job.py` archived for one run of one (build, test) pair, at
+    `var/logs/<build>.<test>.<stamp>.log` (`Job._log_path`).  The run-history panel is
+    the one page that links here, one link per run.
+
+    **`text/plain` with nothing added**, where `/runs/<id>/log` draws two header lines:
+    an activity's id says nothing about what it ran, so that page has to say it, while
+    the row a reader clicked here already prints the build, the test and the stamp - a
+    header would be a second copy of what is on the screen behind the tab.  The file
+    itself, in the browser's own plain-text view.
+
+    The name is **one file name and never a path**: the pattern below admits no `/`, no
+    backslash and no `.` segment but the ones inside a real name, so `layout.logs()` can
+    only ever be joined with something that names a file in that one directory.  A name
+    that does not match, and a file that is not there, are the same 404 - the caller
+    turns `ConfigError` into it - because "you mistyped it" and "it was pruned" are not
+    two different answers to a request for bytes.
+    """
+    if not _CONSOLE_NAME.match(name):
+        raise errors.ConfigError(t(lang, "error.no_such_log", name=repr(name)))
+    try:
+        with open(layout.logs(name), encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError as exc:
+        raise errors.ConfigError(t(lang, "error.no_such_log", name=repr(name))) from exc
+
 
 def handler_for(gui: Any) -> type[BaseHTTPRequestHandler]:
     """The request handler one `Gui` answers with: a class per `serve`, as before.
@@ -336,18 +426,38 @@ def handler_for(gui: Any) -> type[BaseHTTPRequestHandler]:
                 # `/api/runs/<id>/log`, which answers JSON - so a reader who clicked
                 # it, or copied the address into a new tab, got something that did
                 # not look like a log and would not open like one ("日志点击之后拉到
-                # 下面给个地址也打开不了我要的是类似自己打开那种").  `text/plain` is
-                # the file, opened: monospace, selectable, searchable, and the same
-                # bytes for `curl`.  This is where the 日志 link goes now, in a tab of
-                # its own: the page's inline log box is gone, so the script that used
-                # to poll the JSON endpoint below polls nothing here any more - the
-                # endpoint stays as what it always also was, the machine interface.
+                # 下面给个地址也打开不了我要的是类似自己打开那种").  This is where
+                # the 日志 link goes now, in a tab of its own: the page's inline log
+                # box is gone, so the script that used to poll the JSON endpoint below
+                # polls nothing here any more - the endpoint stays as what it always
+                # also was, the machine interface.
+                #
+                # It is HTML and not `text/plain` because of the one thing a tab of
+                # its own costs: 点进日志之后回不去 - the browser's Back button leads
+                # to whatever was open before the tab, not to the table the click was
+                # made in.  So the log page carries a `?back=`, which is this page's
+                # own URL as the *link that wrote it* sees it (a filter, an api key,
+                # a window), and `log_body` draws it as one link.  The file is still
+                # the file, inside a `<pre>`, escaped - and `curl` has the JSON
+                # endpoint one branch down.
                 run_id = urllib.parse.unquote(parsed.path[len("/runs/"):-len("/log")])
-                self._send(200, "text/plain; charset=utf-8",
-                           log_body(gui.log(run_id, 0, lang), lang))
+                self._send(200, "text/html; charset=utf-8",
+                           log_body(gui.log(run_id, 0, lang), lang,
+                                    _first(query, "back")))
             elif parsed.path.startswith("/api/runs/") and parsed.path.endswith("/log"):
                 run_id = parsed.path[len("/api/runs/"):-len("/log")]
                 self._json(gui.log(run_id, _first(query, "offset", "0")))
+            elif parsed.path.startswith("/logs/"):
+                # An **archived console**: `lib/job.py` keeps one per run of one
+                # (build, test) pair, and this is the other log route - the one above
+                # serves an activity's, out of `var/runs/`, and this serves the
+                # archived file out of `var/logs/` (`builds._console_cell` links here).
+                # It is the file and nothing else, so it is served as the bytes it is
+                # rather than as a page: no header, no prose, no language - see
+                # `console_log`.  It is not a `?lang=` page and it writes no cookie.
+                self._send(200, "text/plain; charset=utf-8",
+                           console_log(urllib.parse.unquote(parsed.path[len("/logs/"):]),
+                                       lang))
             elif parsed.path in REDIRECTS:
                 # Merging three pages must not break a link somebody wrote down.
                 # The condition rides along as a key `/` already reads (`origin`,
@@ -399,6 +509,17 @@ def handler_for(gui: Any) -> type[BaseHTTPRequestHandler]:
             elif parsed.path.startswith("/api/runs/") and parsed.path.endswith("/cancel"):
                 run_id = parsed.path[len("/api/runs/"):-len("/cancel")]
                 self._json(gui.cancel(run_id, lang))
+            elif parsed.path.startswith("/api/worker/forget/"):
+                # One of the two endpoints here that writes a file rather than starting a
+                # program, and it is a POST for that reason: a link that edits state
+                # is a link a crawler, a prefetch or a middle-click can fire.
+                self._json(gui.forget(parsed.path[len("/api/worker/forget/"):], lang))
+            elif parsed.path == "/api/worker/callback":
+                # The other one, and the same reason for being a POST: this decides where
+                # the *token* is POSTed, so it is not a thing a prefetch may do.  The URL
+                # is the body's `url` field and the whole of the change: an empty one
+                # means "back to the definition's".
+                self._json(gui.set_callback(_first(form, "url"), lang))
             else:
                 self._send(404, "text/plain; charset=utf-8",
                            f"{t(lang, 'error.no_such_action')}\n")

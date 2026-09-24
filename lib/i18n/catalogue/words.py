@@ -104,6 +104,13 @@ PART: dict[str, dict[str, str]] = {
     # (`docs/gui-rework/04-actions.md` §2, the operator's second sentence).
     "action.ticked_build": {"en": "<each ticked build>", "zh": "<每个勾选的 build>"},
 
+    # The same token where the ticks are pairs: `/jobs`' run bar ticks rows of a
+    # (build, test) table, and its command is `--pair <build_id>:<test>` per box
+    # (`Gui._argv_of_ticked`'s `tick_word`).  A bar that said "build" over that line
+    # would name the wrong thing - one tick is one pair, not every test of one build.
+    "action.ticked_pair": {"en": "<each ticked (build, test) pair>",
+                             "zh": "<每个勾选的 (build, test) 对>"},
+
     # One activity's `what` column, read off its argv (`_what_of`): a flag repeated
     # more than twice collapses to this, so "run twenty builds" is a line and not a
     # page.  Code-form on purpose in both columns - it is a flag and a count.
@@ -230,6 +237,17 @@ PART: dict[str, dict[str, str]] = {
     "mode.label.once": {"en": "once", "zh": "跑一次"},
 
     "mode.label.resident": {"en": "resident", "zh": "常驻"},
+
+    # The trend chart's two questions, in `schema.CHART_MODES`' order.  They are **not**
+    # under `mode.label.*` beside the worker's pair above, and the prefix is the point:
+    # that pair is how a *worker run* is launched (one job per request, or a resident
+    # process) and this one is what a *curve* counts, so one prefix over both would be
+    # one name for two vocabularies - and the day a control built its key from the value
+    # (`f"mode.label.{value}"`, which is how the worker's segment is written) it would
+    # offer a reader `跑一次` as a way to read a chart.
+    "chart.mode.cumulative": {"en": "totals", "zh": "累计"},
+
+    "chart.mode.each": {"en": "per build", "zh": "逐项"},
 
     "verdict.label.pass": {"en": "pass", "zh": "通过"},
 

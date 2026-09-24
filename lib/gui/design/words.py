@@ -82,7 +82,7 @@ def _check_lang(lang: str) -> None:
             "`heading(view.lang, key)`")
 
 
-def both(lang: str, key: str = "", **fmt: str) -> str:
+def both(lang: str, key: str = "", /, **fmt: str) -> str:
     """One string in both languages, as the element the swap reads.
 
     `fmt` fills `{placeholders}` exactly as `lib.i18n.t` does, on both columns, so a
@@ -101,6 +101,11 @@ def both(lang: str, key: str = "", **fmt: str) -> str:
     is drawn.  The other column rides in the attribute, and `shell.BRIDGE_JS` re-applies
     this one on load: the swap is idempotent when the two agree, which they do, because
     `?lang=`, the `kci_lang` cookie and `<html lang>` are all this response's language.
+
+    `lang` and `key` are positional-only, for `lib.i18n.t`'s reason: a row may use
+    `{key}` as a placeholder, so `both(view.lang, "error.not_a_stamp", key="since")` has
+    to mean "fill `{key}`", not "the key is `since`" - and without the `/` it was a
+    `TypeError` at the raise site instead of the sentence the caller meant.
     """
     _check_lang(lang)
     row = CATALOGUE.get(key)
@@ -115,7 +120,7 @@ def both(lang: str, key: str = "", **fmt: str) -> str:
             f' data-zh="{_attr(chinese)}">{shown}</span>')
 
 
-def attr(lang: str, kind: str = "", key: str = "", **fmt: str) -> str:
+def attr(lang: str, kind: str = "", key: str = "", /, **fmt: str) -> str:
     """One attribute a reader reads, in both languages: the design's own shape.
 
     The board writes a translatable attribute twice - once as the attribute itself, so
@@ -152,7 +157,7 @@ def attr(lang: str, kind: str = "", key: str = "", **fmt: str) -> str:
             f' data-en="{_attr(english)}" data-zh="{_attr(chinese)}"')
 
 
-def t(lang: str, key: str = "", **fmt: str) -> str:
+def t(lang: str, key: str = "", /, **fmt: str) -> str:
     """One string in one language, for the three places the swap cannot reach.
 
     The `<html lang>` itself, the cells the shipped script re-writes every two seconds
@@ -160,6 +165,8 @@ def t(lang: str, key: str = "", **fmt: str) -> str:
     value that carries a tag - which `both()` refuses.  Everything else a reader sees,
     including every `title=` and `aria-label=`, goes through `both()`/`attr()`, or the
     reader needs a reload to change language halfway down a page.
+
+    `lang` and `key` are positional-only, for `both()`'s reason.
     """
     _check_lang(lang)
     return _lookup(lang, key, **fmt)

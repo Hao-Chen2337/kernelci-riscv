@@ -19,16 +19,24 @@ fact the same way - one row per pair, with `col.in_gap` saying which rows the pa
 own subject is - so that is the shape here, and a reader who wants only the gap narrows
 it (`?ran=never`), which is what the filter above is for.
 
-**One bar, one test, ticks per build.**  This is the screen the operator's
-「test 有些好像有但是不能勾选跑不了」 was reported against, and the shape it describes is
-a second `test` control: a table drawn for one test while the bar beside it ran
-another, and a row of the other test left with a dash where its box should be.  There
-is one `test` here - the filter's, which is also what selects the rows - the bar sends
-it as a hidden field (`table.py run` falls back to *all three* tests when a body
-carries no `test`), and a row whose test is not the one in force prints a **link to
-that test** rather than nothing (this screen's rule, `_ready_cell`: a dash
-is true of the code and unreadable to a reader).  The tick is per **build**, because
-the command carries one test: two boxes under one build would be one command twice.
+**One bar, and every row of the table is a tick box.**  This is the screen the
+operator's 「test 有些好像有但是不能勾选跑不了」 was reported against, and the shape it
+described was a second `test` control: a table drawn for one test while the bar beside
+it ran another, and a row of the other test left with a link where its box should be.
+That link only moved the filter above and re-drew the page - two loads to start one
+row - so the row itself is what ticks now, and the command is built out of the rows.
+
+**A tick is one (build, test) pair, which is why the engine took a new flag.**  The old
+bar carried one `test` and ticked builds, because `table.py run --build A --test boot`
+is a *cross product*: two tests times two builds is four runs.  A box under the second
+test of a build therefore could not be honoured - the page drew a link instead, and
+the operator's complaint was exactly that row.  `--pair <build_id>:<test>` names the
+pairs themselves (`table.py`'s `_jobs`), one run each, which is what a row already is:
+the box sends its own row's `<build_id>:<test>`, the bar sends no `test` at all, and
+any mixture of ticked rows runs as the mixture that was ticked.  The printed argv says
+`action.ticked_pair` where the ids go (`_argv_of_ticked`); the executor and the skip
+behind it are unchanged - which pairs actually run is still the ledger's answer.
+
 That is also why the board's per-row `run <test>` button is not drawn - the old page
 replaced fifty-one of them with the one bar over this table, and a second POST shape
 for one command is how the two came to disagree.
@@ -41,6 +49,19 @@ triples carry that reason in words, and `Gui.todo` is memoised for the request
 engine's own answer.  A pair the ledger *already has* is not in `todo()`; its box is
 still disabled and says the one word that is true of it, and `needs` lists what the
 test waits for.
+
+**能跑 means one thing on this page, and 能跑? is where it is asked.**  The operator's
+「能跑 vs 没下载资源」 named two states that read the same, and the page had two
+reasons for it: the 能跑? column answered its question with `filter.missing` - the
+*filter's* word for the axis, which reads 缺什么, a question about a resource rather
+than a verdict about the row, drawn in the same neutral tone - and the 在缺口里 column
+answered *its* question with `state.ready`, so one row could print 跑不了 (this pair's
+files are not all here) beside 能跑 (this pair has no record) in two adjacent cells.
+So the pair is now `state.ready` against `state.cannot_run` (跑不了, toned `warn`, the
+colour the 构件 column gives a named artifact that has not arrived), the gap's own two
+answers are `state.not_run` (还没跑) and `state.already_recorded`, and the reason a row
+cannot run stays where it already was: which artifact, and which of its two ways of
+being missing, is `col.artifact`'s answer (`_waiting_cell`).
 
 **Nothing here is computed.**  A verdict is the record's word, a count is
 `re.todo()`'s or `Records`', and every command line under a button comes from
@@ -56,11 +77,33 @@ reader with the script off a way to apply the bar.  The axes the board's `/jobs`
 drops (`api`, `branch`, `arch`, `defconfig`, `compiler`, `state`, `result`, `origin`,
 `evidence`, `missing`) are drawn too, behind `details.more` as the board's own
 `/builds` draws them: hiding them, which is what the old page did, is how a reader who
-narrowed by `origin=card` on `/` lost the condition here without being told.  And the
+narrowed by `origin=card` on `/` lost the condition here without being told.  Nine of
+the axes are offered as **sets** rather than one value each (`ui.multi`): `tree`/`arch`/
+`defconfig`/`compiler` as they always were, and `state`/`result`/`verdict`/`evidence`/
+`missing` because the operator asked for 「一个指标多个值筛选」 and each of those is a
+small closed vocabulary where "any of these" is a question a reader really has - with
+one refusal kept: an empty set already means "no condition", so a chip list never offers
+the `any` its own emptiness says.  `branch`, `test` and `ran` stay single-valued
+(`Filter.from_query` and `schema.MULTI_FIELDS` say why each one is not a set), and
+`origin` is a set of the **two sides** a row can come from - drawn as two ticks by
+`builds._origin_boxes`, the same control `/` and `/analysis` draw, so one axis has one
+spelling rather than a three-value select here and two ticks there.  And the
 board's per-record `log` button is not drawn: it points at `/runs#<build_id>`, whose
 anchor names no row (the ids on that page are runs, not builds), and `data._ledger`
 hands on no log path for a record - a link that opens the wrong page is worse than the
 one click it costs to read the ledger and the activities side by side.
+
+**The table's own columns are the doors to the rest of the page's answers.**  Three
+of them stop being a printed value and become a way in, which is what an operator
+asked for after reading them: 跑了几次 is a **link** to the page that draws every run
+of that (build, test) pair (`builds._run_history_panel`, reached by `?test=`, so the
+panel that already existed is the one that opens and no second renderer is written),
+在缺口里？ says which of the two things the column means, and 构件 says **which** artifact
+a row is waiting for and **in which of two ways** it is missing - the card names no
+URL for it (nothing will ever fetch it) or it is named and not here yet (a pull fixes
+it) - while an artifact whose bytes are on disk is waiting for nothing whatever the
+card says (`Build._why`).  All three read the engine (`Build.lacking`,
+`re.todo()`), so the page and `table.py run` cannot disagree about what a row needs.
 
 The ledger's `source` column is who wrote the record, and it is a column rather than a
 tooltip for one reason: `worker` is the row an operator opens this page to find.
@@ -70,23 +113,24 @@ import urllib.parse
 from functools import partial
 
 from ....build import ARTIFACTS
-from ....i18n import DEFAULT_LANG
+from ....i18n import DEFAULT_LANG, t
 from ...forms import _names
 from ...schema import (
     _LABELS,
     DAY_CHOICES,
     EVIDENCE,
-    FILTER_ORDER,
     KBUILD_STATES,
     LIMITS,
     MAX_DAYS,
     MAX_LIMIT,
-    ORIGINS,
     RANS,
     RESULTS,
     VERDICTS,
+    _labels,
 )
+from ...urls import _carried
 from .. import ui, words
+from .builds import _origin_boxes
 
 # The form the gap table's boxes belong to (`_tick_cell`'s own name).  A box in a
 # table cell cannot live inside a form drawn in the panel's head, so the two are joined
@@ -111,10 +155,12 @@ def jobs(view) -> str:
     ledger = list(view.rows.get("ledger") or ())[:view.check.limit]
     return "".join((
         _bar(view, _MAIN, _main_fields(view)),
-        ui.more(words.both(view.lang, "btn.more"), _bar(view, _FOLD, _fold_fields(view))),
-        _gap_panel(view, pairs, _boxed(view, pairs), todo, reasons),
+        ui.more(words.both(view.lang, "btn.more"), _bar(view, _FOLD, _fold_fields(view)),
+                # The fold this page's 更多筛选 row is remembered by: `/jobs` has one,
+                # and the row a reader opened comes back open (`ui._fold`).
+                fold="more.jobs"),
+        _gap_panel(view, pairs, todo, reasons),
         _ledger_panel(view, ledger),
-        _one_shot_panel(view),
     ))
 
 
@@ -138,9 +184,13 @@ def _bar(view, drawn, fields_html: str) -> str:
     query string - so each bar carries every key it does not draw as a hidden field.
     Without them, `apply` on the folded row would answer a question with no tree in it,
     and nothing on the page would say so.
+
+    The keys are `urls._carried`'s and not a walk of `FILTER_ORDER`, because the order is
+    not the whole of the filter: the top bar's clock (`shell.tz_switch`) is a `Filter`
+    field outside it, and a rule that only walked the order reset the reader's clock on
+    every apply.
     """
-    carried = dict(view.check.to_query())
-    hidden = [(key, carried.get(key, "")) for key in FILTER_ORDER if key not in drawn]
+    hidden = _carried(view.route, view.check, drawn)
     hidden.append(("lang", "" if view.lang == DEFAULT_LANG else view.lang))
     return ui.filters(fields_html, _bar_buttons(view), action=view.route, auto=True,
                       hidden=hidden)
@@ -149,10 +199,15 @@ def _bar(view, drawn, fields_html: str) -> str:
 def _bar_buttons(view) -> str:
     """`start over` and `apply`, the pair every bar ends with.
 
-    The link drops the whole question and keeps the two keys that are not conditions:
-    `lang`, and `api` - the identity of the stack the console is pointed at
-    (`urls._url`), so a reader on a production view who presses "start over" stays on it
-    rather than being moved to the local stack with nothing said.
+    The link drops the whole question and keeps the three keys that are not *conditions*:
+    `api` - the identity of the stack the console is pointed at (`urls._url`), so a reader
+    on a production view who presses "start over" stays on it rather than being moved to
+    the local stack with nothing said; `lang`; and `tz`, which is the reader's clock.  The
+    clock is the one this link used to lose, and it was the odd one out on the site -
+    `/`, `/analysis`, `/trend`, `/runs` and `/worker` all kept it, so "start over" on
+    `/jobs` was the single control in the console that could move a reader's clock without
+    their asking.  It changes nothing about *which* rows are shown, which is why it is
+    carried and not cleared with the question.
 
     The button is written here because `ui.btn` is `type="button"` by contract ("a
     button that posts is `action_form`'s"), and a bar whose only submit is JavaScript is
@@ -161,7 +216,7 @@ def _bar_buttons(view) -> str:
     """
     lang = view.lang
     return (ui.link_btn(words.both(lang, "btn.reset"),
-                        view.url("", carry=("api", "lang")), lang=lang)
+                        view.url("", carry=("api", "lang", "tz")), lang=lang)
             + '<button type="submit" class="btn primary sm">'
             + words.both(lang, "btn.apply") + "</button>")
 
@@ -216,10 +271,14 @@ def _main_fields(view) -> str:
                            _choices(RANS, check.ran, _LABELS["ran"], any_key=None, lang=lang),
                            check.ran, labeler=label),
                  width="w-sm"),
+        # 最近 as a **set** of verdicts (`?verdict=fail,incomplete`), which is the
+        # operator's 「一个指标多个值」 asked of this column: "which pairs are failing,
+        # one way or another" is one question, and "fail or incomplete" is not the
+        # same as the "any" a select box had to fall back on.
         ui.field(words.both(lang, "filter.verdict"),
-                 ui.select("verdict",
-                           _choices(VERDICTS, check.verdict, _LABELS["verdict"], lang=lang),
-                           check.verdict, labeler=label),
+                 ui.multi("verdict", _names(check.verdict), VERDICTS[1:],
+                          labels=_labels("verdict", lang),
+                          placeholder="state.any", label="filter.verdict", lang=lang),
                  width="w-md"),
         ui.field(words.both(lang, "filter.days"),
                  ui.number_input("days", check.days, max_=MAX_DAYS, stops=DAY_CHOICES),
@@ -269,56 +328,46 @@ def _fold_fields(view) -> str:
                  ui.multi("compiler", _names(check.compiler), rows.get("compilers") or (),
                           placeholder=empty, label="word.compiler", lang=lang),
                  width="w-md"),
+        # The two kbuild axes as sets, like the four above them: `?state=done,running`
+        # is "still building or finished", and it is sent to the API as `state__in`
+        # (`schema.MULTI_FIELDS` measures why a comma in a plain key answers 0).  The
+        # word for `done`/`running` is `job_state`'s, which is the table the job nodes
+        # of the same vocabulary already draw from - one word for one state.
         ui.field(words.both(lang, "word.state"),
-                 ui.select("state", _choices(KBUILD_STATES, check.state, lang=lang),
-                           check.state, labeler=label),
+                 ui.multi("state", _names(check.state), KBUILD_STATES[1:],
+                          labels=_labels("job_state", lang),
+                          placeholder=empty, label="word.state", lang=lang),
                  width="w-sm"),
         ui.field(words.both(lang, "word.result"),
-                 ui.select("result", _choices(RESULTS, check.result, lang=lang),
-                           check.result, labeler=label),
+                 ui.multi("result", _names(check.result), RESULTS[1:],
+                          placeholder=empty, label="word.result", lang=lang),
                  width="w-sm"),
-        ui.field(words.both(lang, "filter.origin"),
-                 ui.select("origin",
-                           _choices(rows.get("origins") or ORIGINS, check.origin,
-                                    _LABELS["origin"], any_key=None, lang=lang),
-                           check.origin, labeler=label),
-                 width="w-sm"),
+        # The same two ticks `/` draws, from the same function: 有卡片 and 两个都要 were
+        # values *this* select offered and `/`'s no longer does, so the same axis had two
+        # spellings one click apart.  `builds._origin_boxes` says why neither value is
+        # needed (卡片 is a column of its own two panels up, and two ticks *are* 两个都要).
+        ui.field(words.both(lang, "filter.origin"), _origin_boxes(view), width="w-md"),
+        # 证据 and 缺失 as sets too, and neither is sent to the API (`API_FILTERS` has
+        # no key for them): a row is in when *any* named value holds of it, answered by
+        # `Filter.accepts` on the rows this page has.  `EVIDENCE`'s own `any` is left
+        # out of the offered chips - an empty set already means it, and a chip that
+        # says "no condition" beside three real conditions is a trap.
         ui.field(words.both(lang, "filter.evidence"),
-                 ui.select("evidence",
-                           _choices(rows.get("evidences") or EVIDENCE, check.evidence,
-                                    _LABELS["evidence"], any_key=None, lang=lang),
-                           check.evidence, labeler=label),
+                 ui.multi("evidence", _names(check.evidence),
+                          [one for one in (rows.get("evidences") or EVIDENCE) if one != "any"],
+                          labels=_labels("evidence", lang),
+                          placeholder=empty, label="filter.evidence", lang=lang),
                  width="w-md"),
         ui.field(words.both(lang, "filter.missing"),
-                 ui.select("missing",
-                           _choices(ARTIFACTS, ",".join(check.missing), lang=lang),
-                           ",".join(check.missing), labeler=label),
+                 ui.multi("missing", _names(check.missing), ARTIFACTS,
+                          placeholder=empty, label="filter.missing", lang=lang),
                  width="w-md"),
     ))
 
 
 # -------------------------------------------------------------------- the gap
-def _boxed(view, rows) -> dict:
-    """Which rows get a tick box, keyed by `(build_id, test)`: the old page's rule.
-
-    The tick is per **build** and not per row, because the bar carries one `test`: a box
-    on two rows of one build would be one command twice.  With a test in force the box
-    goes on that test's row and the others link to theirs; with no test in force the
-    command runs all three tests for every ticked build, so the box goes on the build's
-    first row.  A `(build, test)` pair is one row of this table, so the pair is the row's
-    identity and a cell can find its own answer back.
-    """
-    found, seen = {}, set()
-    for one in rows:
-        first = one["build_id"] not in seen
-        seen.add(one["build_id"])
-        found[(one["build_id"], one["test"])] = (one["test"] == view.check.test
-                                                 if view.check.test else first)
-    return found
-
-
-def _gap_panel(view, pairs, boxed: dict, todo: list, reasons: dict) -> str:
-    """The gap: its own two numbers, the command that runs the ticked builds, its table.
+def _gap_panel(view, pairs, todo: list, reasons: dict) -> str:
+    """The gap: its own two numbers, the commands this table starts, and its table.
 
     **The table draws every pair this request read, and the gap is a column.**  The
     board's panel says "every pair with no record" and draws nothing else - and on this
@@ -338,59 +387,120 @@ def _gap_panel(view, pairs, boxed: dict, todo: list, reasons: dict) -> str:
         # the page it goes to is this one, with the question it was drawn for.
         (words.both(lang, "counts.shown"), str(len(pairs)), "", view.url("")),
     ), lang=lang)
-    return ui.panel("label.gap", chips + _gap_table(view, pairs, boxed, reasons),
+    return ui.panel("label.gap", chips + _gap_table(view, pairs, reasons),
                     sub=words.both(lang, "jobs.run_sub"),
-                    tools=_run_bar(view, boxed), lang=lang)
+                    tools=_run_bar(view, pairs), lang=lang)
 
 
-def _run_bar(view, boxed: dict) -> str:
-    """The one command this table's ticks feed: the select-all, and its POST.
+def _run_bar(view, pairs) -> str:
+    """Every command this table starts: the ticks' POST, then the two whole-window runs.
 
-    One action bar and not one button per row - the shape the operator asked for.  The
-    `test` it runs with is the filter's, sent only when the bar names one: `command()`
-    leaves `--test` out for an empty value, and that is what makes a box in the tick
-    column mean "the test chosen above, times every ticked build".  The select-all is
-    rendered `hidden` until the script wires it (`ui.checkbox`): with the script off a
-    box that ticks nothing would be a lie, and the boxes below are tickable by hand.
+    One action bar and not one button per row - the shape the operator asked for.  Its
+    only field is the API: a tick now carries its own test (`_tick_cell` puts
+    `<build_id>:<test>` in the box), so there is no `test` left for the bar to name, and
+    its absence is what lets one command run rows of different tests - the mixture that
+    was ticked, which is the whole of `--pair` (`table.py`'s `_jobs`).  The select-all
+    counts every row drawn, because every row has a box; it is rendered `hidden` until
+    the script wires it (`ui.checkbox`), since with the script off a box that ticks
+    nothing would be a lie, and the boxes below are tickable by hand.
+
+    **按天跑 and 跑最新构建 live here too, and not in a panel of their own.**  They used
+    to be one more `ui.panel` under this table with its own fold, its own form and its
+    own copy of `tree`/`branch`/`days` - so a reader who had just read the table above
+    it set the same four values a second time, and the fold was the only place the day
+    run's window was ever visible.  Both commands are *selectors over this table's own
+    question*: they read the filter drawn above the table (tree, branch, days, limit)
+    and they run what the ledger does not have, which is the column 在缺口里 already
+    answers per row.  So they are two buttons on the table's own bar, their argv is
+    built from this page's filter (`_argv_of`, the only source of an argv this console
+    runs), and the list of what they would run is the table they sit on - narrowed with
+    `?days=` and 在缺口里, rather than a second renderer of the same pairs.  Both keep
+    the `_one_tree` refusal: `runday.py` and `run_latest.py` take one tree each.
     """
     check, lang = view.check, view.lang
-    boxes = sum(1 for on in boxed.values() if on)
-    fields = [("api", check.api)] + ([("test", check.test)] if check.test else [])
-    return (ui.checkbox("all", words.both(lang, "tick.all", n=boxes), all_for=_RUN_FORM,
-                        lang=lang)
-            + ui.action_form("run", words.both(lang, "btn.run_ticked"), fields=fields,
-                             argv=view.gui._argv_of_ticked("run", {"test": check.test},
-                                                           lang, api=check.api),
-                             hint="jobs.run_hint", form_id=_RUN_FORM, lang=lang))
+    day_fields = [("api", check.api), ("tree", check.tree), ("branch", check.branch),
+                  ("days", str(check.days)), ("limit", str(check.limit))]
+    day_argv = {"tree": check.tree, "branch": check.branch, "days": str(check.days),
+                "limit": str(check.limit)}
+    fetch_fields = [("api", check.api), ("tree", check.tree), ("branch", check.branch),
+                    ("test", check.test)]
+    fetch_argv = {"tree": check.tree, "branch": check.branch, "test": check.test}
+    return (ui.checkbox("all", words.both(lang, "tick.all", n=len(pairs)),
+                        all_for=_RUN_FORM, lang=lang)
+            + ui.action_form("run", words.both(lang, "btn.run_ticked"),
+                             fields=[("api", check.api)],
+                             argv=view.gui._argv_of_ticked("run", {}, lang, api=check.api,
+                                                           tick_word="action.ticked_pair"),
+                             hint="jobs.run_hint", form_id=_RUN_FORM, lang=lang,
+                             # **重跑, beside 跑.**  The operator's 「我必须点进某个 boot
+                             # 里面按那个重跑好像才行」: `--redo` existed and reached
+                             # `table.py run` (`actions.command`), but the only button on
+                             # any page that sent it was the one on a single build's page
+                             # (`builds._correspondence_commands`), so the ledger could
+                             # only be overridden one pair at a time, through a record the
+                             # reader had to go and find.  This is the same action, the
+                             # same ticks and the same fields, one `redo=1` apart - on the
+                             # button, not in a hidden field, so the 跑 beside it does not
+                             # send it and the two printed lines differ by `--redo` and by
+                             # nothing else.
+                             also=(("run", words.both(lang, "btn.run_redo"),
+                                    view.gui._argv_of_ticked("run", {"redo": "1"}, lang,
+                                                             api=check.api,
+                                                             tick_word="action.ticked_pair"),
+                                    "", (("redo", "1"),)),))
+            + ui.action_form("runday", words.both(lang, "btn.run_day"), fields=day_fields,
+                             argv=view.gui._argv_of("runday", day_argv, lang, api=check.api),
+                             hint="jobs.runday_hint", blocked=view.gui._one_tree(check, lang),
+                             lang=lang)
+            + ui.action_form("fetch", words.both(lang, "btn.run_newest"),
+                             fields=fetch_fields,
+                             argv=view.gui._argv_of("fetch", fetch_argv, lang, api=check.api),
+                             blocked=view.gui._one_tree(check, lang), lang=lang))
 
 
-def _gap_table(view, pairs, boxed: dict, reasons: dict) -> str:
+def _gap_table(view, pairs, reasons: dict) -> str:
     """The board's columns over the pairs this page drew, plus the one that names them.
 
     `col.in_gap` is the old page's own column and it is what tells a fail from a
     never-ran inside one table: the verdict column says what the ledger has, and this
-    one says whether the ledger has anything at all.  `col.artifact` is the board's last
-    cell - empty in its header, a per-row `run <test>` button in its body - and it is
-    where a row that cannot run says which artifact it is waiting for; the button is not
-    drawn (see the module docstring), and the data that takes its place is worth more
-    than the button was.
+    one says whether the ledger has anything at all.  `col.ready` is the pair's verdict
+    about *this machine* - 能跑 or 跑不了 - and it carries the header `title=` that
+    defines its two words, because the column is two characters wide and the vocabulary
+    is the operator's rather than the reader's (`_ready_cell`).  `col.artifact` is the
+    board's last cell - empty in its header, a per-row `run <test>` button in its body -
+    and it is where a row that cannot run says which artifact it is waiting for; the
+    button is not drawn (see the module docstring), and the data that takes its place is
+    worth more than the button was.
 
     `empty.no_rows` and not `empty.no_gap`: this table holds both halves, so "every pair
     already has a record" is the one thing an empty one does not mean.
+
+    **The build id is one cell for the three rows it names** (`Col(span=…)`): the rows
+    come from `Gui.job_rows` in build-major order, so a build's rows are contiguous and
+    the column can be drawn once per run of equal ids instead of three times.  Nothing
+    moves between the rows - each one keeps its own test, needs, readiness and box, and
+    the tick column above all of them, since a tick is a pair and not a build.  A run
+    the cap cuts in half is still one run here: the rows that were drawn span the rows
+    that were drawn, which is what a reader looking at this page can see.
     """
     lang = view.lang
     cols = (
-        ui.Col("", draw=lambda row: _tick_cell(view, row, boxed, reasons), kind="c",
+        ui.Col("", draw=lambda row: _tick_cell(view, row, reasons), kind="c",
                width="28px"),
         ui.Col("word.build_id", draw=lambda row: _build_cell(view, row["build_id"]),
-               kind="id"),
+               kind="id", span="build_id"),
         ui.Col("word.tree", draw=lambda row: _tree_cell(row["tree"])),
         ui.Col("word.test", draw=lambda row: ui.code(row["test"])),
         ui.Col("col.needs", draw=lambda row: _muted(row["needs"])),
-        ui.Col("col.ready", draw=lambda row: _ready_cell(row, lang), kind="c"),
-        ui.Col("label.runs", field="runs", kind="n"),
+        # The header's own `title=` defines the column's two answers: 能跑 and 跑不了 are
+        # the operator's pair of words and the page's only place where they are explained
+        # (`col.ready_title` says where the missing pieces are named, which is the 构件
+        # column below - the one this page was opened for).
+        ui.Col("col.ready", draw=lambda row: _ready_cell(row, lang), kind="c",
+               title="col.ready_title"),
+        ui.Col("label.runs", draw=lambda row: _runs_cell(view, row), kind="n"),
         ui.Col("label.last", draw=lambda row: _verdict_cell(row["last"], lang), kind="c"),
-        ui.Col("col.when", draw=lambda row: _stamp(row["when"]), kind="n"),
+        ui.Col("col.when", draw=lambda row: ui.stamp(row["when"], view.check.tz, seconds=True), kind="n"),
         ui.Col("col.in_gap", draw=lambda row: _gap_cell(row, lang), kind="c"),
         ui.Col("col.artifact", draw=lambda row: _waiting_cell(view, row, reasons),
                kind="wrapc"),
@@ -398,61 +508,168 @@ def _gap_table(view, pairs, boxed: dict, reasons: dict) -> str:
     return ui.table(cols, pairs, empty=words.both(lang, "empty.no_rows"), lang=lang)
 
 
-def _tick_cell(view, row, boxed: dict, reasons: dict) -> str:
-    """This row's box, its refusal, or the link that would give it a box at all.
+def _tick_cell(view, row, reasons: dict) -> str:
+    """This row's box, or its refusal in words.
 
-    A row whose test is not the test in force cannot be run by *this* bar: its box would
-    send that build with the wrong `test`, which is the operator's
-    「test 有些好像有但是不能勾选跑不了」.  A dash said nothing about why and nothing about
-    what to do; the link is the same page with that row's test chosen, and its tooltip is
-    the sentence that explains the rule.  A row that cannot run keeps its box and it is
+    Every row has one, whatever test is in force, and its value is the row's own
+    identity - `<build_id>:<test>` - because that is what `table.py run --pair` takes:
+    the box *is* the pair it sits under, so ticked rows of different tests run as the
+    mixture that was ticked (`_run_bar`).  A row that cannot run keeps its box and it is
     `disabled` with the reason - the artifact it is waiting for - in its `title=`.
     """
     lang = view.lang
-    if not boxed.get((row["build_id"], row["test"])):
-        return view.link("", words.both(lang, "jobs.tick_other", test=row["test"]),
-                         test=row["test"], cls="none",
-                         title=view.t("jobs.tick_other_title", test=row["test"]))
-    return ui.checkbox("selected", "", value=row["build_id"], form=_RUN_FORM,
-                       disabled_reason="" if row["ready"] else _waiting(row, reasons),
+    return ui.checkbox("selected", "", value=f"{row['build_id']}:{row['test']}",
+                       form=_RUN_FORM,
+                       disabled_reason="" if row["ready"] else _waiting(row, reasons, lang),
                        lang=lang)
 
 
-def _waiting(row, reasons: dict) -> str:
+def _waiting(row, reasons: dict, lang: str) -> str:
     """What a disabled box says: the artifacts this pair is waiting for.
 
     `ready` is `not Build.missing(test)`, and the names are that same answer read out of
-    `re.todo()`, whose triples carry it.  A pair the ledger already has is not in
-    `todo()`, so this page does not guess at a reason it was not handed: the box says
-    `filter.missing`, which is the whole of what is known about such a row.
+    `re.todo()`, whose triples carry it (`jobs()` builds `reasons` from the triples'
+    third element, which is `"; ".join(build.missing(test))` - a sentence, already
+    words).  A pair the ledger already has is not in `todo()`, so this page does not
+    guess at a reason it was not handed: it says `filter.missing` - the page's own word
+    for an artifact that is not on this disk - in the reader's language.
+
+    **The fallback is rendered here, and it used to be the key.**  Both callers take a
+    string to *draw* (`ui.checkbox(disabled_reason=…)` for the row's box,
+    `ui.esc(…)` in a `<span class="dash">` for the 构件 cell), and the fallback was the
+    catalogue key `filter.missing` itself - so the box got a translation, because
+    `ui._attr` looks a key up when it recognises one, while the 构件 cell printed the
+    key: `filter.missing` on screen, the class of bug `ui._attr`'s key-shape guard
+    raises on.  One function cannot answer both a word and a key, and this one's real
+    values were always words (the sentences above), so the fallback became a word too
+    and the `lang` came with it.  A key that reaches a screen is a bug whether or not
+    today's rows reach the branch that prints it.
+
+    What the box's `title=` loses by this is the swap pair `ui._attr` writes for a key
+    (`data-en`/`data-zh`): it is now one language, like the sentence every other row's
+    box already carries there.  Nothing is lost on screen - the page is drawn in the
+    language that was asked for, `t()` renders in it, and the shell's language switch
+    is a link that reloads, not a swap in place.
     """
-    return reasons.get((row["build_id"], row["test"])) or "filter.missing"
+    return reasons.get((row["build_id"], row["test"])) or t(lang, "filter.missing")
 
 
 def _ready_cell(row, lang: str) -> str:
-    """`ready?`: whether every artifact this test needs is on disk, and its toned word."""
+    """`能跑?`: whether every artifact this test needs is on disk, in two stated words.
+
+    **能跑 against 跑不了 - the operator's 「能跑 vs 没下载资源」.**  The cell answered
+    this question before with `state.ready` against `filter.missing`, and the second of
+    those is the *filter's* word for the axis: it reads 缺什么, a question about a
+    resource rather than a verdict about the row, and `ui.STATE` tones `missing` `idle`
+    - the same neutral grey a fact about nothing is drawn in - so a pair whose files are
+    all here and a pair waiting for bytes were two cells a reader had to read a second
+    time to tell apart.  The negative is `state.cannot_run` (跑不了) in the `warn` tone,
+    which is the colour the 构件 column gives a named artifact that has not arrived yet
+    (`col.artifact.no_bytes`) - the state this one usually means, and the one a pull
+    fixes.
+
+    **The reason is not repeated here.**  *Which* artifact is missing and *which of the
+    two ways* it is missing is `col.artifact`'s answer (`_waiting_cell`), which is the
+    column beside this one; what the test wanted in the first place is `needs`, two
+    columns to the left.  This cell is the verdict only, and the header's `title=`
+    (`col.ready_title`) is where its two words are defined.
+
+    The word is also the non-colour half of the signal: 跑不了 cannot be misread for
+    能跑 with the script off or by a reader who does not tell the two tones apart, and
+    the two words are the operator's own (the module docstring says why).
+    """
     if row["ready"]:
         return ui.pill("ready", label="state.ready", lang=lang)
-    return ui.pill("missing", label="filter.missing", lang=lang)
+    return ui.pill("cannot run", label="state.cannot_run", tone_override="warn", lang=lang)
+
+
+def _runs_cell(view, row) -> str:
+    """How many runs the ledger holds for this pair - and the door to those runs.
+
+    The count is the link, because the count is the question: a reader looking at `3`
+    wants to know which of the three the ledger kept and what the others said, and the
+    page that answers it already exists (`builds._run_history_panel`, reached by
+    `?test=`), so this is a link and not a second renderer.  The route is the *old*
+    layer's per-copy page (`/local/<build_id>`) rather than `/analysis/<build_id>`:
+    the panel lives there, and `test` is one of the few keys that route reads
+    (`ROUTE_KEYS`), which is what carries the pair across.
+
+    Zero is not a link: the panel would open on "no run of this pair", which is what
+    this row's 最近 and 何时 already say, and a link that can only answer nothing is
+    worse than the number that says nothing.
+    """
+    if not row["runs"]:
+        return ui.num(row["runs"])
+    return view.link("/local/" + urllib.parse.quote(row["build_id"]),
+                     ui.num(row["runs"]), test=row["test"])
 
 
 def _waiting_cell(view, row, reasons: dict) -> str:
-    """The artifact a row is waiting for, or the design's dash when it waits for none.
+    """Which artifact a row is waiting for, **and which of the two ways it is missing**.
 
-    Printed **verbatim**, which is `_ledger_table`'s rule for a record's own
-    words: `Build.missing(test)` answers with the artifact and what is wrong with it
-    (`kernel: not downloaded yet (<path>)`), that sentence is the engine's, and a page
-    that trimmed it to the first word would be rewriting a fact nobody here can
-    re-observe.  The column is bounded (`wrapc`) because that sentence is long.
+    The board's last cell is a per-row `run <test>` button, which this page does not
+    draw (see the module docstring): what a reader needs from a row that cannot run is
+    the artifact that stops it, and an artifact can be absent in two states that need
+    two different responses - the card names no URL for it (nothing will ever fetch it:
+    no run of this pair can ever start from the API's answer) or it is named and not
+    here yet (a pull fixes it).  The operator asked for exactly this
+    (「区分一下没有下载和没有网址」), and `Build.lacking` is the engine's answer, made
+    once so the page and `table.py run` cannot come to disagree about which pairs run.
+
+    A card with **no URL whose bytes are on disk** is not waiting for anything: `_why`
+    asks the file first, so such an artifact is in neither group - which is the answer
+    to 「没有网址理论也可以硬塞入资源？」, and the reason a file put there by hand makes
+    a pair runnable (`Build.make`).  The hint says so where the reader meets the state.
+
+    A build this machine has no card for has no `Build` to ask (`build_of` answers
+    `None`): the reason `re.todo()` gave is then the whole of what is known, and that
+    is the sentence this cell printed before the two states existed.
     """
     if row["ready"]:
         return ui.DASH
-    return f'<span class="dash">{ui.esc(_waiting(row, reasons))}</span>'
+    lang = view.lang
+    build = view.gui.build_of(row["build_id"])
+    lacking = build.lacking(row["test"]) if build is not None else None
+    if not lacking or any(why not in (build.NO_URL, build.NO_BYTES) for _, why in lacking):
+        # `Build.lacking` answers a prose reason with an empty name when the test
+        # itself is unknown here (`needs()` refused it); that, and no card at all,
+        # both fall back to `_waiting`'s sentence - which is the same string the row's
+        # box carries, and now a word in the reader's language rather than a key
+        # (`_waiting` says why: this is the caller that printed the key).
+        return f'<span class="dash">{ui.esc(_waiting(row, reasons, lang))}</span>'
+    # One pill per *run* of equal why, so the artifacts keep the order the test asks
+    # for them in (`kernel, modules, kselftest`) instead of being sorted by state.
+    drawn, sentence = [], "; ".join(build.missing(row["test"]))
+    for name, why in lacking:
+        if not drawn or drawn[-1][0] != why:
+            drawn.append((why, []))
+        drawn[-1][1].append(name)
+    words_of = {build.NO_URL: "col.artifact.no_url", build.NO_BYTES: "col.artifact.no_bytes"}
+    tones = {build.NO_URL: "bad", build.NO_BYTES: "warn"}
+    title = sentence
+    if any(why == build.NO_URL for _, why in lacking):
+        title = f"{sentence} - {view.t('col.artifact.no_url_hint')}"
+    cells = " ".join(ui.pill(tones[why], label=words_of[why], lang=lang)
+                     + " ".join(ui.code(name) for name in names)
+                     for why, names in drawn)
+    return f'<span title="{ui.esc(title)}">{cells}</span>'
 
 
 def _gap_cell(row, lang: str) -> str:
-    """Whether this pair is the panel's own subject: in the gap, or already recorded."""
-    return words.both(lang, "state.yes" if row["gap"] else "state.already_recorded")
+    """Whether this pair is the panel's own subject: still to run, or already recorded.
+
+    The two words are the column header's two answers (`col.in_gap`): `state.not_run`
+    (还没跑) and `state.already_recorded`.  The first one used to be `state.ready`, which
+    was the improvement on the bare `state.yes` it once printed - the header asked "in
+    the gap?" and the reader got "是" beside "已经记过", so neither cell answered its own
+    heading - but 能跑 is the word the 能跑? column beside this one answers a different
+    question with, and a row could therefore print 跑不了 and 能跑 in two adjacent cells
+    (the operator's 「能跑 vs 没下载资源」; the catalogue says the rest).  A record's own
+    two states are now spelled in words about the *record*, which is what this column is
+    about.  What is computed is unchanged - `row["gap"]` is `re.todo()`'s answer for the
+    pair.
+    """
+    return words.both(lang, "state.not_run" if row["gap"] else "state.already_recorded")
 
 
 def _verdict_cell(one, lang: str) -> str:
@@ -493,7 +710,7 @@ def _ledger_table(view, rows) -> str:
         ui.Col("col.verdict", draw=lambda row: _verdict_cell(row["verdict"], lang), kind="c"),
         ui.Col("col.exit", field="exit", kind="n"),
         ui.Col("col.source", draw=lambda row: _source_cell(row["source"], lang), kind="c"),
-        ui.Col("col.when", draw=lambda row: _stamp(row["when"]), kind="n"),
+        ui.Col("col.when", draw=lambda row: ui.stamp(row["when"], view.check.tz, seconds=True), kind="n"),
         ui.Col("col.detail", field="detail", kind="wrapc"),
     )
     return ui.table(cols, rows, empty=words.both(lang, "empty.no_ledger_record"), lang=lang)
@@ -502,35 +719,6 @@ def _ledger_table(view, rows) -> str:
 def _source_cell(one, lang: str) -> str:
     """Who wrote the record: `worker` is the row an operator looks for."""
     return ui.pill(one, tone_override="info", lang=lang) if one else ui.DASH
-
-
-# --------------------------------------------------------------- the one-shots
-def _one_shot_panel(view) -> str:
-    """The two commands that are not "run the ticked builds", behind one fold.
-
-    Both take one tree, so both are refused where the filter names several
-    (`Gui._one_tree`): the button keeps its label and says why in its `title=`, which is
-    how the reader finds out what to untick.  Folded, as the board draws it - these are
-    the commands a reader starts once the table above has told him what to run.
-    """
-    check, lang = view.check, view.lang
-    day_fields = [("api", check.api), ("tree", check.tree), ("branch", check.branch),
-                  ("days", str(check.days)), ("limit", str(check.limit))]
-    fetch_fields = [("api", check.api), ("tree", check.tree), ("branch", check.branch),
-                    ("test", check.test)]
-    day_argv = {"tree": check.tree, "branch": check.branch, "days": str(check.days),
-                "limit": str(check.limit)}
-    fetch_argv = {"tree": check.tree, "branch": check.branch, "test": check.test}
-    return ui.panel(
-        "page.jobs.day_title",
-        ui.action_form("runday", words.both(lang, "btn.run_day"), fields=day_fields,
-                       argv=view.gui._argv_of("runday", day_argv, lang, api=check.api),
-                       hint="jobs.runday_hint", blocked=view.gui._one_tree(check, lang),
-                       lang=lang)
-        + ui.action_form("fetch", words.both(lang, "btn.run_newest"), fields=fetch_fields,
-                         argv=view.gui._argv_of("fetch", fetch_argv, lang, api=check.api),
-                         blocked=view.gui._one_tree(check, lang), lang=lang),
-        collapsible=True, open_=False, lang=lang)
 
 
 # ------------------------------------------------------------------- the cells
@@ -558,14 +746,3 @@ def _tree_cell(value: str) -> str:
 def _muted(value: str) -> str:
     """A value in the quiet ink - the board's own treatment of `needs`."""
     return f'<span class="muted">{ui.esc(value)}</span>' if value else ui.DASH
-
-
-def _stamp(value) -> str:
-    """A record's timestamp as the board prints it: the day, then the clock, quiet."""
-    if not value:
-        return ui.DASH
-    day, _, clock = str(value).partition("T")
-    if not clock:
-        return f'<span class="nowrap">{ui.esc(day)}</span>'
-    return (f'<span class="nowrap">{ui.esc(day)} '
-            f'<span class="muted">{ui.esc(clock)}</span></span>')

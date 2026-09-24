@@ -14,10 +14,11 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from ..i18n import DEFAULT_LANG
-from .schema import FILTER_ORDER, ROUTE_KEYS
+from .schema import FILTER_ORDER, route_keys
 
 if TYPE_CHECKING:
     from .models import Filter
+
 
 def _url(route: str, check: "Filter | None", *drop: str,
          carry: Iterable[str] | None = None, keep: Iterable[tuple[str, str]] = (),
@@ -73,23 +74,10 @@ def _url(route: str, check: "Filter | None", *drop: str,
         # A reader switching languages is stating a preference, and a preference that
         # is the default still has to be spelled or the cookie outvotes it.
         pairs["lang"] = lang
-    # The route's own key list, by **longest prefix**: `/analysis/<id>` is the same
-    # page's keys (`/analysis/`) plus the build id in the path, and `/local/<id>` reads
-    # the api key even though it is not a station.  An exact-match lookup made a detail
-    # route's whitelist empty, so a link into one comparison silently dropped the order
-    # and the comparison cap it was made under - and a comparison read out of the context
-    # it was made in is a different comparison.
-    wanted = set(ROUTE_KEYS.get(route, ()))
-    # `"/"` is a route and also a prefix of every route, so leaving it in this loop
-    # made every link that named no `carry` inherit the builds page's whole filter:
-    # `_url("/runs", Filter(limit=25, origin="any"))` answered
-    # `/runs?limit=25&origin=any`, a URL that says the reader asked `/runs` for an
-    # origin and a window it does not read.  Its own keys are already in `wanted`
-    # from the exact lookup above; a *detail* route (`/local/`, `/analysis/`) is what
-    # the prefix loop is for - a page and its drill-down share one key list.
-    for name, allowed in ROUTE_KEYS.items():
-        if name != "/" and name.endswith("/") and route.startswith(name):
-            wanted |= set(allowed)
+    # The route's own key list (`route_keys` says how the longest-prefix part works, and
+    # is the one spelling of it - `ui.pager` asks the same question to know which page
+    # state a link has to keep), narrowed to what this caller wants carried.
+    wanted = set(route_keys(route))
     if carry is not None:
         wanted &= set(carry)
     # An override the caller wrote by hand is that caller's decision and is never
@@ -102,6 +90,34 @@ def _url(route: str, check: "Filter | None", *drop: str,
     query = urllib.parse.urlencode([(key, pairs[key]) for key in ordered
                                     if key in given or key in wanted])
     return f"{route}?{query}" if query else route
+
+
+def _carried(route: str, check: "Filter | None",
+             drawn: Iterable[str] = ()) -> list[tuple[str, str]]:
+    """Every condition the filter holds that a GET bar on `route` must spell out again.
+
+    A GET form replaces the whole query string, so a key a bar draws no control for is a
+    key the next request silently answers without.  This is the inverse of the whitelist
+    `_url` applies to a link, and it asks the same three questions: what the filter holds
+    (`to_query()`, which is the conditions with their defaults omitted and no page state),
+    what this route reads (`route_keys`), and what this bar draws for itself (`drawn`).
+
+    The route's list is here because a form has no whitelist of its own - the browser
+    submits whatever is inside it - so a bar states the keys rather than handing over
+    everything the page happens to hold.  The filter's list is here because
+    `FILTER_ORDER` is *not* the whole of it, and a rule that walked only the order could
+    not see a `Filter` field the order does not list.  That was not a theoretical gap:
+    `tz` and `tests` are both outside the order, and the clock select on `/analysis` was
+    a control that changed nothing for exactly this reason - the bar above it wrote a
+    hidden copy of the same key, and of a repeated key the first one wins
+    (`forms._first`).
+    """
+    if check is None:
+        return []
+    named = set(drawn)
+    allowed = set(route_keys(route))
+    return [(key, value) for key, value in check.to_query()
+            if key in allowed and key not in named]
 
 
 def _link(route: str, check: "Filter | None", carry: Iterable[str], text: str,

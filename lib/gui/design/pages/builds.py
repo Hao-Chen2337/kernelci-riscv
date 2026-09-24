@@ -43,11 +43,21 @@ would answer a narrower question than the number it printed.  The old strip meas
 failure in a smaller size: `with bytes 9` linking to a page of 8 rows, because
 `6a986b26e41d7f97` was pulled, held artifacts and had no card.
 
+**A verdict is one run's answer, so the pill that shows it is also the door to the
+rest.**  A pair can be run as many times as a reader likes and the ledger keeps one
+record for it (`var/results/<build>/<test>.json` is rewritten by each run), while every
+run keeps its own console in `var/logs/`.  `_ran_cell`'s pill therefore links to
+`/local/<build_id>?test=<test>`, and that page draws `_run_history_panel`: every console
+of the pair, newest first, with the one surviving record joined onto the run it is about.
+That panel is the only reader of run history in this tree, because `var/logs/` is the
+only complete list of runs there is.
+
 **Nothing here writes a path, a query string or a date by hand.**  A link is
 `view.url()` (so `?api=` is canonicalised and `?lang=` spelled in one place), a path is
 `lib/layout`'s accessor, and a timestamp is the record's own string cut at its `T`.
 """
 
+import glob
 import os
 import urllib.parse
 from dataclasses import replace
@@ -57,7 +67,8 @@ from .... import errors, layout
 from .... import run as run_mod
 from ....build import ARTIFACTS
 from ....i18n import DEFAULT_LANG, LANGS, t
-from ...forms import _names
+from ....sink import Ledger
+from ...forms import _names, _tests_of
 from ...schema import (
     _LABELS,
     DAY_CHOICES,
@@ -67,9 +78,9 @@ from ...schema import (
     LIMITS,
     MAX_DAYS,
     MAX_LIMIT,
-    ORIGINS,
     RESULTS,
 )
+from ...urls import _carried
 from ...values import _human
 from .. import ui, words
 from ..data import CARD_ARTIFACTS
@@ -104,6 +115,13 @@ _COUNT_KEYS = ("counts.cards", "counts.here", "counts.bytes", "counts.acts",
                "counts.records", "counts.gap", "counts.activities")
 _COUNT_KEY_OF = {t(one, key): key for key in _COUNT_KEYS for one in LANGS}
 
+# The two sides a row can come from, as the reader's own words for them, in the order the
+# bar draws them.  The *value* is what `forms._origins` reads back out of the query and what
+# `accepts` ORs together, and it is the axis's own spelling (`schema.ORIGINS`) rather than a
+# label - a checkbox's `value=` is data, and `/`'s 来源 boxes are the only control on this
+# page whose value the reader never sees.
+_ORIGIN_SIDES = (("local", "origin.label.local"), ("remote", "origin.label.remote"))
+
 # `Local.state`'s five words, as the catalogue's own labels for exactly those values.  The
 # card column's cells are three ticks, and *which* of the five states this copy is in is
 # the fourth fact about it - "a card with nothing behind it" is one of five things, not
@@ -115,6 +133,18 @@ _HERE_KEYS = {
     "registered": "evidence.label.registered",
     "made-here": "evidence.label.made_here",
     "empty": "evidence.label.empty",
+}
+
+# `models.COPY_ORIGINS`' three values as the catalogue's own words for exactly those
+# values - the 出处 column's cells.  A value not in this map is a copy no act
+# describes, which the cell draws as the dash: "nothing recorded" is a fact about the
+# record, not a place the bytes came from, and it is not in this map for that reason.
+# (It is `COPY_ORIGINS` and not `ORIGINS` - that other name is the *filter* axis,
+# `any`/`local`/`remote`/`both`/`card`, and the two must not be read as one.)
+_SOURCE_KEYS = {
+    "made-here": "source.made_here",
+    "local-api": "source.local_api",
+    "official": "source.official",
 }
 
 
@@ -137,16 +167,17 @@ def builds(view) -> str:
     # comes out equal to the card count.
     opened_check = replace(check, origin="any")
     opened = view.gui.remote_rows(opened_check, held, lang)
-    table, records = view.gui._state()
+    table, _ = view.gui._state()
     found = list(rows.get("builds") or ())
     return "".join((
         _asked(view, quoted),
         _bar(view, _MAIN, _main_fields(view)),
-        ui.more(words.both(lang, "btn.more"), _bar(view, _FOLD, _fold_fields(view))),
+        ui.more(words.both(lang, "btn.more"), _bar(view, _FOLD, _fold_fields(view)),
+                # The fold this page's 更多筛选 row is remembered by (`ui._fold`).
+                fold="more.builds"),
         ui.cpanel(_strip(view, quoted),
                   sub=words.both(lang, "page.builds.chips_title"), lang=lang),
         _builds_panel(view, found, held, quoted, table, opened, opened_check),
-        _ledger_panel(view, rows, records),
         _pulls_panel(view),
         _origin_panel(view),
     ))
@@ -180,9 +211,13 @@ def _bar(view, drawn, fields_html: str) -> str:
     own (its `/builds` draws one), and a GET bar replaces the whole query string - so each
     bar carries every key it does not draw as a hidden field.  Without them, `apply` on the
     folded row answers a question with no tree in it, and nothing on the page says so.
+
+    The keys are `urls._carried`'s and not a walk of `FILTER_ORDER`, because the order is
+    not the whole of the filter: the top bar's clock (`shell.tz_switch`) is a `Filter`
+    field outside it, and a rule that only walked the order reset the reader's clock on
+    every apply.
     """
-    carried = dict(view.check.to_query())
-    hidden = [(key, carried.get(key, "")) for key in FILTER_ORDER if key not in drawn]
+    hidden = _carried(_ROUTE, view.check, drawn)
     hidden.append(("lang", "" if view.lang == DEFAULT_LANG else view.lang))
     return ui.filters(fields_html, _bar_buttons(view), action=_ROUTE, auto=True,
                       hidden=hidden)
@@ -267,6 +302,56 @@ def _main_fields(view) -> str:
     ))
 
 
+def _titled(lang: str, key: str, title: str) -> str:
+    """A field's label, with the paragraph that defines the field in its `title=`.
+
+    Some of this page's boxes offer words that mean nothing on their own - the two axes
+    behind the fold are the ones the operator asked about (「解释一下」) - and a `title=` is
+    where a fact about a control lives (`analysis._delta_cap` does the same).  The
+    alternative the board uses for its prose is a sentence on the page, which is the
+    「垃圾文字注释」 this page has none of.
+    """
+    return (f'<span {words.attr(lang, "title", title)}>'
+            f'{words.both(lang, key)}</span>')
+
+
+def _origin_boxes(view) -> str:
+    """来源: the two sides a row can come from, ticked one at a time or both.
+
+    **本地 and 远端, and neither of the two values the select used to offer.**  有卡片 is a
+    fact the 表里的卡片 column prints row by row - the operator's own argument for
+    dropping it (「那个有卡片这个后面不是有区分了吗」) - 两个都要 is what ticking both of these
+    says, and 不限 is what ticking neither says.  One select offering all three invited
+    the reader to keep three spellings of one question apart.
+
+    **Two ticks are one value and it is the sides it names.**  `forms._origins` reads the
+    comma list `local,remote`, which `accepts` ORs, so the two boxes round-trip exactly:
+    the URL a press writes draws both boxes ticked again.  The boxes carry `data-multi`
+    (`ui.checkbox`), without which the shipped bar would submit on the first tick and the
+    reader could never ask for both.
+
+    **`card` is honoured and drawn by nothing here.**  `?origin=card` is what the strip's
+    已登记 chip and the 卡片 preset write, and it is narrower than 本地 (a card in the
+    table, not a card *or* bytes) - so when it is in force the boxes cannot say it and the
+    note does.  A page that drew neither box ticked and said nothing would be applying a
+    condition it does not show.
+    """
+    lang, check = view.lang, view.check
+    chosen = set(_names(check.origin))
+    if "both" in chosen:
+        # A round-1 spelling of two ticks: drawn as the two ticks it means, so a link
+        # written before this round shows a reader the state it really asks for.
+        chosen = {value for value, _key in _ORIGIN_SIDES}
+    boxes = "".join(
+        ui.checkbox("origin", words.both(lang, key), checked=value in chosen,
+                    value=value, multi=True, lang=lang)
+        for value, key in _ORIGIN_SIDES)
+    if "card" in chosen:
+        boxes += (f'<span class="muted" style="font-size:11px">'
+                  f'{words.both(lang, "origin.card_only")}</span>')
+    return boxes
+
+
 def _fold_fields(view) -> str:
     """The rest of the question, behind the fold - the board's own second row.
 
@@ -288,13 +373,9 @@ def _fold_fields(view) -> str:
                  ui.select("result", _choices(RESULTS, check.result, lang=lang),
                            check.result, labeler=label),
                  width="w-sm"),
-        ui.field(words.both(lang, "filter.origin"),
-                 ui.select("origin",
-                           _choices(ORIGINS, check.origin, _LABELS["origin"],
-                                    any_key=None, lang=lang),
-                           check.origin, labeler=label),
-                 width="w-sm"),
-        ui.field(words.both(lang, "filter.evidence"),
+        ui.field(_titled(lang, "filter.origin", "filter.origin_title"),
+                 _origin_boxes(view), width="w-md"),
+        ui.field(_titled(lang, "filter.evidence", "filter.evidence_title"),
                  ui.select("evidence",
                            _choices(EVIDENCE, check.evidence, _LABELS["evidence"],
                                     any_key=None, lang=lang),
@@ -384,8 +465,13 @@ def _chip(view, key: str, value) -> tuple:
         # activity on disk, so naming every kind on disk is what unfolds the table the
         # number was read from (`04-actions.md` §P8a).  With nothing on disk there is no
         # kind to name and no link that could reproduce a zero of its own.
+        # `limit=number` is what keeps this chip honest now that `/runs` pages: the link
+        # asks for a table of the number the chip counted, so the page it lands on draws
+        # every one of them and S6 can still count them back.  The number is already held
+        # to the cap any link can carry (`_countable`).
         kinds = _kinds_of(view.rows)
-        return number, (view.url("/runs", *FILTER_ORDER, kind=kinds) if kinds else "")
+        return number, (view.url("/runs", *FILTER_ORDER, kind=kinds, limit=number)
+                        if kinds else "")
     return number, ""
 
 
@@ -409,6 +495,15 @@ def _kinds_of(rows) -> str:
 
 
 # -------------------------------------------------------------------- the table
+# The two marks this page draws for an artifact, as the glyphs the cells write.  One
+# spelling for the table and for the legend above it (`_card_legend`), so the ✓ the
+# reader is told about is the ✓ in the row: `_card_cell` and `_resource_cell` both write
+# these two entities, and the classes are the board's own (`style.py`: `.tick` is `--ok`,
+# `.cross` is `--bad`).
+_TICK = "&#10003;"
+_CROSS = "&#10007;"
+
+
 def _builds_panel(view, found, held: dict, answer, table, opened, opened_check) -> str:
     """The table, its pager, the three view presets, and the one command over its ticks.
 
@@ -418,24 +513,62 @@ def _builds_panel(view, found, held: dict, answer, table, opened, opened_check) 
     every ticked row.  The tick boxes are *outside* that bar's form (`form="pull-now"`),
     which is the only way a table can feed a form drawn in a head, and the select-all box
     sits in the tick column's header, where the board draws it.
+
+    `_card_legend` goes **inside** the body, above the table, and not in the head with
+    the count: it explains one column, it is read once and then skipped, and the head is
+    where the reader looks for what the *list* is - a sentence about 卡片's marks there
+    would be in the way of the presets on every visit to answer one question once.
     """
     lang = view.lang
     return ui.panel(
         "page.builds.title",
-        ui.table(_cols(view, found, held, answer), found,
-                 empty=_empty(view, answer, held), lang=lang)
+        _card_legend(lang)
+        + ui.table(_cols(view, found, held, answer), found,
+                   empty=_empty(view, answer, held), lang=lang)
         + _pager(view, found, answer),
         sub=words.both(lang, "page.builds.rows_window", n=len(found)),
         tools=_presets(view, table, opened, opened_check) + _pull_bar(view), flush=True,
         lang=lang)
 
 
+def _card_legend(lang: str) -> str:
+    """The line over the table that says what the 卡片 column's three marks are.
+
+    **The tooltip was not enough, and the operator said so.**  `col.card_title` answers
+    「卡片这里为什么要显示三个钩或者×」 in the header's `title=`, and each mark answers
+    for itself in its own (`card.tick_here`/`card.tick_absent`) - all of it invisible to
+    a reader who does not hover, and the question is one a reader has *while reading the
+    table*, not one they think to ask of a two-character heading.  So the same answer is
+    drawn on the page: which three artifacts the marks are, in which order, and what a
+    tick and a cross mean.
+
+    **The marks are shown and not described.**  The glyphs are the cells' own (`_TICK` /
+    `_CROSS` in `.tick`/`.cross`, the colours of the column below), so a reader who has
+    never seen this console still has the pair in front of them - colour, glyph and word
+    together, which is the house rule for a colour signal (`_resource_cell` states it).
+    The sentence itself is `col.card_legend`.
+
+    `t()` and not `both()`: the value carries those two spans, and `words.both` refuses
+    markup - the swap writes text, so a tagged value would arrive at a Chinese reader as
+    its own characters.  `builds._remote_panel` and `analysis` make the same call for
+    the same reason.  The consequence is the catalogue's own and it is honest: this line
+    is drawn in the response's language rather than swapping in place.
+    """
+    return (f'<p class="cardkey">'
+            f'{t(lang, "col.card_legend", yes=_TICK, no=_CROSS)}</p>')
+
+
 def _cols(view, found, held: dict, answer) -> tuple:
-    """The board's nine columns, in its own order, and the two keys the script reads.
+    """The board's nine columns, three facts about this machine, and the two keys the script reads.
 
     The tick column's header is `ui.checkbox(all_for=…)`, rendered `hidden` until the
     shipped script unhides it: with the script off a box that ticks nothing would be a
     lie, and the rows' own boxes (which work) are there to be ticked by hand.
+
+    The three inserted columns (出处, 表里的卡片, 资源) are the design's own order
+    extended, not a second table: the board's nine kept their places and the three sit
+    with the ticks and the size, which are the columns that ask *what does this machine
+    hold* - one fact each, and each header's `title=` says which "local" it is about.
 
     No column carries a `key=`.  The board marks five of its headers `sortable`, but this
     page reads no `sort` - the order is `created`, decided by the engine - and a header
@@ -444,34 +577,34 @@ def _cols(view, found, held: dict, answer) -> tuple:
     """
     lang = view.lang
     return (
-        ui.Col(ui.checkbox("all", words.both(lang, "tick.all", n=_boxed(found, held)),
+        ui.Col(ui.checkbox("all", words.both(lang, "tick.all", n=len(found)),
                            all_for=_PULL_FORM, lang=lang), kind="c",
                draw=lambda one: _tick_cell(view, one, held)),
         ui.Col("word.build_id", kind="id",
                draw=lambda one: _build_cell(view, one["build_id"])),
         ui.Col("word.tree_branch", draw=_tree_cell),
-        ui.Col("word.created", kind="n", draw=lambda one: _stamp(one["created"])),
+        ui.Col("word.created", kind="n",
+               draw=lambda one: ui.stamp(one["created"], view.check.tz)),
         ui.Col("col.card", kind="c", width="104px",
+               title="col.card_title",
                draw=lambda one: _card_cell(one, lang)),
+        # The three per-build facts, in the plan's order: where the bytes came from,
+        # whether the local table holds a card, and what is on disk.  They sit between
+        # the ticks and the size because they are the same kind of statement - what
+        # this machine holds - and each header's `title=` is where its "local" is
+        # spelled out: 本地 is this disk and this ledger, 本地 API is the service on
+        # :8001, and the two words must not be read as one.
+        ui.Col("col.provenance", draw=lambda one: _source_cell(one, lang),
+               title="col.provenance_title"),
+        ui.Col("col.in_table", kind="c", width="104px",
+               draw=lambda one: _in_table_cell(one, lang), title="col.in_table_title"),
+        ui.Col("col.resource", draw=lambda one: _resource_cell(one, lang),
+               title="col.resource_title"),
         ui.Col("col.bytes", kind="n", draw=_bytes_cell),
         ui.Col("col.act", kind="n", draw=lambda one: _acts_cell(one, lang)),
         ui.Col("col.api_says", draw=lambda one: _api_cell(one, answer, lang)),
-        ui.Col("filter.ran", draw=lambda one: _ran_cell(one, lang)),
+        ui.Col("filter.ran", draw=lambda one: _ran_cell(view, one)),
     )
-
-
-def _boxed(found, held: dict) -> int:
-    """How many boxes this table drew - the number the select-all's own label prints.
-
-    `tick.all`'s contract is exact: the box ticks the boxes the page drew, and no more.  A
-    row whose copy has no card is *not* tickable (`_tick_cell` says why in the cell), so the
-    count is of the rows that got a box and not of the rows on screen - on this deployment
-    the union view draws one card-less row, and a label reading "tick the 50" over 49 boxes
-    would be the same overstatement the board's own literal `tick the 7` was.
-    """
-    return sum(1 for one in found
-               if (held.get(str(one["build_id"])) is not None
-                   and held[str(one["build_id"])].card is not None))
 
 
 def _pager(view, found, answer) -> str:
@@ -550,16 +683,80 @@ def _presets(view, table, opened, opened_check) -> str:
 
 
 def _pull_bar(view) -> str:
-    """The one command this table's ticks feed: every ticked row, in one POST.
+    """The four commands over this table's ticks, in one form.
 
-    No visible argv line: the ids do not exist until a box is ticked, and the bar's own
-    sentence (`pull.pull_hint`, in the form's `title=`) is what it owes the reader - the
-    command is `<each ticked build>` with every other condition known, which
-    `_argv_of_ticked` is the reader for and the guide asks only of the one-shot bars.
+    *pull the selected* is what the page always had.  *index this window* and *index,
+    then pull the selected* are the answer to the table that reads 勾不了: on a view of
+    another API the ticked rows are exactly the ones this machine has no card for, and
+    `table.py pull` reads the local table - so the pull cannot work until the window the
+    rows were drawn from has been registered.  The registering used to be a button in a
+    panel folded shut at the bottom of the page, under a title about local cards, which
+    is not where a reader who cannot tick anything goes looking.  *smart run* is the
+    same four questions asked of the rows in the order the rows need them answered
+    (`actions.ActionsMixin._smart`): it is for the reader who does not want to work out
+    which of the other three presses this selection is ready for.
+
+    **One form, five buttons.**  A tick box names exactly one form (`form="…"`), and
+    the four tick-driven commands here have to read the same boxes - so they are buttons
+    of one form, each carrying its own `formaction`, which `ui.action_form`'s `also`
+    draws and the shipped script reads off the button that was pressed.  The fields are
+    the union of what the five need: `pull` reads only `selected` and ignores the
+    window's conditions, `index` reads those and ignores the ticks.  The fifth is the
+    fourth's own command in its other mode (`redo` on the button itself), which is why
+    the two are one action apart and not two actions.
+
+    No visible argv line, for the reason the pull bar never had one: four of the five
+    commands take `<each ticked build>`, which does not exist until a box is ticked -
+    and one line under five buttons would be read as the command for whichever the
+    reader is about to press.  Each button's own `title=` carries what is known of it.
     """
-    return ui.action_form("pull", words.both(view.lang, "btn.pull_selected"),
-                          fields=[("api", view.check.api)], form_id=_PULL_FORM,
-                          hint="pull.pull_hint", lang=view.lang)
+    lang, check = view.lang, view.check
+    fields = [("api", check.api), ("tree", check.tree),
+              ("days", str(check.days)), ("limit", str(check.limit))]
+    # `table.py index` and `table.py index-pull` each declare one `--tree`, so a filter
+    # naming several trees cannot be handed to either - the same refusal, and the same
+    # sentence, the panel's own index button carried.
+    blocked = view.gui._one_tree(check, lang)
+    return ui.action_form(
+        "pull", words.both(lang, "btn.pull_selected"), fields=fields, form_id=_PULL_FORM,
+        hint="pull.pull_hint", lang=lang,
+        also=(("index", words.both(lang, "page.builds.index_cards"),
+               view.gui._argv_of("index", {"tree": check.tree, "days": str(check.days),
+                                           "limit": str(check.limit)},
+                                 lang, api=check.api),
+               blocked),
+              ("index_pull", words.both(lang, "btn.index_pull"),
+               view.gui._argv_of_ticked("index_pull", {"tree": check.tree,
+                                                       "days": str(check.days),
+                                                       "limit": str(check.limit)},
+                                        lang, api=check.api),
+               blocked),
+              # 智能运行: the same ticks, the same fields, and a decision the other three
+              # leave to the reader - which of the three commands these rows need first
+              # (`actions.ActionsMixin._smart` reads the rows and answers per row).  Its
+              # `title=` is the hint and not an argv: the command does not exist until a
+              # box is ticked, for the reason the other two tick-driven buttons print
+              # none either - and because *which* command it is depends on what those
+              # ticks hold.  It carries no `blocked` of its own, and the two above carry
+              # the bar's: `_one_tree` is about the register half, which is `index` and
+              # `index-pull` only.  What a multi-tree filter does to *this* button is
+              # `command()`'s own `_named(form, "tree")`, which every one of its three
+              # commands reads before it dispatches - so a press on a two-tree filter is
+              # refused in the same words the `pull` button beside it is refused in, and
+              # no phase of this press is an exception to that.
+              ("smart", words.both(lang, "btn.smart_run"), "smart.hint", ""),
+              # **重跑, and it is the smart press with the ledger ignored.**  The
+              # operator's 「难道就不能默认增加重跑？」: `--redo` was reachable only from
+              # a single build's own page, one pair at a time, through a record the
+              # reader had to go and find first.  Here it is the row's own tick and the
+              # same press - `redo=1` on the button (`ui.action_form`'s `also`), which
+              # `_smart` hands to the phase-3 command, so the pair runs whether or not
+              # the ledger has it.  It is not a *second* way to run: the phases above it
+              # are unchanged, and a row that still needs its card or its bytes gets
+              # them first (`smart.rerun_hint` says so - this button has no argv to
+              # print, because which command it is depends on what the ticks hold).
+              ("smart", words.both(lang, "btn.run_redo"), "smart.rerun_hint", "",
+               (("redo", "1"),))))
 
 
 def _empty(view, answer, held: dict) -> str:
@@ -583,13 +780,22 @@ def _empty(view, answer, held: dict) -> str:
 
 # ------------------------------------------------------------------- the cells
 def _tick_cell(view, one, held: dict) -> str:
-    """This row's box, or the reason this row cannot be ticked at all.
+    """This row's box - every row has one - and the row's own pull where there is a card.
 
-    `table.py pull --build` reads the local table, so a row without a card is not tickable
-    and says why: the box that used to be drawn there fed a command that refuses with
-    `no build '…' in builds.json`.  Whether the copy has a card is a fact this page already
-    holds (`all_locals()`, the same dict `data.rows` read) and not a second question asked
-    of the disk.
+    **Every row is tickable, and the box does not depend on what this machine holds.**
+    It used to be drawn only where the local table already had a card, because
+    `table.py pull --build` reads that table and refuses the rest with `no build '…' in
+    builds.json` - so on a view of another API, where almost nothing is carded yet, the
+    whole table read 勾不了 and the page looked broken.  But *which rows the reader
+    means* and *which rows can be fetched right now* are two different questions, and
+    the box was answering the second one.  A tick is a selection: it says which rows
+    the bar's command is about, and the two index buttons beside that command are
+    exactly what turns a selection of uncarded rows into a pull that works.
+
+    What is still gated is the row's *own* `pull`, which is a form of its own with no
+    registering half to reach for - pressing it on a row with no card can only refuse,
+    so it is not drawn, and the marker beside the box says why.  That marker is a
+    statement about the row's card and not about the tick above it.
 
     The row's own `pull` is a form of its own, so pulling one card does not mean ticking a
     box, finding the bar above and pressing a button that is also holding somebody else's
@@ -598,11 +804,13 @@ def _tick_cell(view, one, held: dict) -> str:
     """
     lang = view.lang
     build_id = str(one["build_id"])
+    box = ui.checkbox("selected", "", value=build_id, form=_PULL_FORM, lang=lang)
     copy = held.get(build_id)
     if copy is None or copy.card is None:
-        return (f'<span class="none" {words.attr(lang, "title", "pull.no_card_title")}>'
-                f'{words.both(lang, "pull.not_tickable")}</span>')
-    return (ui.checkbox("selected", "", value=build_id, form=_PULL_FORM, lang=lang)
+        return (box
+                + f'<span class="none" {words.attr(lang, "title", "pull.no_card_title")}>'
+                + f'{words.both(lang, "pull.no_card")}</span>')
+    return (box
             + ui.action_form("pull", words.both(lang, "pull.one"),
                              fields=[("selected", build_id), ("api", view.check.api)],
                              hint=t(lang, "pull.one_title", build=build_id),
@@ -615,7 +823,9 @@ def _build_cell(view, build_id) -> str:
     `/local/<build_id>` is this console's detail route for one build (`00-BRIEF.md` §5
     keeps it reachable) and it is the page that reads the same API key, so the link carries
     `api=` and nothing else: the detail page reads no window and no tree, and a link that
-    carried them would look like a condition it honours.
+    carried them would look like a condition it honours.  (`limit` is the one filter key
+    it does read - the page size its four lists page at - and `ROUTE_KEYS["/local/"]`
+    says so.)
     """
     href = view.url("/local/" + urllib.parse.quote(str(build_id)))
     return ui.code(build_id, href=href)
@@ -631,25 +841,6 @@ def _tree_cell(one) -> str:
             f'<span class="br">{ui.esc(branch)}</span>')
 
 
-def _stamp(value, seconds: bool = False) -> str:
-    """A record's timestamp as the board prints it: the day, then the clock, quiet.
-
-    The two halves are the *value's* own characters and the `T` between them is the only
-    thing dropped, which keeps a table of stamps readable without a date library and
-    without a second spelling of a timestamp this tree already stores as text.  The
-    precision is the board's own and differs by table: a build's `created` is printed to
-    the minute (`2026-09-20 01:05`, the same sixteen characters the old cell cut), while a
-    pull act's stamp keeps its seconds and its `Z` (`09:20:48Z`) because that is what
-    tells two attempts of one build apart.
-    """
-    text = str(value or "")
-    if not text:
-        return ui.DASH
-    day, _, clock = text.partition("T")
-    if not clock:
-        return f'<span class="nowrap">{ui.esc(day)}</span>'
-    return (f'<span class="nowrap">{ui.esc(day)} '
-            f'<span class="muted">{ui.esc(clock if seconds else clock[:5])}</span></span>')
 
 
 def _card_cell(one, lang: str) -> str:
@@ -659,23 +850,107 @@ def _card_cell(one, lang: str) -> str:
     build.**  The tick is an `os.path.isfile` per artifact (`data._builds.checks`), never
     the card's own URLs: a card that declares three artifacts and holds none is the row
     this column is here to expose, and reading the card would tick all three for a copy
-    with no bytes at all.  A missing artifact keeps its name in the `title=` and says what
-    missing means; the group's own `title=` is `Local.state`, the engine's word for what
-    this machine knows about the copy - three ticks cannot tell a copy nobody pulled from
-    one that was pulled and left unrecorded.
+    with no bytes at all.  The group's own `title=` is `Local.state`, the engine's word
+    for what this machine knows about the copy - three ticks cannot tell a copy nobody
+    pulled from one that was pulled and left unrecorded.
+
+    **Three marks are three artifacts, and each mark now says which.**  The reader asked
+    what the three are (「卡片这里为什么要显示三个钩或者×」), and the answer was in the
+    markup and unreadable: each glyph carried `page.builds.present` (在 / 不在) and the
+    artifact's *name* was on a span wrapped around it - so the name was shadowed by the
+    inner title and hovering a ✓ said only "在".  One title per mark, naming the artifact
+    and its state in one sentence (`card.tick_here`/`card.tick_absent`), is the whole
+    fact the tooltip has room for; `col.card_title` says what the column as a whole is,
+    and **`_card_legend` draws the same answer on the page above the table**, because the
+    operator asked this question a second time and a fact that lives only under a hover
+    is a fact a reader who does not hover never sees.  The name stays a code word from
+    `CARD_ARTIFACTS` - it is a filename, not a word this catalogue translates.
     """
-    present = words.attr(lang, "title", "page.builds.present")
-    absent = words.attr(lang, "title", "state.not_here")
     checks = dict(one.get("checks") or {})
     parts = []
     for name in CARD_ARTIFACTS:
-        glyph = (f'<span class="tick" {present}>&#10003;</span>' if checks.get(name)
-                 else f'<span class="cross" {absent}>&#10007;</span>')
-        parts.append(f'<span title="{ui.esc(name)}">{glyph}</span>')
+        here = bool(checks.get(name))
+        glyph, cls = (_TICK, "tick") if here else (_CROSS, "cross")
+        title = "card.tick_here" if here else "card.tick_absent"
+        parts.append(f'<span class="{cls}" '
+                     f'{words.attr(lang, "title", title, name=name)}>{glyph}</span>')
     here = str(one.get("here") or "")
     return (f'<span class="cell-actions" '
             f'{words.attr(lang, "title", _HERE_KEYS.get(here, "") or "state.unknown")}>'
             f'{"".join(parts)}</span>')
+
+
+def _source_cell(one, lang: str) -> str:
+    """出处: where this copy's bytes came from - the act's own URLs, in three words.
+
+    `Local.origin` is the reading and this is the word for it; the column's `title=`
+    defines the three.  A copy no act describes is the dash, which is not a fourth
+    origin: nothing was recorded, and the words for "we do not know" would be this
+    page's own invention (`data._builds.source` says the same).
+
+    Two of the three words name a *machine*, and the one this column must not be
+    confused about is the local API: 本地 here is this disk, and the API on :8001 is
+    a service this console talks to - which is why the tooltip is a paragraph and not
+    the two-character label the other columns get away with.
+    """
+    value = str(one.get("source") or "")
+    key = _SOURCE_KEYS.get(value)
+    return ui.DASH if key is None else words.both(lang, key)
+
+
+def _in_table_cell(one, lang: str) -> str:
+    """卡片: is there a card for this build in the local table? (有 / 没有)
+
+    The fact is `Builds.load()`'s own (`build_row.in_table`), which is what the card
+    view and the chips above the table count - this column does not read the API, and
+    the header's tooltip says so: 本地 is `var/state/builds.json` on this disk.
+    """
+    return words.both(lang, "state.has" if one.get("in_table") else "state.has_not")
+
+
+def _resource_cell(one, lang: str) -> str:
+    """资源: every artifact of this build, ticked or crossed, in the two design colours.
+
+    `Local.present` is one `os.path.isfile` per artifact, and the names are
+    `lib/build/model.py`'s own - the same vocabulary the ticks beside this column are
+    drawn from, plus `config`, which the ticks leave out because no test needs it (a
+    copy holding only its `.config` is a copy with something in it, and a tick column
+    that asks about three artifacts cannot say that).
+
+    **The operator's 「资源列红绿」: the absences are drawn, not only the presences.**
+    The cell printed the artifacts that *are* on disk and the one word 没有 when none
+    was, so the reader who wants the whole picture - can these tests run, which is the
+    question this page is read for - had to hold that list against the three ticks in
+    the column beside it and diff the two: three-of-four and four-of-four read as two
+    lists of names.  Every artifact is a mark now, ✓ in `--ok` or ✗ in `--bad` - the two
+    glyphs, in the two colours, that `_card_cell` already draws for these files.
+
+    **Colour is never the only signal, and that is why the name is inside the mark.**
+    This console is read with the script off and by readers who do not tell red from
+    green, so each mark carries three things at once: the glyph (✓/✗, which is a shape
+    and not a hue), the colour, and the artifact's own `title=`
+    (`card.tick_here`/`card.tick_absent`, the words the 卡片 column already uses for
+    this exact fact) - and the name is drawn *inside* the mark rather than beside it, so
+    a reader who sees neither the colour nor an obvious glyph still reads `kernel` or
+    `config` and knows which file the row is about.  The group's `title=` stays the
+    paths of the files that are here, escaped: a path is the one thing a reader cannot
+    guess from a name.
+
+    A row with nothing on disk is therefore four crossed names and not one word: those
+    four absences *are* the detail this column is opened for, and a directory nobody
+    pulled is four files that are not here rather than a fact about a directory.
+    """
+    present = set(one.get("present") or ())
+    marks = []
+    for name in ARTIFACTS:
+        here = name in present
+        glyph, cls = (_TICK, "tick") if here else (_CROSS, "cross")
+        title = "card.tick_here" if here else "card.tick_absent"
+        marks.append(f'<span class="{cls}" '
+                     f'{words.attr(lang, "title", title, name=name)}>'
+                     f'{glyph} {ui.esc(name)}</span>')
+    paths = ui.esc(str(one.get("present_paths") or ""))
+    return f'<span class="cell-actions" title="{paths}">{" ".join(marks)}</span>'
 
 
 def _bytes_cell(one) -> str:
@@ -755,56 +1030,63 @@ def _api_cell(one, answer, lang: str) -> str:
     return words.both(lang, "state.no_remote_counterpart")
 
 
-def _ran_cell(one, lang: str) -> str:
-    """The ledger's verdicts for this build, one pill per test, or the dash.
+def _ran_cell(view, one) -> str:
+    """The ledger's verdicts for this build, one linked pill per test, or the dash.
 
     The page computes no verdict: `ran` is `Records.last(test, build_id)` per test, and a
     pair with no record is a dash rather than a pill - which is exactly what the gap
     counts.  A row with no card still gets its verdicts, because the ledger is keyed by
     build id and does not care what the table says.
+
+    **The pill is also the door to that pair's runs.**  What a reader does with a `fail`
+    is ask how often and since when, and the answer is the pair's consoles - which the
+    ledger cannot give (it keeps one record per pair, rewritten by each run) and
+    `/local/<build_id>?test=<test>` can (`_run_history_panel`).  The pill's own word is
+    untouched: the link is drawn around it and the `title=` says what it opens, so a
+    cell that printed one verdict before still prints one verdict.
     """
-    parts = [ui.pill(verdict, label=f"{test} {verdict}", lang=lang)
-             for test, verdict in one.get("ran") or () if verdict]
+    lang = view.lang
+    build_id = str(one["build_id"])
+    parts = []
+    for test, verdict in one.get("ran") or ():
+        if not verdict:
+            continue
+        href = view.url("/local/" + urllib.parse.quote(build_id), test=test)
+        why = words.attr(lang, "title", "page.history.link_title", test=test)
+        parts.append(f'<a href="{ui.esc(href)}" {why}>'
+                     f'{ui.pill(verdict, label=f"{test} {verdict}", lang=lang)}</a>')
     return f'<span class="cell-actions">{"".join(parts)}</span>' if parts else ui.DASH
 
 
-# --------------------------------------------------------------- the two panels
-def _ledger_panel(view, rows, records) -> str:
-    """The ledger's own four numbers, with the code that produced each in its title.
-
-    `Records.tally()` and `re.todo()` are the engine's answers and this page counts
-    nothing; the regressions come from `rows["timelines"]`, the key `data.py` already built
-    from `re.transitions()`, so this number and the one on `/analysis` are one reading.
-    None of the four is a link: no page draws "the verdicts" or "the regressions" as rows,
-    and a chip that linked somewhere with a different row count would be the one number
-    here a reader could not check.
-    """
-    lang = view.lang
-    ledger = list(rows.get("ledger") or ())
-    tally = ", ".join(f"{verdict}: {many}"
-                      for verdict, many in sorted(records.tally().items())) or "-"
-    gap = len(view.gui.todo(view.check))
-    regressions = ", ".join(f'{one["test"]}: {one["regressions"]}'
-                            for one in rows.get("timelines") or ()) or "-"
-    items = (
-        (words.both(lang, "label.records_in_ledger"), str(len(ledger)), layout.results(),
-         ""),
-        (words.both(lang, "label.verdicts"), tally, "Records.tally()", ""),
-        (words.both(lang, "counts.gap"), str(gap),
-         t(lang, "label.gap") + " - re.todo()", ""),
-        (words.both(lang, "label.regressions"), regressions, "re.transitions()", ""),
-    )
-    return ui.panel("page.builds.ledger_title", ui.chips(items, lang=lang), lang=lang)
-
-
+# --------------------------------------------------------------- the panels
+# `_ledger_panel` stood here, printing the records' verdict tally and the per-test
+# regression counts.  **The operator cut it** (「这个可以删除了就是」), and the case for
+# keeping it had already been spent: the panel had been trimmed once before, for printing
+# the ledger's size and the gap count - numbers the strip above it already carries as
+# *links*, which a reader can click and check.  What was left was two chips that were
+# neither clickable nor checkable, and the regressions chip in particular was the third
+# printing of one reading: `re.transitions()` counts them, `_timelines` carries the pairs,
+# and `_regressions_panel` on `/analysis` and `/trend` lists them one by one with a door
+# into each build.  A bare integer that no page draws rows for is the one kind of number
+# this console does not print.
+#
+# `records` is still read by `builds()` for the table below (`_state()` returns the pair),
+# which is why the call site now unpacks it as `_` rather than dropping the read.
 def _pulls_panel(view) -> str:
     """What has been pulled: one row per act, newest first.
 
-    Uncapped, and that is a decision with a measurement behind it: this table is where a
-    build that is on disk with **no card** is visible at all.  Such a copy is not in the
-    local table, so the card view - the page's default - draws no build row for it, and
-    `accept.py`'s S7, which exists for exactly that copy, finds it here by its own id.
-    Capping this table would hide it again, which is the bug and not the fix.
+    This table is where a build that is on disk with **no card** is visible at all: such
+    a copy is not in the local table, so the card view - the page's default - draws no
+    build row for it, and `accept.py`'s S7, which exists for exactly that copy, finds it
+    here by its own id.
+
+    It was uncapped on that argument, and the argument was right about what must not
+    happen (a copy the reader cannot reach) and wrong about the remedy: with 352 acts
+    recorded on this machine the one-row-per-act list was eight screens of scrolling,
+    and the copy that needed finding was *harder* to find, not easier.  So it pages -
+    `?pulls=50` and on - which keeps every act reachable, in order, and puts the newest
+    fifty where a reader looks first.  S7 walks the pages now (`accept._pulls_page_with`),
+    so the copy this panel exists to show is still the copy the gate reads.
 
     A row's id is the link into that build's own page, and the short form is what a
     seven-column table can hold - the whole id is the link's `title=`.
@@ -813,7 +1095,7 @@ def _pulls_panel(view) -> str:
     pulls = list(view.rows.get("pulls") or ())
     cols = (
         ui.Col("col.when", kind="n",
-               draw=lambda one: _stamp(one["when"], seconds=True)),
+               draw=lambda one: ui.stamp(one["when"], view.check.tz, seconds=True)),
         ui.Col("word.build_id", kind="id", draw=lambda one: _pull_id(view, one)),
         ui.Col("col.artifacts", kind="n", draw=lambda one: ui.esc(one["artifacts"])),
         ui.Col("col.bytes", kind="n", draw=_pull_bytes),
@@ -830,10 +1112,12 @@ def _pulls_panel(view) -> str:
     # links did exactly that): the wrapper is what makes the chip a link to something a
     # reader can reach.
     return ('<div id="acts">'
-            + ui.panel("page.builds.acts_title",
-                       ui.table(cols, pulls, empty=empty, lang=lang),
-                       sub=words.both(lang, "page.builds.acts_sub"),
-                       collapsible=True, open_=False, flush=True, lang=lang)
+            + ui.list_panel(view, "page.builds.acts_title", cols, pulls,
+                            empty=empty, lang=lang,
+                            sub=words.both(lang, "page.builds.acts_sub"),
+                            offset=view.check.list_offset("pulls"),
+                            limit=view.check.limit, key="pulls",
+                            collapsible=True, open_=False)
             + "</div>")
 
 
@@ -858,39 +1142,62 @@ def _error_cell(one, lang: str) -> str:
 
 
 def _origin_panel(view) -> str:
-    """Where a build with no remote counterpart comes from, and the two commands for it.
+    """Where a build with no remote counterpart comes from, and the boxes that make one.
 
     A card this machine made is the one row the API can never answer for, and the way such
-    a card comes to exist is a local artifact published as a build - which is why both
-    commands are about the disk and not about the query, and why they are folded away.
-    `index` is drawn **once** on this page: the board draws that command twice (once in the
-    table's head, once here), and two forms for one command are two answer lines for one
-    press.
+    a card comes to exist is a local artifact published as a build - which is why the
+    command is about the disk and not about the query, and why it is folded away.
 
-    Both carry the argv they will run, and both are refused where the filter names several
-    trees: `--tree` is single-valued in the entry point either button starts, so the button
-    says which case this is rather than starting a command that would refuse it.
+    **The boxes are the command's own facts, and they are the only copy of them.**  The
+    operator asked to make such a card himself (「你可以加一些参数…然后让他能自己造」), and
+    the facts only the reader knows are exactly what `run_latest.py --provision-only`
+    takes as `--parameter k=v` (`actions.command`'s provision branch says why each one is
+    a parameter and not a flag).  So they are visible inputs inside the form and not hidden
+    values beside it: a hidden `tree` and a visible one would submit the name twice.
+
+    **The tree box starts from this page's own question.**  A reader who is looking at one
+    tree and presses this is publishing *that* tree, so the box is prefilled with it - but
+    only when the filter names exactly one, because `--tree` is single-valued and a
+    comma-joined value is a value the command refuses.
+
+    **No argv line is printed.**  Five of the six values do not exist until the reader
+    types them, and a line that showed `--parameter commit=` would be a command line that
+    is not the one the press runs; `_pull_bar` is the precedent (what is knowable goes in
+    the button's `title=`), and `page.builds.image_command` is that title.
+
+    **`index` used to be drawn here as well**, and it is drawn **once** on this page: it is
+    in the table's own bar now (`_pull_bar`), because registering this window is what makes
+    the rows above tickable and belongs where the ticks are, not under a title about local
+    cards at the bottom.  The board draws that command twice (once in the table's head,
+    once here) and two forms for one command are two answer lines for one press.
     """
     lang, check = view.lang, view.check
-    tree = check.tree or "riscv"
-    index_fields = [("api", check.api), ("tree", check.tree), ("days", str(check.days)),
-                    ("limit", str(check.limit))]
-    index_argv = {"tree": check.tree, "days": str(check.days), "limit": str(check.limit)}
+    named = _names(check.tree)
+    tree = named[0] if len(named) == 1 else "riscv"
     image = layout.serve("Image")
     state = (t(lang, "local.image_state", path=ui.code(image)) if os.path.isfile(image)
              else t(lang, "local.image_state_missing", path=ui.code(image)))
+
+    def box(name: str, key: str, width: str, value: str = "") -> str:
+        """One fact: the box's `name=` is the `--parameter` key, the label is a word."""
+        return ui.field(words.both(lang, key),
+                        ui.text_input(name, value, placeholder=key, label=key, lang=lang),
+                        width=width)
+
+    fields = (box("tree", "word.tree", "w-md", tree)
+              + box("branch", "word.branch", "w-md")
+              + box("commit", "word.commit", "w-md")
+              + box("describe", "word.describe", "w-lg")
+              + box("defconfig", "word.defconfig", "w-md")
+              + box("kernel_url", "word.kernel_url", "w-xl"))
     return ui.panel(
         "page.builds.image_title",
-        ui.action_form("provision", words.both(lang, "page.builds.card_from_local"),
-                       fields=[("api", check.api), ("tree", tree)],
-                       argv=view.gui._argv_of("provision", {"tree": tree}, lang,
-                                              api=check.api),
-                       blocked=view.gui._one_tree(check, lang), lang=lang)
-        + ui.hint(state)
-        + ui.action_form("index", words.both(lang, "page.builds.index_cards"),
-                         fields=index_fields,
-                         argv=view.gui._argv_of("index", index_argv, lang, api=check.api),
-                         blocked=view.gui._one_tree(check, lang), lang=lang),
+        ui.hint(words.both(lang, "page.builds.image_how"))
+        + ui.action_form("provision", words.both(lang, "page.builds.card_from_local"),
+                         fields=[("api", check.api)],
+                         inner=f'<div class="filters" style="border-bottom:0">{fields}</div>',
+                         hint="page.builds.image_command", lang=lang)
+        + ui.hint(state),
         sub=words.both(lang, "page.builds.image_sub"),
         collapsible=True, open_=False, lang=lang)
 
@@ -906,6 +1213,12 @@ def local(view) -> str:
     ledger's rows for this id are in `rows["ledger"]` (the whole ledger) and the activities
     whose command names it are in `rows["runs"]`.
 
+    **`?test=` adds one panel and changes nothing else.**  A reader who pressed a verdict
+    pill on `/` (`_ran_cell`) asked about one *pair*, not about the copy, so the answer -
+    every run of that pair, `_run_history_panel` - goes first, where the click was aiming.
+    Without the key the page is panel for panel the page it was: the route names one copy
+    and nothing here answers a question about its tests unasked.
+
     A build id this machine holds nothing for is a 404 and not an empty page: the route
     names one copy, and six empty panels for an id that is not here would be an answer to a
     question nobody asked.
@@ -918,7 +1231,7 @@ def local(view) -> str:
                                    build_id=repr(build_id)))
     answer = view.gui.remote_rows(view.check, held, view.lang)
     remote = next((one for one in answer if str(one.build_id) == build_id), None)
-    return "".join((
+    panels = [
         _card_panel(view, copy),
         _bytes_panel(view, copy),
         _record_panel(view, copy),
@@ -926,7 +1239,11 @@ def local(view) -> str:
         _ledger_rows_panel(view, build_id),
         _activity_panel(view, build_id),
         _commands_panel(view, build_id),
-    ))
+    ]
+    test = str(getattr(view.check, "test", "") or "")
+    if test:
+        panels.insert(0, _run_history_panel(view, build_id, test))
+    return "".join(panels)
 
 
 def _copied(view) -> str:
@@ -1017,12 +1334,12 @@ def _bytes_panel(view, copy) -> str:
         size = os.path.getsize(path) if os.path.isfile(path) else 0
         found.append({"artifact": name, "path": path,
                       "size": f"{size} ({_human(size)})" if size else ui.DASH})
-    return ui.panel("page.correspondence.bytes_title",
-                    ui.table(cols, found,
-                             empty=t(lang, "empty.no_bytes", path=ui.code(copy.path)),
-                             lang=lang),
-                    sub=words.both(lang, "page.correspondence.bytes_sub"),
-                    flush=True, lang=lang)
+    return ui.list_panel(view, "page.correspondence.bytes_title", cols, found,
+                         empty=t(lang, "empty.no_bytes", path=ui.code(copy.path)),
+                         lang=lang,
+                         sub=words.both(lang, "page.correspondence.bytes_sub"),
+                         offset=view.check.list_offset("bytes"),
+                         limit=view.check.limit, key="bytes")
 
 
 def _record_panel(view, copy) -> str:
@@ -1033,9 +1350,20 @@ def _record_panel(view, copy) -> str:
     alphabetical list.  The act's own line is built from the engine's words
     (`count.artifacts_act`, `label.error_prefix`) and not from a sentence this page
     composed.
+
+    That one-table-per-act shape is why this panel does not go through `ui.list_panel`:
+    the thing being paged is acts, not rows, so the page is cut out of `acts` here and
+    the pager is handed the act count.  A record grows with every pull and was the
+    longest thing on this page, which is what put it on `record` (`schema.LIST_OFFSETS`)
+    - a key of its own, so paging the record does not page the bytes at the same time.
     """
     lang = view.lang
     acts = list(copy.acts or ())
+    if not acts:
+        return ui.panel("page.correspondence.record_title",
+                        ui.empty(words.both(lang, "empty.no_pull_record")), lang=lang)
+    limit = max(1, view.check.limit)
+    offset, acts_here = ui.page_slice(acts, view.check.list_offset("record"), limit)
     cols = (ui.Col("col.artifact", draw=lambda one: ui.esc(one["artifact"])),
             ui.Col("word.url", kind="wrapc", draw=lambda one: ui.code(one["url"])),
             ui.Col("col.bytes", kind="n",
@@ -1044,17 +1372,16 @@ def _record_panel(view, copy) -> str:
                 lang, "col.transferred" if one["transferred"]
                 else "state.already_whole_proven")))
     parts = []
-    for act in acts:
+    for act in acts_here:
         entries = [one for one in act.get("entries") or () if isinstance(one, dict)]
         said = t(lang, "count.artifacts_act", n=len(entries)) + ", " + (
             t(lang, "label.error_prefix", what=ui.esc(str(act["error"])))
             if act.get("error") else t(lang, "state.no_error"))
         parts.append(ui.hint(f'<b>{ui.esc(str(act.get("at") or "?"))}</b> &mdash; {said}'))
         parts.append(ui.table(cols, entries, lang=lang))
-    if not parts:
-        return ui.panel("page.correspondence.record_title",
-                        ui.empty(words.both(lang, "empty.no_pull_record")), lang=lang)
-    return ui.panel("page.correspondence.record_title", "".join(parts),
+    return ui.panel("page.correspondence.record_title",
+                    "".join(parts)
+                    + ui.pager(view, len(acts), limit, offset, key="record"),
                     sub=words.both(lang, "count.acts_in_record", n=len(acts)),
                     collapsible=True, lang=lang)
 
@@ -1120,12 +1447,14 @@ def _ledger_rows_panel(view, build_id: str) -> str:
             ui.Col("col.source", kind="c",
                    draw=lambda one: ui.pill(one["source"], tone_override="info", lang=lang)
                    if one["source"] else ui.DASH),
-            ui.Col("col.when", kind="n", draw=lambda one: _stamp(one["when"])),
+            ui.Col("col.when", kind="n",
+                  draw=lambda one: ui.stamp(one["when"], view.check.tz)),
             ui.Col("col.detail", kind="wrapc", field="detail"))
-    return ui.panel("page.correspondence.ledger_title",
-                    ui.table(cols, rows,
-                             empty=words.both(lang, "empty.no_ledger_record"), lang=lang),
-                    collapsible=True, flush=True, lang=lang)
+    return ui.list_panel(view, "page.correspondence.ledger_title", cols, rows,
+                         empty=words.both(lang, "empty.no_ledger_record"), lang=lang,
+                         offset=view.check.list_offset("ledger"),
+                         limit=view.check.limit, key="ledger",
+                         collapsible=True, open_=True)
 
 
 def _activity_panel(view, build_id: str) -> str:
@@ -1135,10 +1464,12 @@ def _activity_panel(view, build_id: str) -> str:
     rule: an activity *is* a command line, the id is in it because a command was given it,
     and nothing ties a run to a build but that.  The sub-line says so, so a reader who sees
     a run that merely mentioned the id is not misled.  Log and cancel are the two things a
-    row can do, as on `/runs`: the log is the file itself (`text/plain`, in a tab of its
-    own), and cancel is an empty-bodied POST that only a running activity gets.
+    row can do, as on `/runs`: the log is the file itself, in a tab of its own and with
+    this page as its `?back=` (`ui.log_link`), and cancel is an empty-bodied POST that only
+    a running activity gets.
     """
     lang = view.lang
+    back = view.url()
     search = build_id[:12]
     rows = [one for one in view.rows.get("runs") or () if search in str(one["argv"])]
     cols = (ui.Col("word.id", kind="id", draw=lambda one: ui.esc(one["id"])),
@@ -1149,20 +1480,23 @@ def _activity_panel(view, build_id: str) -> str:
             ui.Col("col.age", kind="n", field="age"),
             ui.Col("col.exit", kind="n", field="exit"),
             ui.Col("col.what_run", kind="wrapc", field="what"),
-            ui.Col("", kind="acts-cell", draw=lambda one: _log_acts(one, lang)))
-    return ui.panel("page.correspondence.activities_title",
-                    ui.table(cols, rows,
-                             empty=words.both(lang, "empty.no_activity_match"), lang=lang),
-                    sub=words.both(lang, "page.correspondence.activities_sub"),
-                    collapsible=True, flush=True, lang=lang)
+            ui.Col("", kind="acts-cell", draw=lambda one: _log_acts(one, lang, back)))
+    return ui.list_panel(view, "page.correspondence.activities_title", cols, rows,
+                         empty=words.both(lang, "empty.no_activity_match"), lang=lang,
+                         sub=words.both(lang, "page.correspondence.activities_sub"),
+                         offset=view.check.list_offset("activities"),
+                         limit=view.check.limit, key="activities",
+                         collapsible=True, open_=True)
 
 
-def _log_acts(one, lang: str) -> str:
-    """Read this activity's log, and cancel it while it is still running."""
+def _log_acts(one, lang: str, back: str = "") -> str:
+    """Read this activity's log, and cancel it while it is still running.
+
+    `back` is this page, so the log's own tab can lead here again - the tab has no
+    Back button into a page it did not come from (`ui.log_link`).
+    """
     ident = ui.esc(one["id"])
-    log = f"/runs/{ident}/log"
-    acts = [(f'<a href="{log}" target="_blank" rel="noopener">'
-             f'{words.both(lang, "link.log")}</a>')]
+    acts = [ui.log_link(one["id"], words.both(lang, "link.log"), back)]
     if str(one["state"]) == run_mod.RUNNING:
         acts.append(f'<form method="post" action="/api/runs/{ident}/cancel">'
                     f'<button class="btn sm">{words.both(lang, "js.cancel")}</button>'
@@ -1171,24 +1505,305 @@ def _log_acts(one, lang: str) -> str:
 
 
 def _commands_panel(view, build_id: str) -> str:
-    """The two commands a reader starts from one copy's page.
+    """The three commands a reader starts from one copy's page.
 
     `pull` re-checks the sizes and appends an act to the record above; `run` runs the tests
-    this copy has no record for - which is the ledger panel's missing half.  Both are
-    handed the one id this route names, and the argv under each button is the command it
-    will run, from `command()` through `_argv_of`, so the printed line and the process
+    this copy has no record for - which is the ledger panel's missing half; `re-run` runs
+    them again whatever the ledger says, which is the button the `--redo` flag in
+    `table.py`'s own parser had been waiting for (`actions._switch` sends it).  All three
+    are handed the one id this route names, and the argv under each button is the command
+    it will run, from `command()` through `_argv_of`, so the printed line and the process
     cannot disagree.
+
+    **The pairs are this page's test, or all three.**  `?test=<test>` is what a verdict
+    pill on `/` links here with (`_ran_cell`), and the history panel above a page that
+    carries it is about that one pair - so a run button that ran all three would be
+    answering a wider question than the page it stands on.  With no `?test=` the page is
+    about the copy and all three are what "run" means here; `forms._tests_of` is that
+    rule already spelled once, and it is the same one `/jobs` draws rows by.
+
+    `pull` ticks the build and the two run buttons tick their **pairs**, because that is
+    what each command takes: `table.py run` reads `--pair <build_id>:<test>`
+    (`actions.command`), so this page names the tests itself rather than sending a bare
+    id the child would refuse.  Naming them is not a second opinion about which tests to
+    run - whether each pair actually runs is still the ledger's answer inside that
+    command, which is what the pending button's label says it does and what the re-run
+    button's `--redo` is the way past - so the two labels have to say which of them
+    ignores the ledger, and `correspondence.redo_hint` beside the second is where they do.
     """
     lang, check = view.lang, view.check
     fields = [("selected", build_id), ("api", check.api)]
+    pairs = [f"{build_id}:{test}" for test in _tests_of(check)]
     return ui.panel(
         "page.correspondence.commands_title",
         ui.action_form("pull", words.both(lang, "btn.pull_recheck"), fields=fields,
                        argv=view.gui._argv_of("pull", {"selected": build_id}, lang,
                                               api=check.api),
                        hint="correspondence.pull_hint", lang=lang)
-        + ui.action_form("run", words.both(lang, "btn.run_pending"), fields=fields,
-                         argv=view.gui._argv_of("run", {"selected": build_id}, lang,
+        + ui.action_form("run", words.both(lang, "btn.run_pending"),
+                         fields=[("selected", one) for one in pairs]
+                         + [("api", check.api)],
+                         argv=view.gui._argv_of("run", {"selected": pairs}, lang,
                                                 api=check.api),
-                         lang=lang),
+                         lang=lang)
+        # The same action and the same pairs, one field more: `redo` is the tick
+        # `actions._switch` reads, and it is the only difference between this form and
+        # the one above it - which is why the two printed lines differ by `--redo` and
+        # by nothing else.
+        + ui.action_form("run", words.both(lang, "btn.run_redo"),
+                         fields=[("selected", one) for one in pairs]
+                         + [("api", check.api), ("redo", "1")],
+                         argv=view.gui._argv_of("run", {"selected": pairs, "redo": "1"},
+                                                lang, api=check.api),
+                         hint="correspondence.redo_hint", lang=lang),
         lang=lang)
+
+
+# --------------------------------------------------- one pair's run history
+def _run_rows(build_id: str, test: str) -> list:
+    """Every console `var/logs/` holds for one pair, newest first.
+
+    **This is the whole of the run history**, and it is read off the file names
+    because there is nowhere else to read it: `lib/job.py` writes
+    `<build>.<test>.<stamp>.log` per run, while `var/results/<build>/<test>.json` is
+    one file per pair that every run rewrites.  So the ledger's count for a pair is
+    one whatever happened, and a pair run thirteen times is thirteen lines here.
+
+    The stamp is the run's UTC start (`kbuild._stamp()`), so ordering by it is
+    ordering by when the run began, and it sorts as text - the one spelling this tree
+    writes deliberately compares as a string.
+
+    Both halves of the name are escaped before the wildcard is added: a build id or a
+    test name carrying one of the pattern's own characters can then only ever match
+    itself, and a pattern that leaked into the next field would list one pair's runs
+    under another pair's heading.
+    """
+    pattern = layout.logs(f"{glob.escape(build_id)}.{glob.escape(test)}.*.log")
+    found = [{"file": os.path.basename(one), "path": one} for one in glob.glob(pattern)]
+    for one in found:
+        one["stamp"] = _run_stamp(one["file"])
+    return sorted(found, key=lambda one: one["stamp"], reverse=True)
+
+
+def _run_stamp(name: str) -> str:
+    """The run's start, read out of its console's own file name.
+
+    The name is `<build>.<test>.<stamp>.log`, and the stamp - the field before
+    `.log` - is it.  `rsplit` and not a split: a build id and a test name may each
+    carry dots of their own, and the stamp never does, so the last field is the right
+    one whatever the other two look like.
+    """
+    return name[: -len(".log")].rsplit(".", 1)[-1]
+
+
+def _record_for(view, build_id: str, test: str):
+    """The ledger's surviving record for one pair, or `None`.
+
+    `view.gui._state()` is the one `Records` this request has already read (`data.rows`
+    calls it too, and it is memoised for the request), so this join costs no second walk
+    of `var/results/`.  `rows["ledger"]` cannot answer it: that dict carries the six
+    fields the ledger panel draws and not the record's `log`, which is the join key.
+    """
+    _, records = view.gui._state()
+    return records.last(test, build_id)
+
+
+def _ledger_run(record, runs: list) -> str:
+    """Which of these runs the surviving record is about, by the console it names.
+
+    The record names the console it kept (`Outcome.log`, an absolute path under
+    `var/logs/`) and that file was written by exactly one run, so the file name is the
+    join and the record's own `log` field is what decides it.
+
+    A record that names no console at all is matched on its `timestamp` instead, and
+    not left to read as "never recorded": `Job._keep_console` answers `""` when a run
+    printed nothing, and that stamp is the same `started` string the file name was
+    built from (`Job.run`), so the row is still findable.  A record that matches
+    neither is named in the panel's own line rather than hidden (`_run_history_panel`).
+    """
+    if record is None:
+        return ""
+    named = os.path.basename(str(record.log or ""))
+    for one in runs:
+        if named and one["file"] == named:
+            return one["file"]
+    stamp = str(record.timestamp or "")
+    for one in runs:
+        if stamp and one["stamp"] == stamp:
+            return one["file"]
+    return ""
+
+
+def _runs_records(records: list, runs: list) -> dict:
+    """The ledger's records of one pair, keyed by the console of the run each one is about.
+
+    `_ledger_run` is the one join between a record and a run, and this is it applied to
+    every record the pair has rather than to the surviving one alone - the history's
+    whole purpose, and the reason it is written in the same shape (`sink._same_run`).
+
+    Oldest first, so the **newest** record of a run wins when two of them name it: the
+    write is idempotent, so that is a file written by an older version of this tree or
+    edited by hand, and the later line is the one that was there when the reader looked.
+
+    A record that joins to no console is left out, and it is left out on purpose: the
+    rows of this table are the runs `var/logs/` holds, so a record with no console is a
+    fact about the ledger rather than a row here - the caller counts those and says so
+    underneath (`_run_history_panel`).
+    """
+    found: dict[str, object] = {}
+    for one in records:
+        name = _ledger_run(one, runs)
+        if name:
+            found[name] = one
+    return found
+
+
+def _run_row(one: dict, record, ledger: bool, kept: bool = False) -> dict:
+    """One run as a table row: the file's own facts, plus its own record's where there is one.
+
+    `record` is the record this run left - out of the pair's history, or the surviving
+    `<test>.json` for the run that one is about - and `None` for a run that left none.
+    That is the whole join, and it is done here rather than in a cell so that "which
+    fields are empty and why" is decided once.  The three fields the record can add are
+    the three a file name cannot say: what the run came back with, what it exited with,
+    and who ran it.
+
+    `kept` is not `record is not None`: it says this run's record is the *surviving*
+    one, which is the whole of the difference between the two sentences for a run that
+    has a record - every other page reads the surviving record and nothing else
+    (`Ledger.read`).
+
+    `ledger` is not `record is not None` either: it says whether the pair has a record
+    at all - the surviving one, or one the history keeps - which is what the fourth
+    cell's sentence needs.  An empty cell means one of two different things: the ledger
+    holds a later run's record instead of this run's, or there is no record of this pair
+    to hold, and `_kept_cell` may not guess which.
+    """
+    return {"file": one["file"], "stamp": one["stamp"],
+            "kept": kept and record is not None, "recorded": record is not None,
+            "ledger": ledger,
+            "verdict": record.verdict if record is not None else "",
+            "exit": record.exit_code if record is not None else None,
+            "source": record.source if record is not None else ""}
+
+
+def _run_history_panel(view, build_id: str, test: str) -> str:
+    """Every run of one (build, test) pair, newest first, each with its own record.
+
+    **The panel exists because the number on `/` was the wrong unit.**  A pair can be
+    run many times and the ledger keeps one *current* record for it, so nothing a
+    `Ledger.read` returns can say how often - the consoles in `var/logs/` can, and this
+    is them.
+
+    **Every row now carries its own run's record**, because the ledger keeps them
+    (`Ledger.history`): the pair's history is joined to the rows by the same rule the
+    surviving record is (`_runs_records`), so a run a later one replaced is a row with
+    its own verdict, exit code and source instead of three dashes.  The surviving record
+    still wins for the row it is about, so the newest row reads exactly as it did.
+
+    A row that joins to no record says which of the two silences it is: the pair's
+    ledger holds other runs and not this one, or it holds none at all.  And a pair with
+    **no** record anywhere is a third fact, not a second: a run whose console exists
+    while its record does not is the run this tree went out of its way to make
+    diagnosable (`Job.run` - `_InFlight` opens the log before tuxrun starts, so a run
+    killed mid-flight leaves a console and no record), and a single interrupted run of a
+    pair would otherwise have this panel say a later run overwrote a record that was
+    never written.
+
+    Two lines underneath are about records rather than runs, and they are lines and not
+    rows because a record with no console has no console to link and no start stamp to
+    print: `page.history.record_not_here` for the surviving record's own console, and
+    `page.history.records_no_console` for the history's.  The second is the one the
+    history makes possible - `var/logs/` is pruned and `var/results/` is not, so a pair
+    can have more runs in the ledger than it has consoles left - and a reader looking at
+    five rows and a history of nine has to be told which four are missing rather than
+    left to count.
+
+    The sub-line names the directory and the two facts it is the whole point of: the
+    rows are the log files, and the ledger's record of a pair is one *current* one plus
+    its history.
+    """
+    lang = view.lang
+    runs = _run_rows(build_id, test)
+    records = Ledger.history(build_id, test)
+    record = _record_for(view, build_id, test)
+    kept = _ledger_run(record, runs)
+    shown = _runs_records(records, runs)
+    if kept and record is not None:
+        # The surviving record is what every other page reads, so it is what this row
+        # shows even in the one case where the history's newest line disagrees with it.
+        shown[kept] = record
+    rows = [_run_row(one, shown.get(one["file"]), kept=one["file"] == kept,
+                     ledger=record is not None or bool(records)) for one in runs]
+    cols = (
+        ui.Col("col.when", kind="n",
+               draw=lambda one: ui.stamp(one["stamp"], view.check.tz, seconds=True)),
+        ui.Col("col.verdict", kind="c",
+               draw=lambda one: (ui.pill(one["verdict"], lang=lang)
+                                 if one["verdict"] else ui.DASH)),
+        ui.Col("col.exit", kind="n", field="exit"),
+        ui.Col("col.source", kind="c",
+               draw=lambda one: (ui.pill(one["source"], tone_override="info", lang=lang)
+                                 if one["source"] else ui.DASH)),
+        ui.Col("page.history.col_record", kind="wrapc",
+               draw=lambda one: _kept_cell(one, lang)),
+        ui.Col("page.history.col_log", kind="wrapc",
+               draw=lambda one: _console_cell(one, lang)),
+    )
+    body = ui.table(cols, rows, lang=lang,
+                    empty=t(lang, "page.history.empty", dir=ui.code(layout.logs())))
+    if runs and record is not None and not kept:
+        body += ui.hint(t(lang, "page.history.record_not_here",
+                          dir=ui.code(layout.logs())))
+    # A history record whose console is not among the rows: joined by the same rule the
+    # rows are (`_runs_records`), so what is left over here is exactly the records that
+    # name a console `var/logs/` no longer has.
+    orphaned = len([one for one in records if not _ledger_run(one, runs)])
+    if orphaned:
+        body += ui.hint(t(lang, "page.history.records_no_console", n=orphaned,
+                          dir=ui.code(layout.logs())))
+    return ui.panel("page.history.title", body, flush=True, lang=lang,
+                    sub=t(lang, "page.history.sub", test=test,
+                          dir=ui.code(layout.logs())))
+
+
+def _kept_cell(one, lang: str) -> str:
+    """Which of the four things happened to this run's record.
+
+    One of four sentences and no fifth: this run's record is the surviving one, its
+    record is in the history and a later run's is the surviving one, a later run
+    overwrote its record and nothing kept it, or the pair has no record at all.
+
+    The second sentence is new with the history, and it is not the third under another
+    name: a run the history still holds is a run whose verdict the three cells above
+    still print (`_run_row`), while the third is a run whose record is nowhere - the
+    ledger written before this tree kept histories, or one whose history file was
+    removed - and only the second of those is something a reader can go and read.
+
+    The fourth is not folded into the third because the third names a run that did
+    something, and when the pair was never recorded there is no such run to name.  A
+    dash here would be a question the reader cannot answer from this panel.
+    """
+    if one["kept"]:
+        key = "page.history.kept"
+    elif one["recorded"]:
+        key = "page.history.in_history"
+    else:
+        key = "page.history.overwritten" if one["ledger"] else "page.history.unrecorded"
+    return words.both(lang, key)
+
+
+def _console_cell(one, lang: str) -> str:
+    """This run's console: the archived file's own name, linked to the text it is.
+
+    The link's text is the file name and not a word like "log": the name is where the
+    run's own identity is written down (`<build>.<test>.<stamp>.log`), and a reader
+    comparing two consoles wants to know which file they are reading.  It opens in a
+    tab of its own, like every other log link on this console (`ui.log_link`), so the
+    history stays where it was.
+    """
+    name = str(one["file"])
+    href = "/logs/" + urllib.parse.quote(name, safe="")
+    why = words.attr(lang, "title", "page.history.open", file=name)
+    return (f'<a href="{ui.esc(href)}" target="_blank" rel="noopener" {why}>'
+            f'{ui.code(name)}</a>')

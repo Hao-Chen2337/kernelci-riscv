@@ -32,6 +32,7 @@ from .schema import (
     MAX_DAYS,
     MULTI_FIELDS,
     NO_WINDOW,
+    ORIGINS,
 )
 
 if TYPE_CHECKING:
@@ -43,8 +44,12 @@ if TYPE_CHECKING:
 
 # What may reach a command line: a name this tree could have offered itself.
 # `_named()` and `_token()` both go through it, so a tree, a branch, a test name
-# and a build id are held to the same alphabet.
-TOKEN = re.compile(r"[A-Za-z0-9._+-]{1,64}")
+# and a build id are held to the same alphabet.  `:` is in it for one value and no
+# other: a `/jobs` tick box sends its row as `<build_id>:<test>` (`jobs._tick_cell`),
+# which is one word to `table.py run --pair` and two names to this console - the
+# separator is the pair's own spelling, and a build id is 40 hex characters and a
+# test name none, so a colon can only be the one the page drew.
+TOKEN = re.compile(r"[A-Za-z0-9._+:-]{1,64}")
 
 
 def _first(form: Mapping[str, list[str]], key: str, default: str = "") -> str:
@@ -79,8 +84,33 @@ def _tests_of(check: "Filter") -> tuple[str, ...]:
     return (check.test,) if check.test in TESTS else DEFAULT_TESTS
 
 
+def _tests_many(form: Mapping[str, list[str]]) -> str:
+    """The `tests` multi key as the canonical comma-joined list of tests this page draws.
+
+    `test` is one test and narrows a page's `ran`/`verdict` (`_tests_of`); `tests` is
+    the *set* the trend page draws a line per, and it is the multi-valued spelling for
+    the reason `tree` is (`_names`): several values at once, comma-joined, because `_url`
+    collapses a query through a dict and a repeated key does not survive a link.
+
+    A name outside `TESTS` is dropped rather than refused: the box only offers the
+    catalogue's three, so the only way to name a fourth is to hand-edit the URL, and a
+    page that answered a typo with a 500 (or with an empty panel) would be worse than
+    one that drew the tests it does know.  An empty answer is not "no tests" - it is
+    "the default set", which is what the readers below spell `DEFAULT_TESTS`.
+    """
+    names = [one for value in (form.get("tests") or []) for one in _names(str(value))]
+    return ",".join(dict.fromkeys(one for one in names if one in TESTS))
+
+
 def _ticks(form: Mapping[str, list[str]]) -> list[str]:
-    """The ticked rows as build ids - the only ids a page sends, and they were clicked."""
+    """The ticked rows as the ids their boxes sent - nothing else a page may name.
+
+    What one box sends is the row it is drawn on, and two screens draw two kinds of
+    row: `/builds` ticks builds (`<build_id>`) and `/jobs` ticks (build, test) pairs
+    (`<build_id>:<test>`, `jobs._tick_cell`).  Both are tokens under the rule below,
+    and the flag that carries them is the caller's (`command()`'s `run` branch reads
+    the pair spelling), so this stays the one door they come through.
+    """
     return [one for one in (_token(one) for one in (form.get("selected") or [])) if one]
 
 
@@ -90,8 +120,12 @@ def _token(value: str) -> str:
     The character class is spelled out rather than asked of `str.isalnum()`, which
     is Unicode-aware: it answered True for `树`, so a name that is not ASCII went
     through this check and into an argv.  Nothing here needs a non-ASCII name, and
-    `/` stays out, so `../../etc` is refused too.
+    `/` stays out, so `../../etc` is refused too, and so do the shell's own
+    metacharacters (`;`, `|`, `$`, a quote, a space): a token is one word that means
+    one thing, and the one separator in the class is the `:` a `/jobs` row sends
+    between its build id and its test (`TOKEN` says why that one is allowed).
     """
+
     value = str(value or "")
     return value if TOKEN.fullmatch(value) else ""
 
@@ -132,6 +166,35 @@ def _offered(form: Mapping[str, list[str]], key: str, options: Iterable[str], de
         raise errors.ConfigError(t(lang, "error.not_an_option_n", key=key, value=repr(value),
                                    n=len(options)))
     return value
+
+
+def _chosen_many(form: Mapping[str, list[str]], key: str, options: Iterable[str], default: str,
+                 lang: str = DEFAULT_LANG) -> str:
+    """`_chosen`'s rule for an axis that may name **several** of its options, joined.
+
+    The two readers next to this one are each half of what a set-valued axis needs, and
+    neither is enough alone.  `_named_many` reads several values but holds them only to
+    `_token()`, which is right for an open vocabulary (`tree`: any name the API has) and
+    wrong for a closed one - `?verdict=banana` would be read as a verdict, survive into
+    `accepts`, match no record, and answer **an empty table with nothing said**, which is
+    the silent-0 failure this package refuses everywhere else.  `_chosen` refuses a value
+    it was not offered, but reads one value only, so `?verdict=fail,incomplete` - the whole
+    point of the control - was refused outright.
+
+    So: every value the query carried, each held to the option list, the refusal being
+    `_chosen`'s own (`error.not_an_option`, which prints the list, so a reader learns the
+    vocabulary rather than re-typing the same wrong word).  An empty set is the default,
+    and the first occurrence of a repeated value wins, so two spellings of one value
+    cannot make the page ask twice.
+    """
+    parts = [one for value in (form.get(key) or []) for one in _names(str(value))]
+    offered = tuple(options)
+    for one in parts:
+        if one not in offered:
+            raise errors.ConfigError(t(lang, "error.not_an_option", key=key, value=repr(one),
+                                       options=", ".join(part or t(lang, "state.any_paren")
+                                                         for part in offered)))
+    return ",".join(dict.fromkeys(parts)) or default
 
 
 def _named(form: Mapping[str, list[str]], key: str, lang: str = DEFAULT_LANG) -> str:
@@ -181,6 +244,80 @@ def _artifacts(value: str) -> tuple[str, ...]:
     """A query's artifact list: our artifact names, comma or space separated, unknown ones dropped."""
     return tuple(name for name in (one.strip() for one in (value or "").replace(",", " ").split())
                  if name in ARTIFACTS)
+
+
+def _origins(query: Mapping[str, list[str]]) -> str:
+    """A query's `origin` axis: the one side, both sides, or one of the two view values.
+
+    **The axis is what the reader ticks, and a reader ticks sides.**  本地 and 远端 are
+    the two halves of this table - a copy this machine holds, and a build the API
+    answered - and a row may be either, so two ticks is an OR and the value that carries
+    them is the comma list `local,remote`: the spelling `_names` already reads (`tree`
+    and the other `MULTI_FIELDS` travel the same way, and `_url` collapses a query
+    through a dict, so a repeated key could not ride a link).  `origin=any` and
+    `origin=local` still read as they always did, so every link written before this
+    round answers what it answered.
+
+    `card` and `both` are read too, and neither is a side: `card` is the one set the
+    numbers strip's `cards` chip counts and the one view `build_rows` does not cap
+    (`models.Filter.accepts` says why it has to exist), and `both` is a round-1 spelling
+    of two ticks.  Neither is offered by the box on `/` - see `builds._origin_boxes` -
+    and both are still honoured, because a value a page has already written into a URL
+    is not a value this reader may refuse.
+
+    A value nobody knows is dropped and the axis answers `any`: the permissive rule the
+    other value axes follow, and the one a hand-edited URL gets.
+    """
+    named = {one for raw in (query.get("origin") or ()) for one in _names(str(raw))
+             if one in ORIGINS}
+    named.discard("any")
+    if not named:
+        return "any"
+    if named <= {"local", "remote"}:
+        return ",".join(one for one in ("local", "remote") if one in named)
+    return next(one for one in ORIGINS if one in named)
+
+
+def _parameter_url(value: str, key: str, lang: str = DEFAULT_LANG) -> str:
+    """One free-text field that becomes an artifact URL, or a refusal.
+
+    `publish_local` files a local artifact under the URL it is given, and that URL
+    reaches a command line (`--parameter kernel_url=`), so the alphabet matters here
+    the way it matters for a name: `_api_url`'s rule - printable ASCII, at most
+    `API_MAX`, no space - with the scheme relaxed to what an artifact may be fetched
+    from.  `file:` is the scheme this console publishes its *own* artifacts under
+    (`Local.origin()` reads it as made-here), and a bare absolute path is the same
+    thing written the way an operator types it at a shell.
+
+    A value that is not one of those is refused with the field's name: an empty box
+    means "not passed" - the command then falls back to this deployment's own served
+    file - and a box with something else in it means the reader meant a URL.
+    """
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if len(value) > API_MAX or any(one <= " " or one > "~" for one in value):
+        raise errors.ConfigError(t(lang, "error.not_a_url", key=key, value=repr(value)))
+    parts = urllib.parse.urlsplit(value)
+    if parts.scheme in ("file", "http", "https") and (parts.netloc or parts.path):
+        return value
+    if not parts.scheme and value.startswith("/"):
+        return value
+    raise errors.ConfigError(t(lang, "error.not_a_url", key=key, value=repr(value)))
+
+
+def _artifacts_all(query: Mapping[str, list[str]], key: str) -> tuple[str, ...]:
+    """`_artifacts` over **every** value the query carried under `key`, not only its first.
+
+    `has`/`missing` are offered as a set of artifacts, and the page's own control sends
+    them comma-joined (`forms._named_many`'s reason: a repeated key does not survive a
+    round trip through `_url`, which collapses a query through a dict).  Reading one
+    value through `_first` while the page drew a set is how `?missing=kernel,modules`
+    became a question about `kernel` alone - the same class of silent narrowing the
+    multi-valued axes exist to remove.  Both spellings are read: a comma list is what a
+    link writes, and repeated keys are what a tick-box group would submit.
+    """
+    return _artifacts(",".join(str(one) for one in (query.get(key) or ())))
 
 
 def _flag(name: str, value: str) -> list[str]:

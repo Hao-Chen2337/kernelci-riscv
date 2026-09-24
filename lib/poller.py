@@ -53,13 +53,24 @@ from .out import Outcome
 POLL_PERIOD = 5
 CURSOR_OVERLAP_S = 900      # the events feed is not ordered; re-scan a window
 SEEN_LIMIT = 20000          # oldest ids are evicted past this
+REFUSED_LIMIT = 20000       # the same, for the refusals beside them
 MAX_RETRIES = 5             # consecutive failed batches before giving up
 EVENTS_LIMIT = 1000
 REPOST_EVERY = 12           # polls between re-posts of a report the callback refused
 
 # The state file's shape is a contract: operators read it, and an older worker
 # must not misread what a newer one wrote.  The callback token is NOT in it.
-STATE_FIELDS = ("timestamp", "seen", "pending")
+#
+# `refused` is why a node is in `seen` without having run, per node id.  `seen`
+# alone cannot say that, and the difference is not cosmetic: `_claim` answers
+# None for a node that is already done, for one whose runtime is another lab's,
+# and for one whose platform this host cannot boot, and all three used to be
+# recorded as nothing at all - the node went into `seen`, `_drain`'s "already
+# seen" skip made the decision permanent, and the page drew the same word for
+# "this loop ran it" and "this loop looked at it and put it down".  A worker
+# older than this field writes no `refused` entries, so a node it dealt with is
+# still ambiguous; the page says so rather than picking the flattering reading.
+STATE_FIELDS = ("timestamp", "seen", "pending", "refused")
 
 
 class Poller:
@@ -78,8 +89,9 @@ class Poller:
         self.period = period
         self.max_retries = max_retries
         self.since = since
-        self.state = {"timestamp": None, "seen": [], "pending": {}}
+        self.state = {"timestamp": None, "seen": [], "pending": {}, "refused": {}}
         self._seen_index = set()
+        self._refused_index = {}
         self._lock = None
         self._stopping = False
         self._dirty = False
@@ -214,12 +226,31 @@ class Poller:
             else:
                 handled_all = False
         if handled_all:
-            # The newest event we saw, or - when there were none - the window this poll
-            # actually asked about, which is `start_cursor`'s answer and therefore always
-            # a real timestamp.  `_dirty` is what makes `flush()` write it: a state dict
-            # that changes without the flag is a change that never reaches the disk, which
-            # is the other half of why `timestamp` stayed `null` for ever.
-            self.state["timestamp"] = newest or self.start_cursor()
+            # The newest event we saw, or - when there were none - **now**, which is
+            # where this poll got to.  `events()` asks for the whole available queue and
+            # puts no ceiling on the question, so an empty answer is the queue being
+            # empty, and the present is what the cursor has got to.
+            #
+            # It used to fall back to `start_cursor()`, which reads as "the window we
+            # asked about" and was in fact the window's *start*.  So the cursor sat one
+            # overlap behind the present for ever - and it was the floor every later
+            # poll was bounded by, which is how a node below it went invisible for good
+            # (`start_cursor` carries the measurement).  The cursor is **not a floor any
+            # more**; what is left here is the stamp the page reads as "when this worker
+            # last got to", and it is still worth keeping honest.
+            #
+            # **`newest` is seeded from the cursor**, which is why the fallback has to be
+            # chosen by `batch` and not by whether `newest` is empty: on an empty batch
+            # `newest` holds the very value this line is supposed to replace, so
+            # `newest or _iso_now()` hands the cursor back to itself and the stamp never
+            # moves.  Measured, with a stub poller - the first version of this fix wrote
+            # the old stamp back on every empty poll, which is the same stall this
+            # paragraph is about, reached by a shorter route.
+            #
+            # `_dirty` is what makes `flush()` write it: a state dict that changes without
+            # the flag is a change that never reaches the disk, which is the other half of
+            # why `timestamp` stayed `null` for ever.
+            self.state["timestamp"] = (newest or _iso_now()) if batch else _iso_now()
             if self.state["timestamp"]:
                 self._dirty = True
         # A poll that claimed nothing is not a silent one: the line is what the activity's
@@ -241,7 +272,15 @@ class Poller:
         # the pipeline sent - that is what dispatching a job means here.  A sink
         # set built from the command line would only work when the operator
         # passed --callback-url, and the worker line would silently never post.
-        forward = _Forward((sink.Ledger(), sink.Callback()))
+        #
+        # ...unless this deployment has been told to report somewhere else, which is
+        # what `sink.delivery_url` is for: the definition's URL is the default and not
+        # the last word, and the page that draws this panel is where the last word is
+        # set.  Resolved here, at delivery, and not when the worker started - a worker
+        # runs for days and a setting that needed a restart would be a setting the
+        # operator watches do nothing.
+        forward = _Forward((sink.Ledger(),
+                            sink.Callback(sink.delivery_url(_callback_url(definition)))))
         try:
             job.run(self.run, sinks=(forward,), source="worker")
         except Exception as exc:  # noqa: BLE001 - a failed delivery must stay retryable
@@ -269,13 +308,27 @@ class Poller:
 
         The events feed replays history: a node that was `available` an hour ago
         may be done by now.  Re-reading is what makes "claim" mean anything.
+
+        **Every `None` is recorded before it is returned.**  A refusal is a decision
+        this loop made and then made permanent - `handle` returns True, `_drain` marks
+        the node seen, and the "already seen" skip at the top of `_drain` means it is
+        never looked at again.  Answered as nothing at all, that decision left the node
+        indistinguishable from one that ran, and the operator's 「这六个到底是跑了还是
+        没跑」 had no answer in any file on this disk.  The three reasons are separate
+        strings rather than one word because they call for three different responses:
+        a job claimed by another lab is not a fault, a platform this host cannot boot
+        is a deployment gap, and a node already done is simply stale news.
         """
         if not node.node_id:
             return None
         fresh = Kjob.from_node(self.api.node(node.node_id))
         if not fresh.claimable(self.runtime):
+            self.refuse(node.node_id, f"not claimable now: state={fresh.state or '?'}"
+                                      f" result={fresh.result or '-'}"
+                                      f" runtime={fresh.runtime or '-'}")
             return None
         if self.platform and fresh.platform and fresh.platform != self.platform:
+            self.refuse(node.node_id, f"platform {fresh.platform} is not {self.platform}")
             return None
         return fresh
 
@@ -302,7 +355,9 @@ class Poller:
         self.state.setdefault("timestamp", None)
         self.state.setdefault("seen", [])
         self.state.setdefault("pending", {})
+        self.state.setdefault("refused", {})
         self._seen_index = set(self.state["seen"])
+        self._refused_index = dict(self.state["refused"])
         return self.state
 
     def flush(self):
@@ -328,8 +383,58 @@ class Poller:
         if extra > 0:
             for gone in self.state["seen"][:extra]:
                 self._seen_index.discard(gone)
+                self._refused_index.pop(gone, None)
+                self.state["refused"].pop(gone, None)
             del self.state["seen"][:extra]
         self._dirty = True
+
+    def refuse(self, node_id, reason):
+        """Record that this node was looked at and put down, and why.
+
+        Keyed by node id, evicted with the `seen` entry it explains (`mark_seen`), so
+        the two lists cannot drift: a refusal whose node is no longer in `seen` would
+        be a reason for a decision nothing remembers making.  Not a `seen` mark on its
+        own - the caller still marks it, because marking is what makes the refusal
+        permanent and the two must happen together.
+        """
+        if not node_id or not reason:
+            return
+        self.state["refused"][node_id] = reason
+        self._refused_index[node_id] = reason
+        self._dirty = True
+
+    def refused(self, node_id):
+        """Why this node was put down, or `""` - including for a worker that never said."""
+        return self._refused_index.get(node_id, "")
+
+    def forget(self, node_id):
+        """Take a node back out of `seen`, so the next poll looks at it again.
+
+        The only way out of `seen`, and it exists because `seen` is otherwise forever:
+        a node marked seen is skipped by `_drain` before `handle` is reached, so a
+        decision that turned out to be wrong - a platform this host has since been able
+        to boot, a runtime that has since been fixed, a run that died before its report
+        was posted - could only be undone by hand-editing the JSON.
+
+        The refusal goes with it, for the reason `refuse` gives: the two are one fact,
+        and a reason for a decision nothing remembers making is worse than no reason.
+        `pending` does **not**: a report written and not delivered is a run that really
+        happened, and the worker re-posts those on its own (`_repost_pending`) without
+        being asked.  Forgetting a node must never be a way to lose the record of one.
+
+        Returns True when the node really was in `seen`, so the caller can say what it
+        did rather than that it did something: an id nobody remembers and an id that was
+        just un-remembered are the same request with different answers, and a page that
+        printed one for the other would be inventing the second.
+        """
+        if not node_id or node_id not in self._seen_index:
+            return False
+        self._seen_index.discard(node_id)
+        self.state["seen"] = [one for one in self.state["seen"] if one != node_id]
+        if self._refused_index.pop(node_id, None) is not None:
+            self.state["refused"].pop(node_id, None)
+        self._dirty = True
+        return True
 
     def pending(self, node_id, report=None):
         """The unposted report for a node: set it, or read it back to re-post."""
@@ -345,27 +450,54 @@ class Poller:
     # --- the events feed ---------------------------------------------------
 
     def start_cursor(self):
-        """Where the first poll starts: `--since` if given, else the cursor, else now.
+        """The floor a poll asks from: `--since` if given, else **nothing at all**.
 
-        **`--since` outranks the persisted cursor**, which reverses the order this
-        applied and is what makes the option mean anything.  Cursor-first meant
-        `--since` was only ever consulted on a state file that had no cursor yet -
-        so the operator's one way to reach work this worker never saw (a stack
-        seeded with build timestamps from days ago, a deployment that was down over
-        a weekend) did nothing at all on any deployment that had ever run once, and
-        did it silently.  An instant the operator typed is a thing they meant; a
-        stamp the file happens to hold is not, and when the two disagree the
-        argument is the one to believe.
+        **The persisted cursor is not a floor any more, and that is the fix for a
+        worker that skipped work.**  This fell back to `state["timestamp"]`, which is a
+        time this worker *got to* - and a time it got to is not a time before which
+        there is no work.  The two came apart the moment a node was created below the
+        cursor without being handled, in either of the two ways that happens here:
 
-        Re-scanning from `--since` on every start is safe because `seen` answers
-        it: a node already handled is skipped, and one that finished long ago fails
-        `Kjob.claimable` even if it is not.
+        - `deploy/stack.sh --seed` writes job nodes carrying the upstream build's own
+          timestamps, so a queue seeded from a build stamped `2026-09-20T08:20` lands
+          *behind* a cursor saying `2026-09-22T04:08`.  `actions.py`'s `--since` field
+          records this one: it was reaching the page's `claimed: no` rows only by the
+          operator hand-editing an argv.
+        - A worker whose state file has no cursor floors at `now - 900s`, so a queue
+          seeded in the fifteen minutes before it first ran was outside the window it
+          opened - and the first run then wrote that node's own neighbours in as the
+          new cursor.
+
+        Neither node is ever fetched again, because the floor only moves forward: it
+        overtakes them permanently.  Measured on the local stack, 2026-09-23, with the
+        cursor left at `2026-09-22T04:08:01.967` by a batch that ran -
+        `/events?kind=job&state=available&recursive=true&from=2026-09-22T03:53:01.967`
+        returns **3** events while the same query with no `from` returns **18**, and
+        none of the 15 the floor was hiding was in `seen`.  `/worker` drew six
+        `available` rows the whole time.
+
+        Nothing is needed in the floor's place, because **`state="available"` is already
+        the bound**: a node that was run and reported leaves the queue, so what comes
+        back is the outstanding work and nothing else, and `seen` is already the record
+        of what this worker has dealt with.  The floor was the only thing that could
+        hide a node the page was showing as pending - which is why the two disagreed.
+
+        `--since` still floors the query and still means what it always did, the one way
+        for an operator to say "only this window".  It is no longer the *only* way to
+        reach seeded work; it is not needed for that at all now.
         """
-        return self.since or self.state.get("timestamp") or _iso_now()
+        return self.since or ""
 
     def events(self):
-        """One batch from the events API, with the overlap window applied."""
-        since = iso_ago(self.start_cursor(), CURSOR_OVERLAP_S)
+        """One batch from the events API: the queue, however old its nodes are.
+
+        The overlap still applies to an explicit `--since`, because the feed is not
+        ordered and a window the operator typed must not miss an event that arrived
+        while the previous poll was running.  With no `--since` there is no window to
+        widen - `start_cursor` has what the floor used to cost.
+        """
+        floor = self.start_cursor()
+        since = iso_ago(floor, CURSOR_OVERLAP_S) if floor else ""
         return [Kjob.from_node(node)
                 for node in self.api.events(kind="job", state="available", since=since)]
 
@@ -381,7 +513,13 @@ class Poller:
                 job = Job.from_definition(entry.get("definition") or {})
                 outcome = Outcome(**{k: v for k, v in (entry.get("record") or {}).items()
                                      if k in Outcome.__dataclass_fields__})
-                sink.Callback(entry.get("callback") or "").deliver(job, outcome)
+                # Through `delivery_url` and not straight to the stored URL, which is
+                # the *definition's*: re-posting is the moment the operator most needs
+                # the override, because a report that is still waiting is usually one
+                # that was going somewhere that refused it.  A repost that ignored a
+                # setting the page had just shown them would leave the row pending for
+                # ever with the page claiming a destination the worker never used.
+                sink.Callback(sink.delivery_url(entry.get("callback") or "")).deliver(job, outcome)
             except Exception as exc:  # noqa: BLE001 - stays pending, retried next poll
                 print(f"! {node_id}: report still pending ({exc})", flush=True)
                 continue
@@ -399,6 +537,13 @@ class Poller:
         self.pending(node.node_id, {
             # The definition is the authority: an upstream job node carries no
             # callback URL of its own, so the node field is usually empty.
+            #
+            # **The stored URL is the definition's and not the one this attempt used.**
+            # An override is a decision the operator can change between the failure and
+            # the re-post, and a row that recorded the overridden URL would repost to a
+            # destination they had already abandoned (`_repost_pending` resolves again,
+            # the page draws the same resolution).  What is durable here is what the
+            # pipeline declared; what is in force is asked fresh.
             "callback": _callback_url(definition) or node.callback_url,
             "definition": definition,
             "record": outcome.record() if isinstance(outcome, Outcome) else {},
@@ -442,8 +587,81 @@ def _callback_url(definition):
     return str(callback.get("url") or "") if isinstance(callback, dict) else ""
 
 
+def forget_node(node_id, state_file=None):
+    """Take one node back out of `seen` on disk, under the worker's own lock.
+
+    This is the page's write, and it is a *second* writer of a file that has one by
+    design, so it goes through the same `flock` the worker takes: `Poller` keeps the
+    whole state in memory and `flush()` rewrites the file wholesale, so a write from
+    anywhere else while a worker holds it is not a merge - it is a change the worker's
+    next flush silently undoes, and the operator would watch the button work and then
+    stop working.  The lock is tried and **not waited on**: a page that blocked until a
+    long-lived worker exited would hang the request, and the honest answer to "the
+    worker is running" is to say so.
+
+    Returns a dict rather than raising, because every outcome here is something the
+    page has to say out loud and none of them is an error in this program:
+    `{"forgotten": bool, "reason": str}` where `reason` is one of
+    `""` (it was in `seen` and now is not), `"absent"` (nothing remembered it),
+    `"locked"` (a worker holds the file), or `"unreadable"` (the file is not JSON).
+    """
+    path = state_file or layout.worker_state()
+    try:
+        # Held open on purpose, the same way `_acquire` holds it: the lock *is* the
+        # handle, so the file has to outlive this line and be closed in the `finally`.
+        handle = open(path + ".lock", "w", encoding="utf-8")  # noqa: SIM115 - flock lifetime
+    except OSError:
+        return {"forgotten": False, "reason": "locked"}
+    try:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return {"forgotten": False, "reason": "locked"}
+        # The file is parsed here, before anything is constructed from it, and that is
+        # not belt-and-braces: `load()` is written for a *worker*, which must not die
+        # because the file is corrupt - it warns and starts from an empty state, and
+        # that is right for a loop whose next poll would rebuild the file anyway.  A
+        # page's write is not that.  `flush()` writes the state dict whole, so a
+        # `Poller` that loaded a corrupt file and then flushed would replace the
+        # operator's `seen`/`pending`/`refused` with the empty default and call it a
+        # forget - one press, the whole state file gone, and "unreadable" is the word
+        # this has to answer instead.
+        try:
+            with open(path, encoding="utf-8") as handle_in:
+                json.load(handle_in)
+        except FileNotFoundError:
+            return {"forgotten": False, "reason": "absent"}
+        except (OSError, ValueError):
+            return {"forgotten": False, "reason": "unreadable"}
+        # A `Poller` with no API: the three methods below touch the state file and
+        # nothing else, and going through the class is what keeps one implementation
+        # of the file's shape rather than a second reader of it here.
+        poller = Poller(None, state_file=path)
+        poller.load()
+        done = poller.forget(node_id)
+        poller.flush()
+        return {"forgotten": done, "reason": "" if done else "absent"}
+    finally:
+        handle.close()
+
+
 def _iso_now():
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    """Now, in the spelling the values this stamp ends up beside are written in.
+
+    Its one caller puts it in the **cursor** (`_drain`'s window end), and `_drain` keeps
+    the cursor up to date by comparing it to a node's own `created` as *strings*.  That
+    comparison is only meaningful while the two are spelled the same way, and a node's
+    stamp is the API's (`2026-09-20T08:20:00.123456` - fractional seconds, no `Z`).  A
+    trailing `Z` is not decoration here: `Z` sorts above `.`, so a cursor wearing one
+    would outrank every node stamp in its own second and the cursor would stop advancing
+    on them.  `iso_ago` reformats for the wire either way, so the query is unchanged by
+    this.
+
+    `start_cursor` used to be the other caller, and no longer is: the cursor is
+    **information - when this worker last got to - and not a floor**, so no query is
+    bounded by a value this writes.
+    """
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
 
 
 class _Forward(sink.Sink):
@@ -469,10 +687,10 @@ class _Forward(sink.Sink):
         return " ".join(note for note in notes if note)
 
 
-# The shapes `parse_iso` reads, in the order they are tried.  `_iso_now` and the
-# console write the canonical one, but the stamp this parse is actually handed the
-# most is neither of those: the cursor is a **node timestamp straight off the API**,
-# and every one of those carries fractional seconds and no `Z`
+# The shapes `parse_iso` reads, in the order they are tried.  `_iso_now` writes the
+# first of them, and the stamp this parse is actually handed the most is the second
+# half of the same family: the cursor is usually a **node timestamp straight off the
+# API**, and every one of those carries fractional seconds and no `Z`
 # (`2026-09-20T08:20:00.123456`).  The console's `/worker` column prints a third
 # near miss, `created[:16]`, which is why the seconds are optional here too.
 ISO_SHAPES = ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M")

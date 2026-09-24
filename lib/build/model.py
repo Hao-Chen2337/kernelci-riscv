@@ -6,6 +6,12 @@ and everything else in this package imports the artifact vocabulary, the size
 limits and `_Permanent` from here, so "what artifacts exist" and "how big a
 transfer may be" have exactly one spelling.
 
+It owns one more pair no module under it could own: **where a build's `.config`
+is** - the URL it comes from (`Build.config_url`) and the shared cache its bytes are
+kept in (`config_path` / `Build.config_cache`).  `lib/drift.py` reads and writes
+that cache, so it imports the two from here rather than digesting a URL a second
+time.
+
 **This is where the package's one cycle is cut.**  `fetch` and `rootfs` need the
 constants and the sizes owned here, so this module cannot import them back at
 module level; the three `Build` methods that reach outward (`merge`, `_fetch`,
@@ -16,6 +22,7 @@ rest of the package a straight downward graph.
 接口形状（C++，只有声明）：include/kci/local.hpp §7 Build。
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -61,6 +68,54 @@ TIMEOUT = 60
 CHUNK = 1 << 20
 ATTEMPTS = 3
 
+# The environment variable naming this deployment's own artifact storage, and the
+# address a build's config falls back to when its card names none.  One spelling,
+# here: `Build.config_url` is the only reader, and it is the reader `lib/drift.py`
+# asks - so a deployment that moves its storage moves it for both.
+STORAGE_ENV = "KCI_STORAGE_URL"
+STORAGE_DEFAULT = "http://127.0.0.1:8002"
+
+
+def config_path(url):
+    """Where one URL's `.config` is kept between downloads: `var/configs/<digest>`.
+
+    The digest is of the URL, because that is what identifies the bytes: a config
+    served under a different address is a different file, and the same address
+    serving different bytes is the artifact store contradicting its own build id.
+    The `.config` suffix is kept so a reader who finds the directory can open the
+    file without asking what it is.
+
+    **This is the tree's only digest of a config URL.**  `lib/drift.py` writes
+    into this cache and reads out of it, `Build.config_cache` asks whether a
+    build's config is in it, and a second sha256 spelled anywhere else would name
+    a file the writer never wrote - a cache that never hits, which is exactly the
+    × this pair exists to stop.
+    """
+    return layout.configs(hashlib.sha256(url.encode("utf-8")).hexdigest()[:32] + ".config")
+
+
+def config_note(url):
+    """The sidecar that says what the kept file is supposed to be: the same name, `.json`.
+
+    A `.config` is a text file a reader may open, so the checksum cannot live in
+    it.  It sits beside it: the URL it came from, how many bytes, and the sha256
+    of those bytes.
+
+    **Why a checksum and not just a size.**  A cache is only worth having if a
+    damaged entry is *detected*, and a truncated config does not announce itself:
+    a config cut off at 5 000 of 192 231 bytes still parses into 166 options, so
+    the comparison answers **+5426 -8 ~1 instead of +618 -616 ~99, with zero HTTP
+    calls and no sign that anything is wrong** - a confident, wrong drift report,
+    which is the exact failure this tree refuses elsewhere ("an empty parse is an
+    ERROR").  The same is true of a download truncated in transit: without a
+    recorded size it would be cached as the truth for ever.
+
+    What a kept file that does not match its note *means* - refuse it, loudly, and
+    say so - is the cache reader's own reading (`lib/drift.py: _kept_config`);
+    this function says where the note is, and nothing about what is in it.
+    """
+    return config_path(url)[:-len(".config")] + ".json"
+
 
 @dataclass
 class Build:
@@ -98,6 +153,15 @@ class Build:
         loud: an artifact this build does not have, or bytes that cannot be
         proven complete, is an ArtifactError.
 
+        **An artifact with no URL is not a failure when its bytes are here.**  The
+        URL is how a `want`-item is *fetched*; a run reads the file itself
+        (`runner._local`), so a file that is already in place is taken as it stands
+        whatever the card says about where it would have come from.  See the loop
+        below: it is the difference between "this build cannot be run" and "this
+        build has nothing left to download", and on this deployment one card lands
+        in the first case with its `modules`, `kselftest` and `config` absent from
+        the API's `artifacts` map.
+
         Each call leaves one act in `var/downloads/<build-id>/provenance.json`:
         which URL every artifact came from, how many bytes were proven, and when.
         That record is what makes "this local copy came from that remote build" a
@@ -125,9 +189,25 @@ class Build:
         try:
             for name in want:
                 url = self._url(name)
-                if not url:
-                    raise errors.ArtifactError(f"build {self.build_id} has no {name} artifact")
                 dest = self._local(name)
+                if not url:
+                    # **Bytes already here need no URL.**  The URL's only job is to
+                    # fetch, and tuxrun reads these files as `file://` (`runner._local`),
+                    # so a copy someone put in place by hand - or one an older tree, a
+                    # worker, or a hand-copied directory left - is runnable as it
+                    # stands.  Refusing here made that impossible for ever: on this
+                    # deployment one card names no `modules`, `kselftest` or `config`
+                    # URL, so its three pairs could never be run even with the bytes on
+                    # disk, and `missing()` agreed with the refusal (`_lacking` asked
+                    # about the URL first).  Nothing is *proven* about such a file - it
+                    # is recorded in no act, so `provenance()` cannot say where it came
+                    # from (`Local.state` reads `unrecorded`, which is the honest word
+                    # for it) - and a file that is not there at all is still the
+                    # ArtifactError it always was.
+                    if os.path.isfile(dest) and os.path.getsize(dest):
+                        self.files[name] = dest
+                        continue
+                    raise errors.ArtifactError(f"build {self.build_id} has no {name} artifact")
                 before = os.path.getsize(dest) if os.path.isfile(dest) else 0
                 self.files[name] = self._already_proven(name, url, dest) or self._fetch(name, url)
                 entries.append({"artifact": name, "url": url,
@@ -140,8 +220,100 @@ class Build:
         return self
 
     def present(self) -> dict[str, str]:
-        """The artifacts whose local file is on disk, as `{name: path}` (the shape `files` has)."""
+        """The artifacts whose local file is on disk, as `{name: path}` (the shape `files` has).
+
+        **This build's own copy, and only its own copy** - one `os.path.isfile`
+        under `var/downloads/<build-id>/`.  Three readers act on that answer
+        literally, which is why it is not widened to the shared cache a config
+        lives in (`artifact_path` is the reader for "can this be read at all"):
+
+        * `make()`'s idempotence - a file already here is not fetched again;
+        * a runner, which reads these files as `file://` (`runner._local`);
+        * `lib/drift.py: _config_local`, which seeds `var/configs/` from *a copy a
+          pull left here* and would otherwise report a cache **hit** as a copy
+          that was **pulled** - a claim about where bytes came from, made on
+          evidence that says only that they are somewhere on this disk.
+        """
         return {name: self._local(name) for name in self._present()}
+
+    def config_url(self, job=""):
+        """This build's `.config` URL: the card's artifact, else this deployment's storage.
+
+        The card's own `_config` (the API's spelling) or `.config` names the file.
+        A card does not always carry one - on this deployment `config` is one of
+        the artifacts a card can be missing - and then the file is where the
+        deployment this workspace belongs to serves it:
+        `<storage>/<job>-<node_id or build_id>/.config`.  `$KCI_STORAGE_URL` is
+        read at call time and never at import, so a second workspace on one
+        checkout picks its own up.
+
+        `job` is that directory's *prefix* and not a tree: `kbuild` when the
+        caller names none.  The API's own job name carries a compiler and a branch
+        (`kbuild-gcc-14-riscv`), and this is the storage's shorter one.
+
+        **One definition, two readers.**  This is the URL `lib/drift.py` compares
+        two configs *by*, and the URL whose cache `config_cache` looks a kept copy
+        up by - so "which URL is this build's config" has one answer in the tree,
+        and the mark that says a config can be read cannot disagree with the fetch
+        it predicts.
+        """
+        url = ""
+        if self.kbuild is not None:
+            url = self.kbuild.artifact("_config") or self.kbuild.artifact(".config")
+        if url:
+            return url
+        storage = os.environ.get(STORAGE_ENV) or STORAGE_DEFAULT
+        node = (self.kbuild.node_id if self.kbuild is not None else "") or self.build_id
+        return f"{storage.rstrip('/')}/{job or 'kbuild'}-{node}/.config"
+
+    def config_cache(self, job=""):
+        """The kept copy of this build's config in `var/configs/`, or `""` when there is none.
+
+        **Not `present()["config"]`, and the difference is the whole point of this
+        method.**  `present()` answers what a *pull of this build* left in its own
+        directory, and the config is usually not there: `make()` does not fetch it
+        (`WANT` is the three a guest needs), so on this deployment
+        `var/downloads/*/.config` is nothing at all.  What a reader wants from a
+        config is not a file to boot but text to *compare*, and a comparison keeps
+        it in `var/configs/` - one directory keyed by the config's URL
+        (`config_path`) and shared by every build that ever named one.  A resource
+        mark that asked only the first question therefore drew a `.config` this
+        workspace had **already downloaded** as an absence: 319 kept configs, and
+        a × beside every one of the builds that owned them.
+
+        What "is there a copy" means here is one `os.path.isfile` and a non-zero
+        size - the same reading `_why` makes of a zero-byte file, "a transfer that
+        did not finish, not an artifact".  Whether the bytes can be **trusted** is
+        a second question with its own answer, and it belongs to the cache's
+        reader: `lib/drift.py: _kept_config` refuses a kept copy that does not
+        match its sidecar rather than believing it.
+        """
+        path = config_path(self.config_url(job))
+        return path if os.path.isfile(path) and os.path.getsize(path) else ""
+
+    def artifact_path(self, name, job=""):
+        """Where `name` can be **read**: this build's own copy first, then the config cache.
+
+        `present()`'s sibling and the answer a mark is drawn from.  For the three
+        artifacts a test runs the two agree, because the only place one of those
+        lives is this build's own directory; for `config` they do not, and that is
+        what this method is for - a config is read here (`<path>/.config`, if a
+        pull left one) or in the shared cache (`config_cache`, if a comparison
+        ever read this build's URL).
+
+        The file has to exist and be non-empty, which is stricter than
+        `present()`'s bare `os.path.isfile`: a position a reader cannot read a
+        byte from is not an answer, and an empty file is a transfer that did not
+        finish (`_why`).  `name` is one of `ARTIFACTS`, as it is for every other
+        per-artifact method here (`_url`, `_why`, `_lacking`: an unknown name is a
+        `KeyError` and not a quiet `""`).
+        """
+        local = self._local(name)
+        if os.path.isfile(local) and os.path.getsize(local):
+            return local
+        if name == "config":
+            return self.config_cache(job)
+        return ""
 
     def provenance(self) -> dict:
         """The pull acts recorded for this local copy, newest first; `{}` when there are none.
@@ -196,6 +368,51 @@ class Build:
         except errors.ConfigError as error:
             return [str(error)]
         return [reason for reason in (self._lacking(name) for name in wanted) if reason]
+
+    def lacking(self, test):
+        """The same answer as `missing()` as `(artifact, why)` pairs, `why` a word.
+
+        A page that draws *which* of the three states an artifact is in cannot read
+        it out of a sentence: `missing()`'s two reasons are prose written for a
+        reader (`kernel: not downloaded yet (<path>)`), and a cell that split them on
+        their own `:` would be parsing the engine's English.  So the decision is made
+        once, in `_why`, and the two readers are two spellings of it - this one for a
+        page's pill, `missing()` for the sentence (`/jobs`' 构件 column draws the
+        first and prints the second as the cell's `title=`).
+
+        `why` is `"no-url"` (the card names no such artifact: nothing will ever fetch
+        it) or `"no-bytes"` (it is named, and the file is not here yet: a pull fixes
+        it).  An artifact whose file is already on disk is in neither list, whatever
+        the card says - `make()` says why the bytes are what count.
+        """
+        try:
+            wanted = needs(test)
+        except errors.ConfigError as error:
+            return [("", str(error))]
+        return [(name, why) for name, why in ((one, self._why(one)) for one in wanted) if why]
+
+    # The two words `lacking()` answers with, spelled once so a page and this module
+    # cannot disagree about them.  They are values and not sentences, which is why
+    # they are not in the catalogue: what a reader sees is the page's own word for
+    # each (`col.artifact.no_url` / `col.artifact.no_bytes`).
+    NO_URL = "no-url"
+    NO_BYTES = "no-bytes"
+
+    def _why(self, name):
+        """Why this build cannot give `name`: `""`, `NO_URL` or `NO_BYTES`.
+
+        **The file is asked first.**  `_lacking` used to ask about the URL first, so a
+        copy whose bytes had been put in place by hand was reported un-runnable for
+        ever - the one state the operator asked about (「没有网址理论也可以硬塞入资源？」).
+        A file here is not a *proof* of where it came from (that is `provenance()`'s
+        record, and a hand-placed file has none), but it is the thing a run reads.
+        The size check is the same one `_lacking` always made: a zero-byte file is
+        a transfer that did not finish, not an artifact.
+        """
+        path = self._local(name)
+        if os.path.isfile(path) and os.path.getsize(path):
+            return ""
+        return self.NO_URL if not self._url(name) else self.NO_BYTES
 
     def rootfs(self, url="", with_modules=False):
         """The guest disk tuxrun boots: `layout.baked(<key>.ext4)`, baked once and reused."""
@@ -271,13 +488,13 @@ class Build:
         return [name for name in ARTIFACTS if os.path.isfile(self._local(name))]
 
     def _lacking(self, name):
-        """Why this build cannot give `name`, or '': no URL, or no bytes here yet."""
-        if not self._url(name):
+        """Why this build cannot give `name`, or '' - `missing()`'s sentence for `_why`."""
+        why = self._why(name)
+        if not why:
+            return ""
+        if why == self.NO_URL:
             return f"{name}: the build has no {name} artifact"
-        path = self._local(name)
-        if not os.path.isfile(path) or not os.path.getsize(path):
-            return f"{name}: not downloaded yet ({path})"
-        return ""
+        return f"{name}: not downloaded yet ({self._local(name)})"
 
     def _fetch(self, name, url):
         """One artifact made local, and where it landed."""

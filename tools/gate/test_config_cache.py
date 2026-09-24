@@ -4,10 +4,11 @@
 
     test_config_cache.py
 
-`lib/drift.py::_config_text` keeps each build's `.config` under `var/configs/` so
-the analysis page stops re-downloading two ~194 KB files on every single load.  The
-cache is safe only because of the checks that live beside it, and those checks are
-what this test pins down:
+`lib/drift.py::_config_text` reads each build's `.config` from wherever this
+workspace already has it - the kept copy under `var/configs/`, else the copy a *pull*
+left under `var/downloads/<build-id>/` - and only then from the artifact store over
+the API.  The cache is safe only because of the checks that live beside it, and those
+checks are what this test pins down:
 
 * a kept copy is reused **only** if its bytes match the sha256 recorded when it was
   kept - a config truncated to 5 000 of 192 231 bytes still parses into 166 options,
@@ -15,7 +16,14 @@ what this test pins down:
   with zero HTTP calls and nothing on screen to say it is wrong;
 * a **failure** is never kept, or one bad download becomes a permanent one;
 * `?fresh=1` / `?ttl=0` really refetches, because the operator asked for a refresh
-  that re-reads.
+  that re-reads;
+* a build this console has **pulled** answers from its own copy with no request at
+  all, and that copy is kept - a pull followed by a comparison is one download, not
+  two - while a pulled copy that is not a config is passed over rather than believed
+  (`_local_config`), because a file in the download tree must never be able to fail a
+  comparison the artifact store could answer;
+* the count the page prints (`api.fetches`) counts the reads that went **out** and not
+  the ones served from disk.
 
 No network: `Api.text` is replaced by a stub whose content and call count this test
 controls, so every assertion is about the cache rather than about the weather.
@@ -36,7 +44,9 @@ sys.path.insert(0, ROOT)
 
 from lib import api as api_mod
 from lib import drift as drift_mod
+from lib import layout
 from lib.errors import ConfigError, KciError
+from lib.kbuild import Kbuild
 
 URL = "https://example.invalid/kbuild-riscv-abc123/.config"
 
@@ -66,13 +76,31 @@ def note_of(path):
 def main() -> int:
     home = tempfile.mkdtemp(prefix="kci-config-cache-")
     os.environ["KCI_WORK_DIR"] = home
-    failed = 0
+    failed, checks = 0, 0
 
     def check(name, ok, evidence):
-        nonlocal failed
+        # The total is counted and not written down: it was a hardcoded 13 while ten
+        # checks ran, so a suite that grew or lost a case printed a number that was
+        # about nothing - and a gate whose own count is wrong is the first thing a
+        # reader stops believing.
+        nonlocal failed, checks
+        checks += 1
         if not ok:
             failed += 1
         print(f"{'ok  ' if ok else 'FAIL'}  {name}" + (f"  ({evidence})" if evidence else ""))
+
+    def drop(*paths):
+        """Forget what an earlier case left, whether or not it is there.
+
+        Each case below starts from a state this test *names* - nothing kept, a pulled
+        copy, a damaged kept copy - rather than from whatever the case above happened to
+        leave behind.  Case 8 is the reason: it writes nothing, so a bare `os.remove`
+        after it is an error about this test's own bookkeeping rather than about the
+        cache.
+        """
+        for path in paths:
+            if os.path.exists(path):
+                os.remove(path)
 
     try:
         config = drift_mod._config_path(URL)
@@ -122,8 +150,7 @@ def main() -> int:
             check("a same-length corruption is refused", True, "caught by the sha256, not the size")
 
         # 5. after deleting the damaged pair, a cold read recovers
-        os.remove(config)
-        os.remove(sidecar)
+        drop(config, sidecar)
         api = StubApi()
         api_mod.begin_request(ttl=5)
         got = drift_mod._config_text(api, URL)
@@ -138,8 +165,7 @@ def main() -> int:
               got == BODY and api.calls == 1, f"calls={api.calls}")
 
         # 7. a failure is never kept, so one bad download cannot become permanent
-        os.remove(config)
-        os.remove(sidecar)
+        drop(config, sidecar)
         api = StubApi(error=KciError("the store answered 500"))
         api_mod.begin_request(ttl=5)
         try:
@@ -158,11 +184,61 @@ def main() -> int:
         check("a body that is not a config is not kept",
               not os.path.exists(config) and not os.path.exists(sidecar),
               "the caller refuses it; the cache keeps nothing")
+
+        # 9. a build this workspace has PULLED.  Its config is one of the artifacts the
+        #    pull fetched, so it is already on disk - and the comparison of a build that
+        #    was pulled to be *run* must not ask the store for bytes it is holding.
+        #    This is the step that was missing: the read went to the network with the
+        #    file sitting in `var/downloads/<id>/.config`.
+        pulled = Kbuild(build_id="abc123", artifacts={"_config": URL})
+        here = os.path.join(layout.downloads("abc123"), ".config")
+        check("a build nothing was pulled for has no local config",
+              drift_mod._config_local(pulled) == "", repr(drift_mod._config_local(pulled)))
+        os.makedirs(os.path.dirname(here), exist_ok=True)
+        with open(here, "w", encoding="utf-8") as handle:
+            handle.write(BODY)
+        check("a pulled build's config is found where the pull left it",
+              drift_mod._config_local(pulled) == here, here)
+
+        drop(config, sidecar)
+        api = StubApi()
+        api_mod.begin_request(ttl=5)
+        got = drift_mod._config_text(api, URL, drift_mod._config_local(pulled))
+        check("a pulled copy answers with no request at all",
+              got == BODY and api.calls == 0, f"calls={api.calls}")
+        check("...and it is kept, so the next comparison is free too",
+              os.path.isfile(config) and os.path.isfile(sidecar)
+              and note_of(sidecar).get("url") == URL, config)
+
+        # 10. a copy in the download tree that is NOT a config is passed over, not
+        #     believed: a damaged file there must not be able to fail a comparison the
+        #     artifact store can still answer.
+        drop(config, sidecar)
+        with open(here, "w", encoding="utf-8") as handle:
+            handle.write("<html><h1>404 Not Found</h1></html>")
+        api = StubApi()
+        api_mod.begin_request(ttl=5)
+        got = drift_mod._config_text(api, URL, drift_mod._config_local(pulled))
+        check("a pulled copy that is not a config falls through to the store",
+              api.calls == 1 and got == BODY, f"calls={api.calls}")
+        os.remove(here)
+
+        # 11. what the page prints (`page.analysis.fetched`): the reads that went OUT,
+        #     not the ones served from this disk.  A number that counted the cache hits
+        #     would tell a reader their page had just downloaded files it never asked for.
+        drop(config, sidecar)
+        api_mod.begin_request(ttl=5)
+        drift_mod._config_text(StubApi(), URL)
+        check("a read that went out is counted", api_mod.fetches() == 1,
+              f"fetches={api_mod.fetches()}")
+        drift_mod._config_text(StubApi(), URL)
+        check("a read served from the kept copy is not counted", api_mod.fetches() == 1,
+              f"fetches={api_mod.fetches()}")
     finally:
         shutil.rmtree(home, ignore_errors=True)
         os.environ.pop("KCI_WORK_DIR", None)
 
-    print(f"\n{13 - failed}/13 checks passed")
+    print(f"\n{checks - failed}/{checks} checks passed")
     return 1 if failed else 0
 
 

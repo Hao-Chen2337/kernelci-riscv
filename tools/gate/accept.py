@@ -310,6 +310,74 @@ def _orphan_build() -> str | None:
     return None
 
 
+def _int_attr(tag: str, name: str, fallback: int) -> int:
+    """One whole-number attribute off a tag, or `fallback` when it is not spelled."""
+    found = re.search(name + r'="(\d+)"', tag)
+    return int(found.group(1)) if found else fallback
+
+
+def _name_links(markup: str) -> list[tuple[str, str]]:
+    """Every link on a page that *names the test it links to*: `(test, href)`.
+
+    That is the timeline's first column: the row is `boot`, and the link says `boot` and
+    asks the page for `tests=boot` - one way in from a row, and not a second spelling of
+    the filter.  Read out of the markup rather than out of a class name, because what the
+    check is about is that the row *can be chosen*, not how the cell is spelled.
+
+    The two conditions are both needed.  The text must be a word in the link's own href -
+    which alone would still catch the nav ("trend" is in `/trend?tests=boot`'s path) -
+    and it must be *the test the query names*, so a link whose text is the test but whose
+    query is `tests=something-else` is a mislabelled door and not a way in.
+    """
+    found = []
+    for one in re.finditer(r'(?s)<a\b[^>]*href="([^"]*)"[^>]*>(.*?)</a>', markup):
+        text = html.unescape(re.sub(r"<[^>]*>", " ", one.group(2))).strip()
+        href = html.unescape(one.group(1))
+        named = urllib.parse.parse_qs(urllib.parse.urlparse(href).query).get("tests") or []
+        if text and text in named:
+            found.append((text, href))
+    return found
+
+
+def _pulls_page_with(base, path, lang, timeout, want: str, query: str = "",
+                     first=None, most: int = 40) -> tuple:
+    """The page of a listing's pull table that names `want`, and how many were fetched.
+
+    The table pages now (`ui.list_panel`): the row a reader is looking for can be on page
+    four, so a check that read only page one would report a listing that is answering
+    correctly as a failure - and, worse, would pass one that had lost the row from every
+    page but the first.
+
+    The walk follows the pager's own numbers: `data-limit` and `data-pages` are read off
+    the jump form `BRIDGE_JS` unhides, so it pages at whatever size the running console
+    uses rather than at a number guessed here.  `first` is a page already fetched - the
+    landing page *is* offset zero - and is used instead of reading it again.  `most` is a
+    runaway guard: the walk ends when the pager runs out of pages, which is the real end.
+    """
+    offset, limit, pages, seen = 0, 50, 1, 0
+    while offset < pages * limit and seen < most:
+        if first is not None:
+            page, first = first, None
+        else:
+            page = Page(base, path, lang, timeout,
+                        query="&".join(one for one in (query, f"pulls={offset}") if one))
+        seen += 1
+        if want in page.body:
+            return page.body, seen
+        # The whole form, and not just its opening tag: `data-limit`/`data-pages` are on
+        # the `<input class="pjump">` inside it, and a regex that stopped at the first
+        # `>` would read neither and fall back to one page - which is the bug this walk
+        # exists to not have.
+        box = re.search(r'<form class="pjumpwrap"[^>]*data-offset-name="pulls".*?</form>',
+                        page.body, re.DOTALL)
+        if box is None:
+            break                # the table fits on one page, and this was not it
+        limit = _int_attr(box.group(0), "data-limit", limit)
+        pages = _int_attr(box.group(0), "data-pages", pages)
+        offset += limit
+    return "", seen
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--base", default="http://127.0.0.1:8083")
@@ -515,12 +583,43 @@ def main(argv=None) -> int:
     check(results, "W2 drift counts balance their parentheses", not bad_parens,
           str(bad_parens[:3]) if bad_parens else "every added/removed phrase is balanced")
 
-    # --- X3: a regression-timeline cell can be chosen ----------------------
-    check(results, "X3 timeline cells are selectable",
-          bool(re.search(r"(timeline|trend)[^>]*>\s*<a\b", drift.body, re.IGNORECASE))
-          or "timeline" in drift.body and "<a " in drift.body.split("timeline")[-1][:2000],
-          "a timeline cell carries a link" if "<a " in drift.body else
-          "timeline cells are plain <span>s: nothing to click")
+    # --- X3: a regression-timeline row can be chosen -----------------------
+    #
+    # The complaint was 「这个不能选」: a row of build cells the reader could see go red and
+    # could not open.  What the page owes is a way *in* from the timeline, so this is the
+    # walk and not the markup - take the link a row's own name offers, follow it, and
+    # require the page to come back drawn for that one test.  Asking instead for a class
+    # name and an `<a` somewhere after it (which is what this check used to do) passes on
+    # decoration and fails on a page that answers correctly.
+    #
+    # **Read on `/trend`, and that is a move rather than a rewrite.**  The timeline came
+    # off `/analysis` when that page's bottom half was given a page of its own
+    # (「这部分是不是可以移动走」, and `trend.py`'s docstring says the same from the other
+    # end), so a check still reading `/analysis` is asking a page that no longer draws a
+    # timeline at all - which is exactly how it failed: no timeline, so no links, so "a
+    # timeline cell carries a link".  The requirement is unchanged; only the page that
+    # owns it moved, and a gate that pinned the old address would be testing the layout.
+    trend = Page(args.base, "/trend", "en", args.timeout)
+    offered = _name_links(trend.body)
+    chosen, note = None, ""
+    if offered:
+        test, href = offered[0]
+        path, _, query = href.partition("?")
+        # The language is the harness's (`Page` puts `?lang=` on every fetch), so the
+        # link's own copy of it - present whenever the reader is in Chinese - is dropped
+        # rather than sent twice.
+        alone = Page(args.base, path or "/trend", "en", args.timeout,
+                     query="&".join(one for one in query.split("&")
+                                    if one and not one.startswith("lang=")))
+        narrowed = _name_links(alone.body)
+        chosen = (test, len(narrowed), alone.status, [one[0] for one in narrowed])
+        note = (f"following `{test}`'s link ({href}) answers {alone.status} with"
+                f" {chosen[1]} named row(s): {', '.join(chosen[3]) or 'none'}")
+    check(results, "X3 a timeline row can be chosen",
+          bool(offered) and chosen[1:] == (1, 200, [chosen[0]]),
+          note if chosen else
+          f"no row on /trend names the test it links to ({len(trend.body)} bytes, "
+          f"status {trend.status or trend.error}): the timeline offers no way in")
 
     # --- R1: a live side panel exists --------------------------------------
     live = bool(re.search(r'(aside|class="[^"]*(live|panel|side)[^"]*")', home.body, re.IGNORECASE))
@@ -600,7 +699,16 @@ def main(argv=None) -> int:
     # `?lang=` and the `kci_lang=zh` cookie won.  Tested through the cookie,
     # because that is the state a reader is actually in after switching once.
     zh = read["/"]["zh"]
-    hrefs = re.findall(r'href="([^"]*)"[^>]*hreflang="en"', zh.body)
+    # Unescaped, because the href is an HTML attribute and `&` in a query string is
+    # written `&amp;` there.  The link is `/?api=…&lang=en` whenever this console spells
+    # its API base out (`Filter.to_query`), and a reader that handed that attribute to
+    # `urlopen` verbatim would ask for `?api=…&amp;lang=en` - the language key lands
+    # under a name nobody reads, the cookie wins, and this reports the very bug it
+    # exists to catch while the console is answering correctly.  The two other places
+    # this script follows a link it read out of the page (`_chip`, the drift doors)
+    # unescape for the same reason.
+    hrefs = [html.unescape(one)
+             for one in re.findall(r'href="([^"]*)"[^>]*hreflang="en"', zh.body)]
     back = None
     for href in hrefs:
         target = href if href.startswith("http") else args.base.rstrip("/") + href
@@ -707,22 +815,26 @@ def main(argv=None) -> int:
     # than saying "no card" beside 30 MiB of bytes.  Tested on the page that lists
     # local copies, and *around the orphan's own row* - a bare "the phrase is absent
     # from the page" would pass vacuously, because the orphan is usually outside the
-    # API window and therefore not on the landing page at all.
+    # API window and therefore not on the landing page at all.  The listing's pull table
+    # is paginated, so the walk covers every page of it: the orphan's act is a fact about
+    # what is on disk and the reader reaches it by paging, which is what this reads.
     orphan = _orphan_build()
     if orphan is None:
         check(results, "S7 a pulled build is not card-less", True,
               "no build on disk has a pull record without a card")
     else:
-        listing = Page(args.base, "/local", "en", args.timeout)
-        if listing.status not in (200, 301, 302):
-            listing = home
-        where = listing.body.find(orphan[:16])
-        window = listing.body[max(0, where - 200):where + 1500] if where >= 0 else ""
+        start = legacy["/local"]
+        body, pages = _pulls_page_with(
+            args.base, "/local", "en", args.timeout, orphan[:16],
+            first=start if start.status in (200, 301, 302) else home)
+        where = body.find(orphan[:16])
+        window = body[max(0, where - 200):where + 1500] if where >= 0 else ""
         on_page = where >= 0
         said = "no card in the local table" in window
         check(results, "S7 a pulled build is not card-less", on_page and not said,
               f"{orphan[:16]} has a pull record on disk; " +
-              ("not on the local listing page at all" if not on_page else
+              (f"not on any of the local listing's {pages} pull table page(s)"
+               if not on_page else
                "its row still says `no card in the local table`" if said else
                "its row is rendered from the pull record"))
 

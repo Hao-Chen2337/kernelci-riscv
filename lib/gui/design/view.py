@@ -66,11 +66,17 @@ class View:
         attrs += f' title="{html.escape(title, quote=True)}"' if title else ""
         return f'<a href="{html.escape(self.url(route, *drop, carry=carry, keep=keep, spell_lang=spell_lang, **over))}"{attrs}>{text}</a>'
 
-    def t(self, key: str, **fmt: str) -> str:
+    def t(self, key: str, /, **fmt: str) -> str:
         """One sentence in this response's language, from the tree's own catalogue.
 
         Visible words go through `words.both()` instead - that is what lets the
         reader switch language without a round trip - so this is for the places a
         second language cannot live: a `title=`, an `aria-label`, the `<html lang>`.
+
+        `key` is positional-only for the reason `lib.i18n.t`'s docstring gives: a row
+        may use `{key}` as a placeholder, and `error.not_a_stamp` does.  Without the
+        `/`, `view.t("error.not_a_stamp", key="since", …)` was a `TypeError` - a 500
+        on a request that meant to be a 409 - and the wrapper is where that has to be
+        said, because the catalogue's own `t()` cannot speak for its callers.
         """
         return t(self.lang, key, **fmt)

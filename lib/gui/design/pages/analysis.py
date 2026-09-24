@@ -1,33 +1,47 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """`/analysis`: read down the list - is this getting better or worse.
 
-One screen asks that question four ways, and the four are not alternatives: the list
-with its two `±` columns is *what changed between neighbours in this order*, the
-timeline is *one test over the builds*, the pass-rate chart is *the same positions as
-lines*, and the bars are *what each build's own records came back as*.  Keeping them
-apart is what makes "the line went up" mean something specific, so each panel says
-which question it answers and the one hint under the chart names the two axes a reader
-would otherwise take for one.
+This page's own question is a **pair**: which two builds the reader ticked, and what
+changed between them.  The list's one `±` column is *what changed between neighbours in
+this order* - a fork, with the row's own build at the fork point, the pair before it on
+the upper arm and the pair after it on the lower - and the bars are *what each build's
+own records came back as*.  Those are the two the design draws here; between them they
+are one question asked of one window.
+
+**The other two ways of asking it are `/trend`'s page**, and this module still builds
+them.  The timeline (*one test over the builds*) and the pass-rate chart (*the same
+positions as lines*) were drawn here as well until the operator read the same two
+pictures on two pages and had to work out which page their question belonged to
+(「分析和趋势的这个重复了」).  `_timeline_panel` and `_chart_panel` are defined below,
+`/trend` imports them by name, and **nothing in this module calls them** - which is why
+the paragraphs further down about a break in the chart, and about two axes on one
+screen, are still in this file: they are facts about code that lives here, and it is
+drawn one route over.
 
 Which rows key feeds which panel, in the order the design draws them:
 
     picks      the builds in this order, with the `±` their neighbours give them
-    timelines  one row per test: runs, last verdict, regressions, the sparkline
-    series     the pass-rate chart and its legend
-    bars       one bar per build: that build's own pass / fail / no-answer
+    bars       one region per test: each build's own pass / fail / no-answer in it
     drift      the pairs that were read, for one thing only: keeping a `±` door's
                direction the same as the number in the cell it was clicked from
     tests, sorts, apis, trees/branches/arches/defconfigs/compilers   the bars
     drawn, drawn_from   the footer, which the shell writes
+
+and the two reads only `/trend` is handed - no panel on this route reads either:
+
+    timelines  one row per test: runs, last verdict, regressions, the sparkline
+    series     the pass-rate chart and its legend
 
 **Two controls the board deleted are kept, because each one is a capability.**  `limit`
 is how wide the window is - the board dropped it and drew a client-side pager instead
 (`00-BRIEF.md` §9.6) - and the pass-rate chart is the proof it matters: at this
 console's default `limit=25` the chart rests on 5 of `boot`'s 22 runs (§10.11), so the
 legend prints **drawn / total** per test and the caption names the window, because a
-legend that printed the total alone would be a lie about what the line stands on.
-`delta` is how deep the `±` comparison goes (`check.delta`, the engine's own cap), so it
-is a number box in the bar and every `±` cell past it says so.
+legend that printed the total alone would be a lie about what the line stands on.  The
+proof is `/trend`'s now and the box is on both routes, because the window is the window
+either way - here it is how many builds the `±` column walks.  `delta` is how deep the
+`±` comparison goes (`check.delta`, the engine's own cap), so it is a number box in the
+bar and every `±` cell past it says so.
 
 **A `±` cell says *why* it has no number, and never shows a bare dash** (§9.5).  Four
 answers, no fifth:
@@ -44,7 +58,9 @@ answers, no fifth:
   and **is itself the door** into the pair's page, where `gui.drift` prints the engine's
   own sentence.
 
-**A break in the pass-rate chart is drawn as a break.**  `ui.line_chart` splines the
+**A break in the pass-rate chart is drawn as a break.**  (This one and the next are
+about `_chart_panel` and `_timeline_panel`, which `/trend` draws and this route does
+not - they are written down here because the code they describe is here.)  `ui.line_chart` splines the
 points of each entry it is given, so one entry per test draws a straight line *across* a
 position the ledger has nothing for - the board's own defect, measured on its markup
 (§9.2: one continuous polyline per test, and a caption promising breaks).  So this page
@@ -55,11 +71,12 @@ drawn in another test's colour and the legend would name the wrong line.  The en
 between carry no points at all - `line_chart` draws nothing for them - so the only thing
 they hold is a colour slot.
 
-**Two axes on one screen, and the page says so.**  `timelines.marks` is chronological
-(one mark per build of the newest window, oldest first) while `series` runs along the
-page's own order (§10.12); side by side and unlabelled they read as one axis.  The
-timeline's sub-line states the date axis, the chart's caption states the order, and the
-hint under the chart names the difference in one sentence.
+**Two axes on one screen, and the page says so.**  On `/trend`, where both are drawn:
+`timelines.marks` is chronological (one mark per build of the newest window, oldest
+first) while `series` runs along the page's own order (§10.12); side by side and
+unlabelled they read as one axis.  The timeline's sub-line states the date axis, the
+chart's caption states the order, and the hint under the chart names the difference in
+one sentence.
 
 **The pair, and where it lives.**  The reader ticks two rows; the ticks travel as `pick`
 (`Filter.pick`, the key `serve.py` resolves into `older`/`newer` for this route), the
@@ -83,12 +100,13 @@ operator's whole model: 排序决定了它以前一个序和后一个序进行�
 
 Three things this screen does **not** draw, each for a reason rather than by omission:
 
-* **a per-cell selection of a run** (the old page's `?point=`).  `ui.spark` draws the
-  design's `<i>` squares and no links, and `point` is page state `Filter` has no field for,
-  so a cell that linked to it would link to a key this page cannot read.  What *is*
-  selectable in that row is the test's own name, which narrows the page to that test, and
-  a run's own record is one door away on its build's page - the door the picks table
-  already draws for every row;
+* **a per-cell selection of a run** (the old page's `?point=`) - and this one is about
+  `_timeline_panel`, so it is `/trend`'s behaviour that it describes.  `ui.spark` draws
+  the design's `<i>` squares and no links, and `point` is page state `Filter` has no
+  field for, so a cell that linked to it would link to a key no reader here consumes.
+  What *is* selectable in a timeline row is the test's own name, which narrows the page
+  to that test, and a run's own record is one door away on its build's page - the door
+  the picks table already draws for every row;
 * **a select-all box above the tick column.**  `/jobs` and `/builds` draw one because their
   ticks are a set; this column is a *pair*, the engine reads the first two ids of it and
   ignores the rest, so a box that ticked twenty-five rows would be a control whose effect
@@ -103,28 +121,35 @@ Three things this screen does **not** draw, each for a reason rather than by omi
 import urllib.parse
 from functools import partial
 
+from .... import errors
 from ....build import ARTIFACTS
 from ....i18n import DEFAULT_LANG
 from ....kbuild import Kbuilds
 from ....tests import DEFAULT_TESTS
+from ... import values as values_mod
 from ...forms import _names, _token
 from ...schema import (
     _LABELS,
+    CHART_MODES,
     DAY_CHOICES,
+    DEFAULT_DELTA,
     EVIDENCE,
     FILTER_ORDER,
     KBUILD_STATES,
     LIMITS,
     MAX_DAYS,
-    MAX_DELTA,
     MAX_LIMIT,
-    ORIGINS,
+    MODE_EACH,
+    RANS,
     RESULTS,
     SORT_KEYS,
+    VERDICTS,
 )
 from ...sorting import _sort_keys, _sort_spec_of
+from ...urls import _carried
 from ...values import _short as _cut
 from .. import ui, words
+from .builds import _origin_boxes
 
 # The form the picks table's tick boxes belong to.  A box in a table cell cannot live
 # inside a form drawn above the table, so `form=` names it - the same join `/jobs` uses
@@ -140,10 +165,17 @@ _PAIR_FORM = "pair"
 # folded away in a `details.more` (the board's own second row on `/builds`) rather than
 # dropped, because hiding a condition is how a reader who narrowed by `origin=card` on
 # `/` loses the condition here without being told.  Every key one bar does not draw, the
-# other one carries as a hidden field - a GET bar replaces the whole query string.
+# other one carries as a hidden field - a GET bar replaces the whole query string - and
+# `_carried` is what decides that list, so a key outside `FILTER_ORDER` (`delta`, `tz`)
+# rides the same way and neither bar needs a hand-written special case.
+#
+# `tz` is named in neither.  The clock is one control in the top bar now
+# (`shell.tz_switch`), so a bar that drew a second copy would be two answers to one
+# question - and the hidden copy is written first, which is how the select this row used
+# to draw ended up doing nothing at all.
 _MAIN = ("api", "tree", "branch", "arch", "defconfig", "compiler", "test", "limit",
          "delta")
-_FOLD = ("state", "result", "origin", "evidence", "missing", "days")
+_FOLD = ("state", "result", "ran", "verdict", "origin", "evidence", "missing", "days")
 
 # How many rows of one config-difference category are printed before the rest folds
 # away.  The number is the one this page always printed, and the reason is measured: the pair
@@ -161,24 +193,39 @@ _DETAIL = "/analysis/"
 
 # ------------------------------------------------------------------- the screen
 def analysis(view) -> str:
-    """The body of `/analysis`: the two bars, the picker, the four panels, the comparison.
+    """The body of `/analysis`: the two bars, the picker, the table, the comparison.
 
-    The order is the board's own (the list, then the timeline, then the chart, then the
-    bars) with one panel the board deleted put back where the reader acts on it: the pair
-    and its `drift` button sit directly under the table the ticks are in.
+    **This page is about a pair.**  Which two builds, and what changed between them -
+    that is the question its table, its `±` column and its `drift` button answer, and it
+    is why the page ends where it does.
+
+    **Everything drawn along the axis of time lives on `/trend` now.**  This page used to
+    draw the timeline, the comparisons and the chart as well, and `/trend` drew the same
+    three by importing these very builders, so the operator read the same two pictures on
+    two pages and had to work out which one their question belonged to
+    (「分析和趋势的这个重复了」).  The bars panel (`每个构件的结果`) followed them last,
+    and for a sharper reason than tidiness: it is one region per *test* and one line per
+    *build of the window*, which is an axis of time and a set of tests - `/trend`'s two
+    subjects and neither of this page's (「这个分析的这里的这部分是不是可以移动走」).
+    The *functions* are still here - `/trend` imports them by name and deleting them
+    would break it - but only `/trend` calls them.
+
+    What is left is the board's own order with one panel the board deleted put back where
+    the reader acts on it: the pair and its `drift` button sit directly under the table
+    the ticks are in, and only once there are two ticks to run them on (`_pair_panel`
+    says why that state is the only one where the panel says anything).
     """
     rows = view.rows
     picks = list(rows.get("picks") or ())
     older, newer = _pair(view)
     return "".join((
         _bar(view, _MAIN, _main_fields(view)),
-        ui.more(words.both(view.lang, "btn.more"), _bar(view, _FOLD, _fold_fields(view))),
+        ui.more(words.both(view.lang, "btn.more"), _bar(view, _FOLD, _fold_fields(view)),
+                # The fold this page's 更多筛选 row is remembered by (`ui._fold`).
+                fold="more.analysis"),
         _picker(view, older, newer),
         _picks_panel(view, picks),
         _pair_panel(view, older, newer),
-        _timeline_panel(view, rows.get("timelines") or ()),
-        _chart_panel(view, rows.get("series") or ()),
-        _bars_panel(view, rows.get("bars") or (), view.check.test or DEFAULT_TESTS[0]),
     ))
 
 
@@ -191,9 +238,13 @@ def _bar(view, drawn, fields_html: str) -> str:
     `pick`, because the pair the reader ticked is page state that `Filter.to_query()`
     never carries and a bar that dropped it would leave the `drift` button below with
     nothing to run on.
+
+    The keys come from `urls._carried` and not from a walk of `FILTER_ORDER`: the order
+    is not the whole of the filter, and this page has two fields outside it - `delta`,
+    which the folded row above would otherwise drop while its own box stayed put, and
+    `tz`, which is the display clock the top bar owns.
     """
-    carried = dict(view.check.to_query())
-    hidden = [(key, carried.get(key, "")) for key in FILTER_ORDER if key not in drawn]
+    hidden = _carried(view.route, view.check, drawn)
     hidden += [("pick", one) for one in _picked(view)]
     hidden.append(("lang", "" if view.lang == DEFAULT_LANG else view.lang))
     return ui.filters(fields_html, _bar_buttons(view), action=view.route, auto=True,
@@ -214,6 +265,24 @@ def _bar_buttons(view) -> str:
     return (ui.link_btn(words.both(lang, "btn.reset"),
                         view.url("", *FILTER_ORDER, older="", newer=""), lang=lang)
             + f'<button class="btn primary sm">{words.both(lang, "btn.apply")}</button>')
+
+
+# How many values the `delta` box offers before it offers a few instead of all of them.
+# The rail `ui.number_input` builds is a *view* of the box and submits nothing of its own
+# (`script.py`), so this is about reading the control, not about what may be asked for:
+# `0..cap` is the honest rail while it fits, and past that the count is a number a reader
+# types or spins to.  The cap itself is always offered, so "compare all of them" is one
+# of the stops rather than an arithmetic problem.
+_DELTA_STOPS = 32
+
+
+def _delta_stops(cap: int) -> list[str]:
+    """The values the `delta` box suggests: every one when they are few, else the ones
+    that mean something - the default, the row counts the `limit` box offers, the cap."""
+    if cap <= _DELTA_STOPS:
+        return [str(one) for one in range(cap + 1)]
+    useful = [DEFAULT_DELTA, *(one for one in LIMITS if DEFAULT_DELTA < one < cap), cap]
+    return [str(one) for one in useful]
 
 
 def _main_fields(view) -> str:
@@ -255,10 +324,13 @@ def _main_fields(view) -> str:
                  ui.number_input("limit", check.limit, min_=1, max_=MAX_LIMIT, stops=LIMITS),
                  width="w-sm"),
         # The comparison cap.  Its value is printed in every `±` cell it stopped, so the
-        # number in this box and the sentence in those cells are one number.
-        ui.field(words.both(lang, "delta.cap"),
-                 ui.number_input("delta", getattr(check, "delta", 0), min_=0, max_=MAX_DELTA,
-                                 stops=[str(one) for one in range(MAX_DELTA + 1)]),
+        # number in this box and the sentence in those cells are one number - and its
+        # ceiling is the box beside it, because comparing a row this page did not draw
+        # is work nothing on the page accounts for (`DEFAULT_DELTA`).
+        ui.field(f'<span {words.attr(lang, "title", "delta.cap_title")}>'
+                 f'{words.both(lang, "delta.cap")}</span>',
+                 ui.number_input("delta", getattr(check, "delta", 0), min_=0,
+                                 max_=check.limit, stops=_delta_stops(check.limit)),
                  width="w-sm"),
     ))
 
@@ -270,6 +342,15 @@ def _fold_fields(view) -> str:
     set one on `/` can see it in force here and change it.  `days` lives here rather than
     in the row above because a window in days and a window in rows are two questions and
     this is the one that is rarely the answer.
+
+    `ran` and `verdict` are here because the operator asked for the ledger question on this
+    page - 「筛选条件能不能起码加一个（跑没跑过就是这个顺序下的通过率）」 - and they are the
+    tree's own words for it rather than a new one: `Filter.ran` is `never`/`ever`/`failing`
+    over the records of the `test` in force, which is exactly "has this build run that
+    test, and what did it say", and `/jobs` draws the same two boxes.  They earn their
+    place on a *comparison* page too: `ran=ever` drops every build with nothing recorded,
+    so the order the `±` column and the chart are drawn over holds only the rows that have
+    a measurement, and `verdict=fail` is the same list narrowed to the failures.
     """
     lang, check = view.lang, view.check
     label = partial(ui.word, lang=lang)
@@ -280,10 +361,18 @@ def _fold_fields(view) -> str:
         ui.field(words.both(lang, "word.result"),
                  ui.select("result", _choices(RESULTS[1:], check.result, lang=lang),
                            check.result, labeler=label), width="w-sm"),
-        ui.field(words.both(lang, "filter.origin"),
-                 ui.select("origin", _choices(ORIGINS, check.origin, _LABELS["origin"],
-                                              any_key=None, lang=lang),
-                           check.origin, labeler=label), width="w-sm"),
+        ui.field(words.both(lang, "filter.ran"),
+                 ui.select("ran", _choices(RANS, check.ran, _LABELS["ran"],
+                                           any_key=None, lang=lang),
+                           check.ran, labeler=label), width="w-sm"),
+        ui.field(words.both(lang, "filter.verdict"),
+                 ui.select("verdict", _choices(VERDICTS, check.verdict, _LABELS["verdict"],
+                                               lang=lang),
+                           check.verdict, labeler=label), width="w-md"),
+        # 本地 and 远端 as two ticks, the control `/` and `/jobs` draw (`builds._origin_boxes`):
+        # one axis, one spelling.  The 有卡片 and 两个都要 values this select used to offer
+        # are the card column and "both ticks" respectively, which is why neither is here.
+        ui.field(words.both(lang, "filter.origin"), _origin_boxes(view), width="w-md"),
         ui.field(words.both(lang, "filter.evidence"),
                  ui.select("evidence", _choices(EVIDENCE, check.evidence,
                                                 _LABELS["evidence"], any_key=None, lang=lang),
@@ -291,6 +380,9 @@ def _fold_fields(view) -> str:
         ui.field(words.both(lang, "filter.missing"),
                  ui.select("missing", _choices(ARTIFACTS, ",".join(check.missing), lang=lang),
                            ",".join(check.missing), labeler=label)),
+        # The clock used to be a box here.  It is the top bar's now (`shell.tz_switch`)
+        # and this bar carries the reader's choice as a hidden field: it is the one
+        # thing on this row that changes nothing about which rows are shown.
         ui.field(words.both(lang, "filter.days"),
                  ui.number_input("days", check.days, max_=MAX_DAYS, stops=DAY_CHOICES),
                  width="w-sm"),
@@ -456,7 +548,7 @@ def _picks_panel(view, picks) -> str:
     the name `accept.py`'s X2 reads this list by when it follows a row's door into a
     comparison.
     """
-    lang = view.lang
+    lang, rows = view.lang, view.rows
     cap = max(0, int(getattr(view.check, "delta", 0) or 0))
     test = view.check.test or DEFAULT_TESTS[0]
     sub = words.both(lang, "page.analysis.picks_note", shown=len(picks),
@@ -467,6 +559,16 @@ def _picks_panel(view, picks) -> str:
         # all `boot`, which is not a TAP test (§10.2).  Said once, above the table, because
         # a column of dashes with no sentence over it reads as a broken page.
         sub += " · " + words.both(lang, "page.analysis.no_tap_note", test=test)
+    if len(picks) > 1:
+        # What this render had to go and read, said under the cap that asked for it: the
+        # reader who dragged `delta` up to the row count is the reader who pays for the
+        # downloads, and the sentence that names the price is also the one that says the
+        # second look is free (`var/configs/`, `drift._config_text`).  A page with nothing
+        # to compare read nothing, so it says nothing.
+        fetched = int(rows.get("fetched") or 0)
+        sub += " · " + words.both(
+            lang, "page.analysis.fetched" if fetched else "page.analysis.fetched_none",
+            n=fetched)
     return ui.panel(
         "page.analysis.picks_title",
         ui.table(_picks_cols(view, picks, cap), picks,
@@ -475,13 +577,17 @@ def _picks_panel(view, picks) -> str:
 
 
 def _picks_cols(view, picks, cap: int) -> tuple:
-    """The seven columns: the tick, the rank, the build, the describe, the verdict, `±`, `±`.
+    """The six columns: the tick, the rank, the build, the describe, the verdict, the fork.
 
     The tick column is this page's own addition to the board's six - it is the pair
     chooser, and a real box in a real form rather than a picture of one.  `#` prints the
     row's **rank** (`picks.rank`, the position in this order): the prototype's fixture set
     that field and its table never drew it, which is a column that exists in the data and
     not on the page.
+
+    The last column is one **fork** and not two `±` columns: a build sits between two
+    neighbours, and the board's pair of columns made a reader scan two places to read one
+    relationship.  See `_fork_cell` for what the fork draws.
     """
     lang = view.lang
     return (
@@ -490,10 +596,8 @@ def _picks_cols(view, picks, cap: int) -> tuple:
         ui.Col("word.build", kind="id", draw=lambda row: _build_cell(view, row)),
         ui.Col("word.describe", kind="trunc", draw=lambda row: _describe_cell(row)),
         ui.Col("col.verdict", kind="c", draw=lambda row: _verdict_cell(row, lang)),
-        ui.Col("col.delta_up", width="120px",
-               draw=lambda row: _edge_cell(view, picks, row, "delta_up", cap)),
-        ui.Col("col.delta_down", width="120px",
-               draw=lambda row: _edge_cell(view, picks, row, "delta_down", cap)),
+        ui.Col("col.delta", width="186px",
+               draw=lambda row: _fork_cell(view, picks, row, cap)),
     )
 
 
@@ -553,8 +657,41 @@ def _verdict_cell(row, lang: str) -> str:
     return ui.pill(verdict, lang=lang) + "<br>" + counts
 
 
-def _edge_cell(view, picks, row, key: str, cap: int) -> str:
-    """One `±` cell: the pair's three numbers, or **why** there is no number.
+def _fork_cell(view, picks, row, cap: int) -> str:
+    """This row's two config comparisons, drawn as one **fork**.
+
+    A build does not have two config deltas; it has two *neighbours*, and the delta is a
+    fact about the pair.  The board drew that as two columns - `±` for the row above and
+    `±` for the row below - which put the two halves of one relationship in two places and
+    left the reader to work out, from the column order alone, which neighbour each number
+    was against.  The fork draws the relationship instead: the row's own build is the
+    **fork point**, the pair before it leaves on the upper arm and the pair after it on
+    the lower one, so the shape says what the two columns only implied.
+
+    The two arms are the *same* bodies the two columns drew (`_edge_body`), each with the
+    direction now written into it - a `↑` on the upper arm and a `↓` on the lower - because
+    a direction that used to be carried by the column's position has to be carried by the
+    cell once there is one column.  Trimmed to `min(cap, rows)` rows the fork is a closed
+    tree; at the two ends one arm has no pair to name, and the body says which fact that is
+    ("the first row in this order") rather than the arm being drawn empty.
+    """
+    lang = view.lang
+    arms = []
+    for side, key, arrow, hint in (("up", "delta_up", "↑", "col.delta_up"),
+                                   ("down", "delta_down", "↓", "col.delta_down")):
+        # The arrow is not decoration: with one column there is nothing else on the page
+        # saying which neighbour the numbers beside it are against.
+        arms.append(f'<span class="arm {side}" '
+                    f'{words.attr(lang, "title", hint)}>'
+                    f'<span class="trunk"></span>'
+                    f'<span class="arrow">{arrow}</span>'
+                    f'<span class="body">{_edge_body(view, picks, row, key, cap)}</span>'
+                    f"</span>")
+    return f'<span class="fork">{"".join(arms)}</span>'
+
+
+def _edge_body(view, picks, row, key: str, cap: int) -> str:
+    """One arm of the fork: the pair's three numbers, or **why** there is no number.
 
     Four answers and no fifth (§9.5, and the module docstring states them): a number; "the
     first row in this order"; "the last row in this order"; "beyond the delta cap (n)",
@@ -563,11 +700,24 @@ def _edge_cell(view, picks, row, key: str, cap: int) -> str:
     is the *door's* answer and not this cell's guess, so the cell says the fact it can be
     sure of and the door opens the engine's own sentence.
 
+    **Every cell that names a pair is a door, number or not.**  The two count-less answers
+    that name a neighbour - the cap and the refusal - have always been links, and the three
+    numbers were not, which left the page's most useful cells looking like the only inert
+    ones on it: a reader who wanted the diff for the pair they were looking at had to guess
+    that the *absent* number was the clickable thing.  The number is a link into the same
+    route (`_detail_url`), marked by `a.delta-link`'s dotted underline rather than by the
+    accent colour, so the cell still reads as three numbers first.
+
     The direction of that door is the direction of the number beside it: `Drift.series`
     directs every pair **oldest build first** whatever order the list is in, so a door
     built from the list's own order would show `+5` in the cell and `−5` on the page it
     opened whenever the sort ran the other way - which `date-asc`, `verdict` and
     `tree-branch` all do.  `_directed` reads the direction off the engine's own rows.
+
+    What comes back is one **arm's** body and not a cell: `_fork_cell` puts the two arms
+    together, and every sentence above about "the cell" is about the contents this
+    returns.  `key` is still the arm's own name (`delta_up` / `delta_down`) because that
+    is the direction - which neighbour the pair is against - and nothing else changes.
     """
     lang = view.lang
     pair = row.get(key)
@@ -575,6 +725,23 @@ def _edge_cell(view, picks, row, key: str, cap: int) -> str:
     here = str(row["build_id"])
     first, last = at == 0, at == len(picks) - 1
     if pair is not None:
+        # A number is a door too, and it is the door a reader most often wants: the cells
+        # that *have* a number are the pairs this page actually read.  Until this link
+        # existed the only cells that opened anything were the ones with **no** number, so
+        # the comparisons a reader is most likely to want were the ones that looked inert.
+        # Same door as the count-less branch below - `_directed` for the direction the
+        # engine read the pair in, `_detail_url` for the route - and the tooltip names the
+        # other end, which is what tells a number from the two identical-looking `±` cells
+        # beside it.  The index is checked like the branch below does: `rank` is the data's
+        # field and not this page's index, and a row that arrived without one must not
+        # raise out of a cell whose whole job is to answer "what is here".
+        other_at = at - 1 if key == "delta_up" else at + 1
+        if 0 <= other_at < len(picks):
+            there = str(picks[other_at]["build_id"])
+            return (f'<a class="delta-link" '
+                    f'{words.attr(lang, "title", "delta.door_title", build=_short(there))} '
+                    f'href="{ui.esc(_detail_url(view, *_directed(view, here, there)))}">'
+                    f'{ui.delta(pair, lang=lang)}</a>')
         return ui.delta(pair, lang=lang)
     if first:
         return ui.delta(None, first=True, lang=lang)
@@ -669,24 +836,30 @@ def _order_control(view) -> str:
 
 
 # ------------------------------------------------------------------- the panels
-def _timeline_panel(view, timelines) -> str:
+def _timeline_panel(view, timelines, test_key: str = "test") -> str:
     """One row per test: how many runs, the last verdict, the regressions, and the run of them.
 
     The sparkline's gaps are **positions the ledger has nothing for**, drawn as empty
-    squares whose tooltip says so (`ui.spark`): the marks are one per build of the newest
-    window, oldest first, so a test that stopped running is a run of empty squares instead
-    of a line that pretends.  The panel's sub-line is the board's own sentence about that
-    axis, and the second half of it is where this screen says that the chart below runs
-    along a *different* one (§10.12) - said here rather than under the chart because this
-    is the panel whose axis a reader would otherwise carry down to the next one.
+    squares whose tooltip says so (`ui.spark`): the marks are one per build of the window
+    this page drew, in this page's order, so a test that stopped running is a run of empty
+    squares instead of a line that pretends.  That axis, and the three counts beside it,
+    are the same window and the same order the chart below runs along - the sub-line says
+    so (`page.analysis.axes_note`), because a reader who has just read a sparkline carries
+    its axis down to the next panel whether or not the two agree.
 
     The test's name is a link to this page with that test chosen - the one thing a reader
     looking at a row wants next - and it also keeps this panel's cells selectable, which
     is what `accept.py`'s X3 reads for.
+
+    `test_key` is *which* of the two test keys the link writes: this page's `?test=` is a
+    single-valued condition (`Filter.test` narrows `ran`/`verdict`), while `/trend`'s
+    `?tests=` is the set it draws, and clicking a name there means "just this one" -
+    `view.link("", …, tests="boot")` is that whole sentence.  The default is this page's
+    key, so every caller that passes nothing is unchanged.
     """
     lang = view.lang
     cols = (
-        ui.Col("word.test", draw=lambda row: _test_cell(view, row)),
+        ui.Col("word.test", draw=lambda row: _test_cell(view, row, test_key)),
         ui.Col("label.runs", field="runs", kind="n", width="64px"),
         ui.Col("label.last", kind="c", draw=lambda row: _last_cell(row, lang)),
         ui.Col("col.regressions", kind="n", width="96px",
@@ -701,10 +874,15 @@ def _timeline_panel(view, timelines) -> str:
                     flush=True, lang=lang)
 
 
-def _test_cell(view, row) -> str:
-    """The test's name, as the link that narrows the page to that test."""
+def _test_cell(view, row, test_key: str = "test") -> str:
+    """The test's name, as the link that narrows the page to that test.
+
+    The key is the caller's (`_timeline_panel` says which page writes which), and it is
+    built as a dict rather than keyword-by-name because it is a *variable* key: `?test=`
+    on `/analysis`, `?tests=` on `/trend`, and `view.link`'s keyword is the key.
+    """
     name = str(row["test"])
-    return view.link("", ui.code(name), test=name)
+    return view.link("", ui.code(name), **{test_key: name})
 
 
 def _last_cell(row, lang) -> str:
@@ -730,42 +908,291 @@ def _regressions_cell(row) -> str:
     return f'<span class="cross">{n}</span>' if n else '<span class="muted">0</span>'
 
 
-def _chart_panel(view, series) -> str:
-    """The pass rate in this order: one line per test, breaks and all, with its legend.
+def _when(view, stamp: str) -> str:
+    """A stamp as a cell: the page's clock, with the stored value one hover away.
 
-    The legend and the caption carry the two facts that make the picture honest:
+    The `title=` is only added when the two differ - a page printing UTC has nothing to
+    add - and the raw value is the whole one, minutes and seconds included, because the
+    cell is what a reader copies from.
+    """
+    whole = str(stamp or "")
+    if not whole:
+        return ui.DASH
+    shown = values_mod._in_clock(whole, view.check.tz)
+    attr = f' title="{ui.esc(whole)}"' if shown != whole else ""
+    return f'<span class="nowrap muted"{attr}>{ui.esc(shown)}</span>'
+
+
+def _compares_panel(view, timelines) -> str:
+    """What was compared, read record by record: one row per build, and the step into it.
+
+    **One row per record and not per pair.**  The list this replaced had a row per
+    *comparison*, the older side in one column and the newer side in the next, so the
+    operator's own window - 68 records, 65 comparisons (「这个窗口里比较了 65 组相邻记录」)
+    - was 65 rows in which 62 of the 68 records appeared **twice**: once as the newer side
+    of its own step and once as the older side of the next one, while the thing a reader
+    scans for (which build is this row about, and when) was not the subject of the row at
+    all (「这里应该给是一 build 为主吧」).  A record is what the ledger stores -
+    `var/results/<build>/<test>.json` is one file per (build, test) pair - and a
+    comparison is what can be said *about* two records, so the subject of a row is the
+    record and `判定` is one of its attributes.
+
+    **The pair is the row above.**  `_record_rows` keeps `data._timelines`' own order for
+    each test's comparisons - oldest first, the order `re.transitions()` reads them in,
+    which is **not** the page's `sort`: a reader who reverses the window reverses the
+    timeline's cells and this list keeps its chronology, the same way it always has - so
+    the record a row was compared against is the row directly above it, and the two
+    columns this replaced said exactly that, twice.  A test's oldest record in the window
+    has nothing above it and `判定` prints `窗口起点`: it is in the list because it is one
+    of the window's records, and it is not a comparison because the window made none with
+    it.
+
+    **The 判定 column is derived and not stored.**  `regression` is `re.transitions()`'s
+    own answer (a comparison is a regression when it is the transition the detector
+    returned, which is why a run of consecutive failures is one `回归` and three
+    `仍是失败` rows and not four); everything else follows from the two verdicts.  Two
+    readings of one fact would be a second vocabulary for the ledger's words, so
+    `_change_cell` reads the verdicts the row already carries.
+
+    **The sub-line counts comparisons and not rows**, and it says both: `{m}` is how many
+    records the window holds, `{n}` how many adjacent pairs they make - one fewer per
+    test, which is the number the panel used to be made of - and `{r}` how many of those
+    pairs were regressions, which is the integer the timeline's 回归 column is.  A reader
+    who has just read the timeline above needs all three to check it.
+
+    The build id is a door into that build's own page, and the stamp is printed in
+    `Filter.tz`'s clock with the stored UTC in the `title=` - the rule `/worker` prints
+    its records by, so the two pages do not disagree about which clock a stamp is in.
+
+    The fold is the diff sections' own and for their reason: this list is longer than the
+    four-row one it replaced by an order of magnitude, and the counts stay in the
+    sub-line, so a folded row is never a hidden one.
+    """
+    lang = view.lang
+    rows = [one for timeline in timelines for one in _record_rows(timeline)]
+    pairs = sum(len(one.get("comparisons") or ()) for one in timelines)
+    found = sum(int(one.get("regressions") or 0) for one in timelines)
+    sub = words.both(lang, "page.analysis.compares_sub", m=len(rows), n=pairs, r=found)
+    if not rows:
+        return ui.panel("page.analysis.compares_title",
+                        ui.empty(words.both(lang, "page.analysis.compares_none")),
+                        sub=sub, lang=lang)
+    cols = (ui.Col("word.test", field="test"),
+            ui.Col("page.analysis.cmp_col",
+                   draw=lambda row: _change_cell(row, lang)),
+            ui.Col("word.build_id",
+                   draw=lambda row: _record_cell(view, row, lang)))
+    table = ui.table(cols, rows[:_DRIFT_FIRST], cls="grid", lang=lang)
+    rest = rows[_DRIFT_FIRST:]
+    if rest:
+        table += ui.more(words.both(lang, "drift.all_rows", n=len(rows)),
+                         ui.table(cols, rest, cls="grid", lang=lang), fold="more.pairs")
+    return ui.panel("page.analysis.compares_title", table, sub=sub, flush=True, lang=lang)
+
+
+def _record_rows(timeline) -> list[dict]:
+    """One test's comparisons read as one row per record: the step into each, oldest first.
+
+    `comparisons` is `data._timelines`' own list for this test - adjacent pair after
+    adjacent pair, oldest first, `regression` already marked (`data._pair_key` says how
+    the mark is matched) - and a row here is that pair's *newer* side, carrying both
+    verdicts and the mark, because those three fields are the whole of what
+    `_change_cell` reads.
+
+    The oldest record of the window is the one record in `comparisons` that is never a
+    `newer` side: it is the first pair's `older`.  It gets a row of its own - a reader
+    looking at a window of records is looking at that one too, and a list that started at
+    the second-oldest would be missing a build - marked `first`, which is what
+    `_change_cell` prints `窗口起点` for.  Marked, and not inferred from an empty
+    `older_verdict`: a record that ran and came back with no verdict at all
+    (`incomplete`, `error`) has an empty one as well, and that step is `其他` and not the
+    start of the window.
+
+    A test with fewer than two records in the window made no comparison and gets no rows:
+    this is the *comparison* panel, and `compares_none` is its sentence for a window
+    where no test has a pair.
+    """
+    comparisons = list(timeline.get("comparisons") or ())
+    if not comparisons:
+        return []
+    test = str(timeline.get("test") or "")
+    oldest = comparisons[0]
+    rows = [{"test": test, "first": True,
+             "build": oldest.get("older"), "at": oldest.get("older_at"),
+             "verdict": oldest.get("older_verdict")}]
+    rows += [{"test": test,
+              "build": one.get("newer"), "at": one.get("newer_at"),
+              "verdict": one.get("newer_verdict"),
+              # The older end of the step, under a name that says what it is *to this
+              # row* rather than which end of the pair it was: the row's own verdict is
+              # `verdict` and this is the one it is being read against.
+              "from_verdict": one.get("older_verdict"),
+              "regression": one.get("regression")}
+             for one in comparisons]
+    return rows
+
+
+def _change_cell(row, lang: str) -> str:
+    """What the step into this record was, in one word: the regression, or the thing that was not.
+
+    Six sentences and no seventh, and every one of them is readable off the row's own
+    verdict, the one it is read against (`from_verdict`) and `regression`
+    (`_compares_panel` says why nothing else is stored) - bar the first, which is read off
+    the row's own `first` flag and is not a step at all:
+
+    * **`窗口起点`** - the oldest record of the window, with nothing above it to be
+      compared against (`_record_rows` marks it and says why the mark is a flag rather
+      than an empty `from_verdict`).  It is a record that is in the list because the
+      list is the window's records; the comparison it did not take part in is why there
+      are one fewer pairs than rows.
+    * **`回归`** - the transition `re.transitions()` returned.  A `pass -> fail` step is
+      always one of these (the detector re-arms on a fresh pass, so the first failure
+      after a pass is the transition itself), and it is marked from the flag rather than
+      from the verdicts so a change to the detector's rule cannot leave this column
+      disagreeing with the count.
+    * **`仍在失败`** - a failure after a failure.  The run is compared and is *not* a new
+      regression, which is the rule that stops one bad build reporting a new regression
+      every night it stays bad; these are the rows a four-row panel hid.
+    * **`恢复`** - a failure followed by a pass: the test came back, and the detector is
+      armed again.
+    * **`仍通过`** and **`其他`** - nothing moved, and everything else (`incomplete` and
+      `error` are answers too, and a step into or out of one is not any of the four
+      above).  `其他` is deliberately vague: it is the honest word for "the verdicts are
+      not pass and fail in one of the four arrangements".
+    """
+    if row.get("first"):
+        key = "page.analysis.cmp_first"
+    elif row.get("regression"):
+        key = "page.analysis.cmp_regression"
+    elif (row.get("from_verdict") == errors.VERDICT_FAIL
+          and row.get("verdict") == errors.VERDICT_FAIL):
+        key = "page.analysis.cmp_failing"
+    elif (row.get("from_verdict") == errors.VERDICT_FAIL
+          and row.get("verdict") == errors.VERDICT_PASS):
+        key = "page.analysis.cmp_recovered"
+    elif (row.get("from_verdict") == errors.VERDICT_PASS
+          and row.get("verdict") == errors.VERDICT_PASS):
+        key = "page.analysis.cmp_holding"
+    else:
+        key = "page.analysis.cmp_other"
+    tone = key == "page.analysis.cmp_regression"
+    # `words.both` hands back an element, not a string - the `data-en`/`data-zh` span the
+    # language swap reads - so it goes in **raw**.  It was `ui.esc`'d here, which is the
+    # one thing that turns it into the wrong thing: every cell of this column printed the
+    # span's own markup as its text (`<span data-i18n="text" data-en="still passing" …>`)
+    # and the column the panel exists for was the one column a reader could not read.
+    # `words.both`'s docstring is the rule - a page writes its return value into the page,
+    # and `_last_cell`/`_timeline_panel` beside this one already do.
+    word = words.both(lang, key)
+    return f'<span class="bad">{word}</span>' if tone else word
+
+
+def _record_cell(view, row, lang: str) -> str:
+    """A row's own record: the build id as a door, how it came back, and when it was recorded.
+
+    **`_record_cell` and not `_build_cell`**: that name is the picks table's own build
+    column, three hundred lines above, and a second `_build_cell` at module level does not
+    collide loudly - the later definition simply wins and every caller of the earlier one
+    gets a `TypeError` about a missing argument (`/analysis` 500'd on exactly that while
+    this panel was being written).
+
+    The verdict is the record's own word as the console's own pill (`ui.pill`), read
+    off the row and never re-derived: the 判定 column says what the *step into* this
+    record was, and this says what the record itself was, which is the pair of facts a
+    reader needs to agree or disagree with it.
+
+    One cell for the one side a row has.  It used to be drawn twice per comparison - as
+    the older side of one row and the newer side of the next, off three key names the
+    caller passed in - and the keys are literals now because there is one of each.
+    """
+    build = str(row.get("build") or "")
+    if not build:
+        return ui.DASH
+    verdict = str(row.get("verdict") or "")
+    return (ui.code(_cut(build), href=view.url(_DETAIL + urllib.parse.quote(build)),
+                    title=build)
+            + " " + (ui.pill(verdict, lang=lang) if verdict else ui.DASH)
+            + " " + _when(view, row.get("at")))
+
+
+def _chart_panel(view, series) -> str:
+    """The pass rate in this order: one line per test, with its legend and its two modes.
+
+    The legend and the caption carry the facts that make the picture honest:
 
     * **how many runs are drawn out of how many the ledger has.**  The window is the
       newest `limit` builds of the order, and at this console's default that is 5 of
       `boot`'s 22 runs (§10.11): a legend printing the total alone would be a lie about
       what the line rests on, so every entry prints `drawn / total`;
     * **which axis this is.**  The caption says the positions are the table's, in this
-      order; the timeline panel above states its own date axis and that the two are not the
-      same one (§10.12), so a reader meets the difference before they carry one axis down
-      to the other panel.
+      order - and that is the timeline panel's axis too, cells and counts alike
+      (`page.analysis.axes_note` says so under that panel), so the two pictures of one
+      window can be read against each other;
+    * **which of the two questions the `y` axis answers.**  `schema.CHART_MODES` holds
+      them and `data._points` does the arithmetic; what this panel owes the reader is the
+      sentence, and it is a different sentence for each mode because the two curves mean
+      different things: on the accumulated reading a flat stretch is a *carried* value
+      (nothing ran there, so the rate stood still) while on the per-build reading it is a
+      run that came back where the last one did.  A panel that printed one sentence over
+      both would be describing the wrong picture half the time.
+
+    The mode is read off the check and never off this function's arguments: it is page
+    state (`PAGE_STATE["/trend"]`), so `data.rows` has already refused anything the box
+    does not offer and this reads the same answer the points were built from.
 
     A test with no record anywhere in the window has no entry to draw, and when *no* test
-    has one the panel says so instead of printing axes over nothing.
+    has one the panel says so instead of printing axes over nothing.  That sentence is
+    `ui.chart_none` and not `ui.empty`: an empty chart is a **plate of a band's own
+    height** with the sentence on it, so the panel keeps the shape of a picture at
+    `/trend?ran=never` - the window a new stack shows first - instead of collapsing into
+    one line of grey where a chart was promised.
     """
     lang = view.lang
+    each = _mode_of(view) == MODE_EACH
     rows = [one for one in series if isinstance(one, dict)]
     slots = max([int(one.get("slots") or 0) for one in rows] or [0])
     ends = next((tuple(one.get("ends") or ("", "")) for one in rows if one.get("ends")),
                 ("", ""))
     cap = int(getattr(view.check, "limit", 0) or 0)
     entries = _chart_series(rows)
+    sub = words.both(lang, "page.analysis.chart_sub_each" if each
+                     else "page.analysis.chart_sub")
     if not any(points for _name, points in entries):
         return ui.panel("page.analysis.chart",
-                        ui.empty(words.both(lang, "page.analysis.chart_none")),
-                        sub=words.both(lang, "page.analysis.chart_sub"), lang=lang)
+                        ui.chart_none(words.both(lang, "page.analysis.chart_none")),
+                        sub=sub, lang=lang)
+    # `kept` and not `len(points)`: on the accumulated reading a position inside the run
+    # draws a point it has no record for, so the drawn count can exceed the ledger's
+    # (`data._series` says which number is which).  The legend is a statement about the
+    # evidence, so it counts the records.
     legend = ui.legend([{"test": str(one.get("test") or ""),
-                         "runs": f'{len(one.get("points") or ())} / {one.get("runs") or 0}'}
+                         "runs": f'{one.get("kept") or 0} / {one.get("runs") or 0}'}
                         for one in rows], lang=lang)
     chart = ui.line_chart(entries, slots=slots, ends=ends,
                           caption=words.both(lang, "page.analysis.chart_cap", n=slots,
-                                             cap=cap), lang=lang)
-    return ui.panel("page.analysis.chart", legend + chart,
-                    sub=words.both(lang, "page.analysis.chart_sub"), lang=lang)
+                                             cap=cap),
+                          # The marker's own sentence says which reading the number is
+                          # (`chart.point` / `chart.point.each`): "80%" on the accumulated
+                          # curve is a rate over everything up to that position and on the
+                          # per-build one it is that build's own run, and the two are the
+                          # same three characters on screen.
+                          point="chart.point.each" if each else "chart.point",
+                          lang=lang)
+    return ui.panel("page.analysis.chart", legend + chart, sub=sub, lang=lang)
+
+
+def _mode_of(view) -> str:
+    """Which of `schema.CHART_MODES` this request asked for, refused to the default.
+
+    `data.rows` has already made this decision for the points (`rows["mode"]`), so this
+    reads **that** and not the check: a panel and the curve it draws may not answer two
+    different questions, and reading the same answer twice from one place is how that
+    stays true.  The check is the fallback for a caller that handed no rows - a test, or
+    a page that draws the panel without the data layer.
+    """
+    rows = getattr(view, "rows", None) or {}
+    mode = str(rows.get("mode") or getattr(view.check, "mode", "") or "")
+    return mode if mode in CHART_MODES else CHART_MODES[0]
 
 
 def _chart_series(series) -> list:
@@ -814,18 +1241,40 @@ def _contiguous(points) -> list:
     return runs
 
 
-def _bars_panel(view, bars, test: str) -> str:
-    """How each build came back: one bar per build, that build's own three counts.
+def _bars_panel(view, regions) -> str:
+    """How each build came back: which tests to draw, then one region per test.
 
-    The counts are **that build's own** records for the test in force and never a running
-    total - the distinction this panel exists to draw, and the one `ui.bars` keeps by
-    taking one row per build.  A build with nothing recorded for this test gets an empty
-    track and a dash rather than a zero-width bar, because "everything failed" and "nothing
-    was recorded" are opposite answers and a bar of width zero says the first.
+    One reading of one window, per test: a heading naming the test and its totals over
+    the window's builds, and under it **one line per build** - that build's own pass /
+    fail / no-answer for that test, the numbers beside the line.  Three regions stacked
+    is what makes the panel's question askable at all: a reader who wants to know
+    whether the same build that failed `boot` also failed `kselftest-riscv` reads that
+    build's line in each region, and the single test the page's own `test` box names
+    could never answer it.
+
+    **Which tests get a region is the page's own `tests` box**, and this panel draws no
+    picker of its own.  It had one while it lived on `/analysis`, where the box above it
+    asked the *other* question - `test`, the single test `Filter.accepts` reads
+    `ran`/`verdict` over and the picks table names in its verdict column - and the
+    panel's axis therefore had nowhere else to be said.  The two controls even needed
+    two names for themselves (`page.analysis.bars_pick` was not `word.test`) for the
+    reason one word over two controls is how a reader comes to read them as one control.
+    On `/trend` the box above asks exactly this question: `tests`, the set of tests the
+    page draws a line per, which is also what the timeline and the chart are drawn over.
+    A second box at the foot of that page would be one key with two controls - and the
+    forms would not even be peers, since a GET bar replaces the whole query string and
+    the panel's own would have had to spell out `mode` and `sort` by hand to hand the
+    reader back the picture they were reading.
+
+    With nothing in the window there are no lines to draw under any heading, and the
+    regions are replaced by the design's own empty line: three headings over nothing
+    would be a picture of a question with no answer in it.
     """
     lang = view.lang
-    return ui.panel("page.analysis.bars", ui.bars(bars) + '<div style="height:10px"></div>',
-                    sub=words.both(lang, "page.analysis.bars_sub", test=test), lang=lang)
+    drawn = sum(len(one.get("bars") or ()) for one in regions)
+    body = ui.test_bars(regions) if drawn else ui.empty(words.both(lang, "empty.no_rows"))
+    return ui.panel("page.analysis.bars", body,
+                    sub=words.both(lang, "page.analysis.bars_sub"), lang=lang)
 
 
 def _pair_panel(view, older: str, newer: str) -> str:
@@ -835,39 +1284,44 @@ def _pair_panel(view, older: str, newer: str) -> str:
     line), *what their configs differ by in full* (the door - a list of five hundred builds
     can print five hundred numbers and not five hundred diffs), and *what an operator could
     run* (the action bar, whose command line comes from `Gui.command()` and nowhere else).
+    The fields are the engine's own names for this action (`api`, `older`, `newer`), and
+    the answer to the POST is written into the `[data-status]` line inside the form - which
+    is also the hook `tools/check_hooks.py` reads on this screen.
 
-    An incomplete pair keeps the button and disables it with the reason in its `title=`
-    (`ui.action_form`'s `blocked`): a button that vanishes when it cannot work leaves the
-    reader unsure the page has one.  The fields are the engine's own names for this action
-    (`api`, `older`, `newer`), and the answer to the POST is written into the
-    `[data-status]` line inside the form - which is also the hook `tools/check_hooks.py`
-    reads on this screen.
+    **A panel with no pair is not drawn at all**, and that is the whole of the fix for the
+    row the operator pasted (「在上面那个表里勾两行，然后按对比…／跑 drift.py 这个是不是
+    没有必要」).  Without two ticks this panel used to print the picker bar's instruction a
+    second time - this copy pointing *up* at the table the bar had pointed down at - over a
+    disabled `drift` button whose `title=` **was that same sentence**, because an action
+    with nothing to compare has no other reason to give.  So the state the reader met was
+    one sentence twice and a button that could do neither half of what it said: nothing in
+    it was a second answer, and the page above it already teaches the gesture.  What is
+    *not* redundant is the pair: with two rows ticked this is the one place the two ids,
+    the door into their whole diff and the command line to reproduce it all stand together
+    - which is why it is drawn here and not only on the detail route the door opens.  (The
+    board draws no such panel at all; this is the old page's `drift` action put back where
+    the ticks are, and it now costs a reader who has ticked nothing exactly nothing.)
     """
     lang, check = view.lang, view.check
-    body = []
-    if older and newer:
-        body.append('<p class="row tight">'
-                    + view.t("one.compare_line", older=ui.esc(_short(older)),
-                             newer=ui.esc(_short(newer)))
-                    + ui.link_btn(words.both(lang, "one.all_rows"),
-                                  _detail_url(view, older, newer), "sm",
-                                  title="one.compare_title", lang=lang)
-                    + "</p>")
-    else:
-        body.append(ui.hint(words.both(lang, "page.analysis.pair_how")))
-    body.append(ui.action_form(
-        "drift", words.both(lang, "btn.run_drift"),
-        fields=[("api", check.api), ("older", older), ("newer", newer)],
-        # No command line until there are two ids: `_argv_of` would print the engine's
-        # refusal, and that sentence names "one build id in each select box" - controls this
-        # page does not draw.  The button is disabled and says the real reason in its
-        # `title=`, so a stale sentence about a chooser that is not there is worse than no
-        # sentence at all.
-        argv=(view.gui._argv_of("drift", {"older": older, "newer": newer}, lang,
-                                api=check.api) if (older and newer) else ""),
-        hint="analysis.drift_hint",
-        blocked="" if (older and newer) else "page.analysis.pair_how", lang=lang))
-    return ui.panel("one.compare_title", "".join(body), lang=lang)
+    if not (older and newer):
+        return ""
+    return ui.panel("one.compare_title", (
+        '<p class="row tight">'
+        + view.t("one.compare_line", older=ui.esc(_short(older)),
+                 newer=ui.esc(_short(newer)))
+        + ui.link_btn(words.both(lang, "one.all_rows"), _detail_url(view, older, newer),
+                      "sm", title="one.compare_title", lang=lang)
+        + "</p>"
+        + ui.action_form(
+            "drift", words.both(lang, "btn.run_drift"),
+            fields=[("api", check.api), ("older", older), ("newer", newer)],
+            # The command line is the engine's own (`Gui.command()`, through `_argv_of`):
+            # two ids are always here, so this never prints a refusal about a chooser the
+            # page does not draw.
+            argv=view.gui._argv_of("drift", {"older": older, "newer": newer}, lang,
+                                   api=check.api),
+            hint="analysis.drift_hint", lang=lang)),
+        lang=lang)
 
 
 # ------------------------------------------------------------------ the detail
@@ -1014,8 +1468,7 @@ def _vs_bar(view, here: str, other: str) -> str:
     typed the id to do.
     """
     lang = view.lang
-    carried = dict(view.check.to_query())
-    hidden = [(key, carried.get(key, "")) for key in FILTER_ORDER]
+    hidden = _carried(view.route, view.check)
     hidden.append(("lang", "" if lang == DEFAULT_LANG else lang))
     return ui.filters(
         ui.field(words.both(lang, "one.vs"),
@@ -1093,9 +1546,12 @@ def _diff_sections(view, report) -> str:
         table = ui.table(cols, rows, cls="grid", lang=lang)
         rest = entries[_DRIFT_FIRST:]
         if rest:
+            # One fold per category, named by the category's own catalogue key: the
+            # reader who unfolded 新增 gets 新增 unfolded and 改动 where they left it.
             table += ui.more(words.both(lang, "drift.all_rows", n=len(entries)),
                              ui.table(cols, [_diff_row(order, entry) for entry in rest],
-                                      cls="grid", lang=lang))
+                                      cls="grid", lang=lang),
+                             fold="more." + word)
         out.append(ui.panel(word, table,
                             sub=words.both(lang, "filter.cap_rows", n=len(entries)),
                             flush=True, lang=lang))

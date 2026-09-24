@@ -2,13 +2,17 @@
 """The shipped script, and the words it writes: the old layer's one survivor.
 
 `_JS` is the console's interaction: the two-second poll, the finish notice, the POST
-take-over, the value rails, the select-all boxes, the multi-valued axis' boxes.  It is
+take-over, the value rails, the select-all boxes, the multi-valued axis' boxes, and the
+row ticks a reload would otherwise forget.  It is
 **the script that ships**, byte for byte out of the module that used to serve it, and
 it does not belong to a presentation layer: the markup it drives is the same markup
 either way - `body[data-drawn]`, `details.live#live`, `#notice` beside it,
 `table#runs[data-rows]`, `form[data-auto]`, `input[data-stops]`,
-`input[data-all-for]`, `input[data-multi]`, `[data-status]` - so the screens of
-`lib/gui/design/` are drawn *for* it rather than rebuilt in a script of their own.
+`input[data-all-for]`, `input[data-multi]`, `input[form]` (a row's tick, which
+`ui.checkbox(form=…)` is the only writer of), `[data-status]`, and the
+`details[data-fold]` folds whose open state is the reader's and not the load's - so
+the screens of `lib/gui/design/` are drawn *for* it rather than rebuilt in a script
+of their own.
 
 **Nothing in here is retyped.**  `_JS`, `_JS_WORDS` and `_js` were lifted out of
 `lib/gui/templates.py` line for line when that module was retired, because the two
@@ -75,6 +79,20 @@ function esc(s) {
   return String(s === null || s === undefined ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+// The 日志 link, the script's three copies of it (`liveRow`, `notice`, the table
+// re-render) and the server's three (`ui.log_link`, which draws the panel and the two
+// activity tables the poll only *updates*).  Both halves have to agree, or a refresh
+// re-shapes a row the reader is looking at.
+//
+// `back` is this page - where the log's own tab leads when the reader presses "回到列表".
+// The log opens in a tab of its own, so the browser's Back button leads to whatever was
+// open before the tab and not to the table the click was made in; this is the address
+// that fixes it.  `location.pathname + location.search` is the page as it stands, which
+// is what `View.url()` answers server-side - the filter, the api key, the window.
+function logHref(id) {
+  return '/runs/' + encodeURIComponent(id) + '/log?back=' +
+    encodeURIComponent(location.pathname + location.search);
 }
 // A filter bar submits itself when a control *commits*, and a keyboard reader browses
 // with the arrow keys first.  On a `<select>` and on a number box every arrow press is a
@@ -160,12 +178,15 @@ function barTarget(f) {
 // change; this listener is what keeps the reader where they were.
 //
 // Delegated on `document` on purpose: `drawLive` replaces the panel's rows every 2
-// seconds, and a listener bound per form would be thrown away with them.  Two POST
-// shapes are taken over: `/api/actions/**`, whose answer is the JSON contract, and
+// seconds, and a listener bound per form would be thrown away with them.  Three POST
+// shapes are taken over: `/api/actions/**`, whose answer is the JSON contract,
 // `/api/runs/<id>/cancel`, whose answer is JSON too - a reader who cancelled an
 // activity should stay on the page that shows it ending rather than be navigated to
-// `{"cancelled": …}`.  The filter bar's GET (which submits itself from the `change`
-// listener above, and must navigate) is not touched.
+// `{"cancelled": …}` - and the two that write `var/state/` without starting anything
+// (`/api/worker/forget/<id>`, `/api/worker/callback`), whose answer *is* the sentence
+// the reader asked for and would otherwise replace the queue they were reading it
+// against.  The filter bar's GET (which submits itself from the `change` listener
+// above, and must navigate) is not touched.
 function barStatus(form, text, bad) {
   var spot = form.querySelector('[data-status]');
   if (!spot) { return; }
@@ -176,11 +197,23 @@ document.addEventListener('submit', function (e) {
   var form = e.target;
   if (!form || !form.matches
       || !form.matches('form[method="post"][action^="/api/actions/"], '
-                       + 'form[method="post"][action$="/cancel"]')) {
+                       + 'form[method="post"][action$="/cancel"], '
+                       + 'form[method="post"][action$="/callback"], '
+                       + 'form[method="post"][action$="/forget"]')) {
     return;
   }
   e.preventDefault();
-  var button = form.querySelector('button');
+  // **The button that was pressed, not the form's first one.**  A form may hold
+  // several commands over the same fields and the same ticks (`ui.action_form`'s
+  // `also`): the builds bar's *pull the selected* and *index, then pull the selected*
+  // post the same body to two different endpoints, and the tick box that feeds both
+  // names the form, not a button.  `e.submitter` is that button, and its `formaction`
+  // is the endpoint it was drawn for; the form's own `action` is the answer for a
+  // submit that came from somewhere else (Enter in a text box), which is why the
+  // fallback stays.  Reading `form.querySelector('button')` posted the first button's
+  // endpoint for every press, so the third button would have run the first one's
+  // command with its own fields - a silent wrong command, not a refusal.
+  var button = e.submitter || form.querySelector('button');
   if (button) { button.disabled = true; }
   barStatus(form, I18N.sending, false);
   // `URLSearchParams`, not `new FormData(form)`: this posts what the server reads.
@@ -191,8 +224,20 @@ document.addEventListener('submit', function (e) {
   // a page already open in a browser keeps working; this is the spelling it should
   // have had.  Repeated names survive: `new URLSearchParams(formData)` keeps all 17
   // `selected` values, which is what `_ticks()` reads.
-  var body = new URLSearchParams(new FormData(form));
-  fetch(form.getAttribute('action'), { method: 'POST', body: body })
+  //
+  // **`e.submitter`, because a button's own field is not the form's.**  `new
+  // FormData(form)` leaves the pressed button out, so a button carrying `name`/`value`
+  // (`ui.action_form`'s `also`) would post that field over the no-script path - where
+  // the browser adds the submitter itself - and drop it here: one press, two commands,
+  // decided by whether JavaScript ran.  The re-run button is the field that exists, and
+  // the difference between it and the button beside it is exactly this value.  The
+  // press may have come from nowhere (`Enter` in a text box), so the fallback stays.
+  var body = new URLSearchParams(new FormData(form, e.submitter || undefined));
+  // The pressed button's own `formaction` wins over the form's `action` (`ui.action_form`
+  // draws both spellings): the body is the form's either way, only the endpoint differs.
+  var where = (e.submitter && e.submitter.getAttribute('formaction'))
+              || form.getAttribute('action');
+  fetch(where, { method: 'POST', body: body })
     .then(function (answer) {
       return answer.text().then(function (text) {
         return { ok: answer.ok, status: answer.status, text: text };
@@ -206,6 +251,16 @@ document.addEventListener('submit', function (e) {
       }
       var started = null;
       try { started = JSON.parse(answer.text); } catch (err) { started = null; }
+      // A *forget* answers with the sentence and no activity: it starts nothing, so
+      // there is no id to name and `started {id}` would say `started ?` about a
+      // button that started nothing.  The server's own `note` is printed instead -
+      // it knows whether the node was in `seen`, whether a worker held the file, or
+      // whether the file was readable at all, and those are four different things
+      // the reader has to be able to tell apart.
+      if (started && started.note) {
+        barStatus(form, started.note, started.ok === false);
+        return;
+      }
       var id = (started && started.started) || '?';
       barStatus(form, I18N.started.replace('{id}', id)
         .replace('{argv}', ((started && started.argv) || []).join(' ')), false);
@@ -331,12 +386,12 @@ function liveRow(r) {
     '<div class="live-what">' + esc(String(r.what || '').slice(0, 80)) + '</div>' +
     '<code class="live-argv" title="' + esc(argv) + '">' + esc(argv) + '</code>' +
     '<div class="live-act">' + (ended ? '<span class="live-exit">' + exitText + '</span>' : '') +
-    // The whole log, in a tab of its own: `/runs/<id>/log` answers `text/plain`
+    // The whole log, in a tab of its own: `/runs/<id>/log` answers the file as a page
     // (`lib/gui/server.py`, `log_body`), and nothing takes the click over any more -
     // `target`/`rel` are the pairing that opens a new tab without handing it a handle
-    // back into this page.  `_live_row` (the server's own copy of this row) writes the
-    // same link, because the panel is drawn by the server and only *updated* here.
-    '<a href="/runs/' + encodeURIComponent(r.id) + '/log"' +
+    // back into this page.  `ui.log_link` (the server's own copy of this row) writes
+    // the same href, because the panel is drawn by the server and only *updated* here.
+    '<a href="' + esc(logHref(r.id)) + '"' +
     ' target="_blank" rel="noopener">' + esc(I18N.log) + '</a>' +
     (ended ? '' : '<form method="post" action="/api/runs/' +
       encodeURIComponent(r.id) + '/cancel"><button class="btn">' +
@@ -379,7 +434,7 @@ function notice(r, gone, quiet) {
   el.className = ('notice ' + cls).replace(/ +$/, '');
   el.setAttribute('data-key', liveKey(r));
   el.innerHTML = '<span class="' + esc(r.state) + ' pill">' + esc(endWord(r)) + '</span> ' +
-    esc(line) + ' <a href="/runs/' + encodeURIComponent(r.id) + '/log"' +
+    esc(line) + ' <a href="' + esc(logHref(r.id)) + '"' +
     ' target="_blank" rel="noopener">' +
     esc(I18N.log) + '</a><button class="btn" type="button" data-dismiss="1">' +
     esc(I18N.dismiss) + '</button>';
@@ -614,8 +669,8 @@ function drawTable(runs) {
         '<td class="wrap"><code title="' + esc(argv) + '">' + esc(argv.slice(0, 60)) +
         '</code></td><td class="act"><span class="cell-actions">' +
         // The same link `_runs_table` writes: the whole log, served as a page of its
-        // own (`text/plain`, `lib/gui/server.py`), opened in a new tab.
-        '<a href="/runs/' + esc(r.id) + '/log" target="_blank" rel="noopener">' +
+        // own (`lib/gui/server.py`), opened in a new tab with this page as its `back`.
+        '<a href="' + esc(logHref(r.id)) + '" target="_blank" rel="noopener">' +
         esc(I18N.log) + '</a>' +
         '<form method="post" action="/api/runs/' + esc(r.id) + '/cancel">' +
         '<button class="btn">' + esc(I18N.cancel) + '</button></form></span></td></tr>';
@@ -774,6 +829,133 @@ function buildSelectAll(root) {
 buildSelectAll();
 window.addEventListener('load', function () { buildSelectAll(); });
 window.addEventListener('DOMContentLoaded', function () { buildSelectAll(); });
+
+// The row ticks, kept across a reload.  The operator's 「两个东西勾好了，我去改了其他的
+// 东西，它刷新界面两个勾也没有」: a filter bar's `change` is a *navigation*, and a box that
+// lives outside its form (`form="pull-now"`, `form="run-now"` - how a row a page did not
+// draw still feeds the bar it belongs to) is drawn by the **server** on the way back, which
+// knows nothing about anything ticked.  So the tick column came back empty on every load,
+// whether the reader had changed a filter or merely pressed apply.
+//
+// The population is exactly the boxes `ui.checkbox(form=…)` writes and nothing else: only
+// that helper puts a `form=` on an input, and a tick that names its bar is the whole shape.
+// The type is checked too because a *filter*'s boxes are a different thing - they ride in
+// the URL (`data-multi`, `Filter`) and remembering them here would be a second owner for
+// the same answer - and so is the select-all header box, which is a gesture and not a value.
+//
+// `sessionStorage`, the store the scroll place uses, and not the `localStorage` the folds
+// use: "which rows am I about to act on" is a selection *in this sitting*, and a **pull**
+// ticked on Monday and still ticked on Tuesday would be a command waiting to be pressed.
+// It is scoped by pathname, because a tick names a row of *this* page - the next page's ids
+// are different ids, which is the rule `Filter.to_query()` already keeps by leaving `tick`
+// out of every link.  One list per form, so a page with two tick-driven bars keeps them
+// apart.
+//
+// The restore is followed by a save, so an id the filter has since hidden is forgotten
+// rather than left to come back: what is stored is always what this page is drawing.  A
+// reader with the script off keeps today's behaviour, and no button's body changes - the
+// bar still posts the boxes that are on the page (`_form_body` reads exactly those).
+var TICKS = 'kci.ticks';
+function tickStore() {
+  try { return JSON.parse(sessionStorage.getItem(TICKS) || '{}') || {}; }
+  catch (err) { return {}; }
+}
+function tickBoxes() {
+  return Array.prototype.slice.call(document.querySelectorAll('input[form]'))
+    .filter(function (one) { return one.type === 'checkbox'; });
+}
+function tickSave() {
+  var said = {};
+  tickBoxes().forEach(function (one) {
+    var bar = one.getAttribute('form');
+    if (!said[bar]) { said[bar] = []; }
+    if (one.checked) { said[bar].push(one.value); }
+  });
+  var all = tickStore();
+  all[location.pathname] = said;
+  try { sessionStorage.setItem(TICKS, JSON.stringify(all)); } catch (err) {}
+}
+function tickRestore() {
+  var said = tickStore()[location.pathname];
+  if (!said) { return; }
+  tickBoxes().forEach(function (one) {
+    one.checked = (said[one.getAttribute('form')] || []).indexOf(one.value) >= 0;
+  });
+  // The header box ticks every box of its form, so it has to agree with what just came
+  // back: two ticked rows under an empty select-all would untick them on the next press.
+  document.querySelectorAll('input[data-all-for]').forEach(function (all) {
+    var bar = all.getAttribute('data-all-for');
+    var boxes = tickBoxes().filter(function (one) {
+      return one.getAttribute('form') === bar;
+    });
+    all.checked = boxes.length > 0 && boxes.every(function (one) { return one.checked; });
+  });
+  tickSave();   // forget an id this page no longer draws
+}
+// Delegated, not per box: the tick column is redrawn whenever the page is, and a listener
+// bound to one element would be a listener the next load does not have.
+document.addEventListener('change', function (e) {
+  if (e.target && e.target.type === 'checkbox' && e.target.getAttribute('form')) {
+    tickSave();
+  }
+});
+tickRestore();
+window.addEventListener('load', tickRestore);
+
+// How the page is laid out is the reader's and not the load's.  Every fold the server
+// draws with a name - 更多筛选 (a filter bar's second row), the panels a page folds away
+// (`ui.panel(collapsible=True)`) and the activity panel (`shell.live`) - carries
+// `data-fold`, and this is the one place the reader's answer to it is kept.
+//
+// An absent entry means "no answer given", and that is not the same as "closed": the
+// server draws each fold the way the *facts* say (the activity panel is out while
+// something runs, a panel the page is about is out), and that stays the answer for a
+// reader who has never touched it.  A stored entry is the reader overruling the fact,
+// and it wins on every load after it, on whichever page draws the fold.
+//
+// `localStorage` and not the `sessionStorage` the scroll place uses: a place is where
+// the reader was a moment ago and means nothing in the next tab, while a fold is how
+// they want the page laid out - the same kind of choice as the theme, which the bridge
+// keeps the same way.  It is the one choice here meant to outlive the tab: a panel
+// folded away on Monday is still folded away on Tuesday.
+//
+// `toggle` is the only event a `<details>` fires, and it fires for a click on the
+// summary and for Enter or Space on it alike - which is why the listener is on that and
+// not on `click`.  Restoring above sets `open` and so fires a `toggle` of its own, but
+// a change to the value it already has fires nothing, and where it does fire it stores
+// the value just read: the two cannot disagree.  A fold with nothing stored is never
+// written, so a reader who has touched nothing keeps the server's own answer, and
+// `dataset.foldReady` is `buildSelectAll`'s guard for the same reason - this runs again
+// on `load`, and a second listener would store the same answer twice.
+var FOLDS = 'kci-folds';
+// No storage, no memory, no crash: a browser that refuses `localStorage` keeps the
+// server's answer for every fold, which is exactly what a first visit gets anyway.
+function foldMap() {
+  try { return JSON.parse(localStorage.getItem(FOLDS) || '{}') || {}; }
+  catch (err) { return {}; }
+}
+function foldSave(name, open) {
+  var all = foldMap();
+  all[name] = !!open;
+  try { localStorage.setItem(FOLDS, JSON.stringify(all)); } catch (err) {}
+}
+function buildFolds(root) {
+  var kept = foldMap();
+  (root || document).querySelectorAll('details[data-fold]').forEach(function (fold) {
+    var name = fold.getAttribute('data-fold');
+    // `hasOwnProperty` and not a truthiness test: the closed answer is stored as
+    // `false`, which `kept[name]` would read as "nothing stored" and let the fold
+    // spring back open on the next load - the bug this line exists to not have.
+    if (Object.prototype.hasOwnProperty.call(kept, name)) {
+      fold.open = !!kept[name];
+    }
+    if (fold.dataset.foldReady) { return; }
+    fold.dataset.foldReady = '1';
+    fold.addEventListener('toggle', function () { foldSave(name, fold.open); });
+  });
+}
+buildFolds();
+window.addEventListener('load', function () { buildFolds(); });
 """
 
 

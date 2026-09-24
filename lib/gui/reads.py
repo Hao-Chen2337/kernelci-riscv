@@ -262,6 +262,27 @@ class ReadsMixin:
         local.pull = disk.provenance()
         return local
 
+    def build_of(self, build_id: str) -> "Build | None":
+        """One card of the local table by its build id, or `None` - the engine's own `Build`.
+
+        A page draws most of its cells out of a row dict (`data.rows`), and the two
+        facts a *row* cannot carry are the engine's own answers about the artifacts:
+        `/jobs`' 构件 column draws which of the three states each artifact it needs is
+        in (`Build.lacking`), and a row dict built for the design's markup has no room
+        for a `Build` object.  Reading the whole table again per row is the other way,
+        and it is a walk of 68 cards per row for an answer that is already in memory -
+        so the index is built once per request, like every other read here.
+
+        `lacking` could be answered here too (`self.local_of(...)` has the bytes and
+        the card), and it is not, on purpose: the rule that decides whether a pair can
+        run is the engine's (`Build._why`), and a second one written in this layer is
+        how the page and `table.py run` would come to disagree about which pairs run.
+        """
+        held = _request_scratch()
+        if "builds" not in held:
+            held["builds"] = {build.build_id: build for build in self._state()[0]}
+        return held["builds"].get(build_id)
+
     def all_locals(self) -> dict[str, Local]:
         """Every local copy by build_id: the table's cards plus whatever is under var/downloads/.
 

@@ -20,14 +20,19 @@ runs, whose exit status is the answer - and it is what replaces that gate the da
                                the one check that was never gated, and rotted
     test_config_cache.py       one request parses the workspace once
     test_form_body.py          a POST carries the form's own body
+    test_ledger_history.py     a re-run keeps the record it replaced
+    test_callback_override.py  where a report goes, and the one setting that moves it
     smoke_pages.py             every page renders, in both languages
     validate_yaml              the PR1 test profile still parses (the deliverable)
     accept.py --base URL       the page over HTTP, if a server is running (--base)
 
 Each check is a command line, run in this repository, and **all of them run**: a
-gate that stops at the first failure hides the other nine, which is the wrong
+gate that stops at the first failure hides every check behind it, which is the wrong
 trade for a command whose whole point is to be trusted.  The exit status is 3 when
 any of them failed ("we never got what we came for"), 0 when they all passed.
+
+`CHECKS` below is the list, and there are no others: a check outside that tuple is a
+check that rots (see the two that did, in the comments there).
 
 `--quick` leaves out the two slowest (the page renders and the HTTP sweep); that is
 for the middle of a change, not for a verdict.
@@ -76,7 +81,24 @@ CHECKS = (
     # of everything this tree gates on, and there are no others).
     ("notice", ["node", os.path.join(TOOLS, "test_notice.js")], ROOT, ""),
     ("config cache", [sys.executable, os.path.join(TOOLS, "test_config_cache.py")], ROOT, ""),
+    # **The ledger's second file.**  A re-run of one pair used to destroy the record it
+    # replaced, which made the re-run button (`btn.run_redo`) a button that erased its own
+    # evidence.  `<test>.history.jsonl` is what it leaves instead, and every rule that
+    # makes it safe is invisible from the outside: it is not a `.json` `_build_records`
+    # would read back as one more record, a re-delivered run is not a second line, and the
+    # record is written last so `deliver`'s `NOT recorded:` note is never untrue.  None of
+    # that is visible in a render, so it is pinned here.
+    ("ledger history", [sys.executable, os.path.join(TOOLS, "test_ledger_history.py")], ROOT, ""),
     ("form body", [sys.executable, os.path.join(TOOLS, "test_form_body.py")], ROOT, ""),
+    # **Where a report goes.**  A job node's callback URL arrives inside the definition
+    # the pipeline sent, so an operator running this deployment against their own
+    # instance could read it on `/worker` and change nothing.  The override is one URL
+    # under `var/state/`, and its two boundaries are what this pins: both delivery sites
+    # resolve through it (`handle` and the re-post of a report that was refused), and a
+    # one-shot `table.py run` still posts only when it is asked to.  Neither is visible
+    # in a render.
+    ("callback override", [sys.executable, os.path.join(TOOLS, "test_callback_override.py")],
+     ROOT, ""),
     ("pages", [sys.executable, os.path.join(TOOLS, "smoke_pages.py"), "--all",
                "--lang", "both"], ROOT, ""),
     ("pipeline yaml", [sys.executable, "tests/validate_yaml.py"], PIPELINE, PIPELINE),

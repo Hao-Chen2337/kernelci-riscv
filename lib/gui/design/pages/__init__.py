@@ -42,6 +42,7 @@ SCREENS = (
     ("/worker", "worker", "worker"),
     ("/runs", "runs", "runs"),
     ("/analysis", "analysis", "analysis"),
+    ("/trend", "trend", "trend"),
 )
 
 

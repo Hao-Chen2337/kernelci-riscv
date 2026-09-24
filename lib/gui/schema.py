@@ -7,7 +7,7 @@ link carries on from it (`ROUTE_KEYS`, `NAV_KEYS`), the buttons and the `Run` ki
 each one starts (`ACTIONS`, `KINDS`, `WRITERS`), the values a select box may offer
 (`ORIGINS`, `EVIDENCE`, `LIMITS`, `DAYS`), the order `/analysis` sorts in (`SORTS`,
 `SORT_KEYS`) and the measurements a cap is set from (`ROW_BYTES` lives with the page
-that prints it, `MAX_DELTA` is here): a second copy of any of them is a page that
+that prints it, `DEFAULT_DELTA` is here): a second copy of any of them is a page that
 answers a question its URL does not state.
 
 Nothing here is behaviour - every other module of this package reads these tables
@@ -93,18 +93,25 @@ API_MAX = 200
 # The buttons, by name.  Every one of them runs the command an operator would
 # type; a page that runs something the runbook does not is a second interface.
 # Reading a table needs no button: the page already is that table.
-ACTIONS = ("index", "pull", "run", "runday", "fetch", "worker", "provision",
-           "results", "drift")
+ACTIONS = ("index", "index_pull", "pull", "run", "runday", "fetch", "worker",
+           "provision", "results", "drift")
 
 # The `Run` kind each action starts (the vocabulary is `run.KINDS`; `table.py`
 # covers the table's own writes, which is what index and provision are).
-KINDS = {"index": "table", "provision": "table", "pull": "pull", "run": "run",
-         "runday": "runday", "fetch": "fetch", "worker": "worker",
+#
+# `index_pull` is a `pull` and not a `table`, because a kind is what an activity
+# *is* and this one is the same fifty downloads the bar's button starts - the
+# registering in front of them is how they are made possible, not what the
+# activity is for.  It is `table.py index-pull`, one command, so the ledger still
+# holds one row per press.
+KINDS = {"index": "table", "index_pull": "pull", "provision": "table", "pull": "pull",
+         "run": "run", "runday": "runday", "fetch": "fetch", "worker": "worker",
          "results": "results", "drift": "drift"}
 
 # One write at a time: the ledger, the download tree and the table have one
 # writer each, and two concurrent writers are how all three get corrupted.
-WRITERS = ("index", "pull", "run", "runday", "fetch", "worker", "provision", "drift")
+WRITERS = ("index", "index_pull", "pull", "run", "runday", "fetch", "worker",
+           "provision", "drift")
 WRITE_KINDS = tuple(sorted({KINDS[one] for one in WRITERS}))
 
 # The activity kinds that are bookkeeping rather than an answer to something the
@@ -128,7 +135,7 @@ KIND_ORDER = ("run", "runday", "pull", "fetch", "worker", "table", "results", "d
 # the API say, what do I hold, and what does the record claim?* - and the bar is a
 # list of the questions this console answers, not of the tables it can draw.
 PAGES = (("/", "builds"), ("/jobs", "jobs"), ("/runs", "runs"),
-         ("/worker", "worker"), ("/analysis", "analysis"))
+         ("/worker", "worker"), ("/analysis", "analysis"), ("/trend", "trend"))
 
 # The three pages that were the same question as `/`, and the key that says which
 # side of it they were asking about.  A redirect and not a deletion: the operator's
@@ -162,6 +169,18 @@ DAY_CHOICES = (NO_WINDOW, *DAYS)
 DAY_LABELS = {"0": "all"}
 ORIGINS = ("any", "local", "remote", "both", "card")
 RANS = ("any", "never", "ever", "failing")
+# The two clocks a stamp can be printed in, and **only** the printing: every stamp
+# this console reads is UTC on disk and every stamp it writes stays UTC (`Filter.tz`
+# says the whole of it).  `local` is the machine this console runs on, which is what a
+# reader comparing a page against their own watch wants, and it is the default - the
+# value a URL does not have to spell.  A third clock is a deployment's own business
+# (`TIME_ZONE` in the environment is not read by any page here).
+TZS = ("local", "utc")
+# Which of the two a URL does not have to spell.  Named here because two layers need
+# the answer - `Filter.to_query` omits it and the top bar's clock switch links to it -
+# and a third clock, or a deployment that wanted UTC as its resting state, would
+# otherwise have to be found in both.
+DEFAULT_TZ = TZS[0]
 # `bytes` is the one value here that is not a `Local.state`: it is the only honest
 # way to ask for "the artifacts are on disk, whatever the record says", which is
 # what the numbers strip's `with bytes` chip counts and links to.  `pulled` needs
@@ -170,6 +189,21 @@ RANS = ("any", "never", "ever", "failing")
 EVIDENCE = ("any", "pulled", "unrecorded", "registered", "made-here", "empty", "bytes")
 MODES = ("once", "resident")
 JOB_STATES = ("", "available", "done", "running", "reserved", "closing")
+# The **local** axis of `/worker`'s queue: what this machine did with a node, as
+# opposed to `state`, which is what the API says about it.  The two are independent
+# and either can be asked alone - that is the operator's own requirement
+# (「两个是反开的也可以跑了不回传」) - so this is a page key of its own and not a
+# second meaning bolted onto `ran`, which is `/builds`' word for a ledger question
+# about a (build, test) pair and means nothing to a queue of job nodes.
+#
+#   any      no condition
+#   never    the loop has never dealt with this id (`seen`)
+#   held     it ran here and the report is still undelivered (`pending`) - 跑了不回传
+#   refused  it was put down unrun, and the poller said why (`refused`)
+#   ran      dealt with, with nothing recorded against it: the ledger write is the
+#            only proof a run happened and it is not keyed by node id, so this value
+#            is "no reason to think otherwise" and the page's cell says exactly that
+LOCAL_FATES = ("any", "never", "ran", "held", "refused")
 VERDICTS = ("", errors.VERDICT_PASS, errors.VERDICT_FAIL,
             errors.VERDICT_INFRA, errors.VERDICT_ERROR)
 
@@ -545,21 +579,56 @@ FILTER_ORDER = ("api", "tree", "branch", "arch", "defconfig", "compiler",
                 "ran", "verdict", "evidence", "origin", "missing", "has", "text",
                 "sort")
 
-# The four axes a reader may name **several values of at once**, offered as a set
-# they compose rather than as one box (`design/ui.py::multi`).  The set is a judgement with
-# a reason and not a rule about `Filter`: these four are the axes whose values are
-# *orthogonal to the row* - a build is in `riscv` or `mainline` and nothing about the
-# page changes if both are asked for - while `branch` is bound to the tree it belongs
-# to (`_branches_from_config`), `state`/`result` are two of a row's own answering
-# words, and `test`/`ran`/`verdict`/`evidence`/`origin`/`missing` are questions about
-# one row's ledger and artifacts, where "any of these" is either the same as "any" or
-# a different question the page does not implement.
+# The **second and later** lists of a page, each with the offset key its own pager
+# writes.  One page can print several lists at once - `/local/<build_id>` draws the
+# bytes, the pull record, the ledger and the activities, and `/worker` draws its queue
+# beside what it finished - and a page with two lists cannot have one `offset`: the
+# second list's "page 2" would move the first list's page as well.
+#
+# `offset` itself is not here.  It is the **page's own** offset, the one the builds
+# table and `/runs` use, and it is a `Filter` field of its own (`models.Filter.offset`)
+# rather than an entry in this table - a page whose first list is paginated keeps the
+# spelling every existing link, gate and bookmark already has.
+#
+# Nothing else may be called one of these names: a key in this table is read off the
+# query by `Filter.from_query` and written by `ui.pager`, so a name that collides with
+# a filter axis would make `?limit=`-style state out of a condition.
+LIST_OFFSETS = ("pulls", "bytes", "record", "ledger", "activities", "done")
+
+# The axes a reader may name **several values of at once** on the wire, offered as a
+# set they compose rather than as one box (`design/ui.py::multi`).  Six of the seven
+# `Filter` axes whose value the API is asked about: the four about the build itself
+# (`tree`/`arch`/`defconfig`/`compiler`), and `state`/`result`, which the operator
+# asked for by name (「一个指标多个值筛选」 - "跑了的和正在跑的" is one question, and a
+# select box cannot state it).
+#
+# **`state`/`result` were excluded here until they were measured.**  The judgement was
+# that they are "two of a row's own answering words", where "any of these" is not a
+# question - and on the wire that judgement was the silent-0 failure again: a
+# comma-joined value in a *plain* key is matched literally.  Against the local stack's
+# six `kind=kbuild` nodes, all of them `state=available`:
+#
+#     state=available                 -> 6 items
+#     state=done                      -> 0 items
+#     state__in=available,done        -> 6 items   (the union: 6 + 0, honoured)
+#     state=available,done            -> 0 items   (no OR in a plain key)
+#
+# so the set is answered exactly as the one-value case is, and a page that offers one
+# must send `__in` or it asks a question with no answer in it.
+#
+# `branch` is still not one of them: it is bound to the tree it belongs to
+# (`_branches_from_config`), so "any of these branches" is not a question this page
+# can offer candidates for.  Neither are the axes that never reach the API (`test`,
+# `ran`, `verdict`, `evidence`, `origin`, `missing`): `_api_query` emits `API_FILTERS`
+# keys alone, and a set of those is answered by `Filter.accepts` on the rows this page
+# has - which is why 更多筛选 can offer `verdict`, `evidence` and `missing` as sets
+# without a line of this table changing (`models.Filter.from_query` reads them all).
 #
 # **This is the one table that decides what may go on the wire as `__in`**, and it is
 # read by `forms._axis_pairs` alone.  `Filter.accepts` needs no such list: its test is
 # a membership test for every value axis, and `tree=riscv` is the one-value case of it
 # (`_names("riscv")` is `("riscv",)`), so a single value filters exactly as it did.
-MULTI_FIELDS = ("tree", "arch", "defconfig", "compiler")
+MULTI_FIELDS = ("tree", "arch", "defconfig", "compiler", "state", "result")
 
 # The orders `/analysis` can put its two lists in, as the values a URL carries.
 #
@@ -615,22 +684,38 @@ SORT_ALIASES = {
     "verdict": (("verdict", "asc"), ("date", "desc")),
 }
 
-# How many rows of that order may spend a config read on their neighbours: three by
-# default, twelve at most.  Clamped on the server, never trusted from the URL.
+# How many rows of that order spend a config read on their neighbours: three unless the
+# reader says otherwise, and never more than the page has rows.  Clamped on the server,
+# never trusted from the URL - `Filter.from_query` holds `delta` to `limit`, so `?delta=`
+# cannot outrun the list the reader asked for.
 #
-# **The cap follows a measurement taken for this round, not round 1's estimate.**
-# `09-VERIFY.md` K14 found the two documents disagreeing by ~20x about what one comparison
-# costs (`05-regression.md` inherited 7.5-12.5 s / ~194 KB from round-1 `06-analysis.md`
-# §D2; `04-analysis.md` F4 measured 0.4 s cold), so it was re-measured on today's artifact
-# store before either number was used: **2.17 s cold for a pair** (two `.config` files
-# fetched over the public API, first time - the network, not the parse) and **0.04 s** the
-# second time, because `var/configs/` then holds both files (42 of them on this workspace).
-# So a row's `delta` buys `delta - 1` pairs and a page pays 2 x delta cold reads at most:
-# the default 3 is ~6 s worst case and 12 is ~26 s, which is the largest value still inside
-# the budget the page's own API read already lives in.  Round 1's number would have argued
-# for 24 (~52 s cold), which is why the measurement mattered.
+# **There is no second cap, and that is the operator's ask** (「我想的就是都比较啊就是全部
+# 比较」): a reader who sets 行数 to 50 and drags 差异 to 50 wants those fifty rows compared
+# and has said so twice, in two controls.  It used to stop at 12, and the sentence that
+# justified the 12 was a *cost* measurement, not a limit of the engine:
+#
+# **What one comparison costs, measured on this artifact store** (not round 1's estimate -
+# `09-VERIFY.md` K14 found the two documents disagreeing by ~20x: `05-regression.md`
+# inherited 7.5-12.5 s / ~194 KB from round-1 `06-analysis.md` §D2, `04-analysis.md` F4
+# measured 0.4 s cold): **2.17 s cold for a pair** (two `.config` files fetched over the
+# public API, first time - the network, not the parse) and **0.04 s** the second time,
+# because `var/configs/` then holds both files.  So a row's `delta` buys `delta - 1` pairs
+# and a page pays 2 x delta cold reads at most, which is ~6 s at the default 3 and ~26 s at
+# the old ceiling of 12.
+#
+# Two things make a larger number honest rather than reckless.  The reads are **once per
+# build and once per workspace**: `var/configs/` keeps each config under the digest of its
+# URL, and a build this deployment has *pulled* already has its config in
+# `var/downloads/<id>/` (`drift._config_text`), so the second look at any pair costs
+# nothing and a page full of pulled builds costs almost nothing the first time.  And the
+# request has a **deadline**: `API_BUDGET` is one wall clock for every read a page makes,
+# so a cold page that asks for more than it can fetch stops paying, and the pair it
+# stopped at keeps its place in the list carrying the engine's own reason ("this page
+# already spent 45s on the API") rather than a page that never draws.  What a reader pays for asking for everything
+# cold is a page that has to be loaded twice - the first one fills `var/configs/`, the
+# second one reads it - and the page prints how many configs the render fetched so that
+# second load is a thing to do rather than a thing to guess at.
 DEFAULT_DELTA = 3
-MAX_DELTA = 12
 
 # What each route reads.  A self-link (`×` on a chip, a preset, a filter
 # re-submitted) must carry all of it: dropping a key nobody asked to drop is how
@@ -641,23 +726,179 @@ MAX_DELTA = 12
 # page that has no use for it - the merged builds page on production, one click into
 # `/runs` and back, used to land on the local stack again.
 ROUTE_KEYS = {
-    "/": FILTER_ORDER + ("lang",),
-    "/jobs": FILTER_ORDER + ("lang",),
-    "/runs": ("kind", "state", "api", "lang"),
+    # `tz` is on every route from here down, and not only on the two that print a pair
+    # of regression stamps: the clock is now one control in the top bar
+    # (`shell.tz_switch`), so it belongs to the *reader* rather than to a page, and a
+    # route that dropped it would hand them the other clock the moment they clicked a
+    # station.  It stays a `Filter` field outside `FILTER_ORDER` - it is a display
+    # choice and not a condition, so it rides in `to_query`'s tail - which is why it
+    # has to be named here by hand wherever it should survive.
+    "/": FILTER_ORDER + ("tz", "lang",),
+    "/jobs": FILTER_ORDER + ("tz", "lang",),
+    # `limit` is here because this page's table pages now: the count chip on `/` links
+    # to `/runs` with the number it counted as the page size (`builds._chip`'s
+    # `counts.activities`), and a whitelist that dropped the key would re-page that
+    # table at 50 the moment the reader touched its pager - the chip's number and the
+    # table's rows would stop agreeing, which is the one thing S6 exists to catch.
+    "/runs": ("kind", "state", "limit", "api", "tz", "lang"),
     "/worker": ("state", "job", "text", "limit", "mode", "platform", "runtime", "since",
-                "api", "lang"),
-    "/analysis": ("test", "limit", "older", "newer", "pick", "point", "delta", "api",
-                  "lang", "sort"),
+                "local", "api", "tz", "lang"),
+    # **Every** key this page draws and `Filter.accepts` reads, and not only the ledger
+    # pair it was last widened to.  The bar draws the whole kbuild vocabulary (the main
+    # row's tree/branch/arch/defconfig/compiler and the folded row's state/result/origin/
+    # evidence/missing/days), the sort keys are links, and a whitelist missing any of them
+    # meant a self-link silently changed the question: measured on the running page,
+    # `?tree=nonexistent-tree&state=done&verdict=fail&sort=date:desc` - of the seven
+    # `sort by …` links, **every one dropped `state` and three dropped `tree`**, while
+    # `verdict` survived because it happened to be listed.  A link that hands the reader
+    # a different question than the one on their screen is the one thing `_url` may not
+    # do, and the reason the list is written as the order plus this page's own keys
+    # rather than by hand is that a hand-written list is what drifted.
+    #
+    # `tests` **was** here, for the bars panel's own axis, while that panel was drawn at
+    # the foot of this page; the panel moved to `/trend` (`analysis.analysis` says why),
+    # and with it went the only reader of the key on this route.  A key a route no longer
+    # reads and still lists is worse than no entry at all: `_url` would keep carrying
+    # `?tests=` into this page, and a link that hands the reader a key nothing answers is
+    # the same lie as one that drops a key something does.
+    "/analysis": FILTER_ORDER + ("older", "newer", "pick", "point", "delta",
+                                 "tz", "lang"),
     # The single-build view is the same page's keys plus `vs` and the build id in the
     # path.  It is spelled with a trailing slash because `_url` resolves a route by
     # longest prefix: a link from a comparison carries **the order and the filter it was
     # made under**, which is what makes its two neighbour doors mean what the row meant.
-    "/analysis/": ("test", "limit", "pick", "point", "delta", "api", "lang", "sort", "vs"),
+    "/analysis/": ("test", "limit", "pick", "point", "delta", "api", "lang", "sort", "vs",
+                   "ran", "verdict", "tz"),
+    # The trend page reads the same window axes `/analysis` does and two keys of its
+    # own: `tests`, the *set* it draws a line per (`Filter.tests`), and `mode`, which
+    # of the two questions the chart below answers - the accumulated pass rate or each
+    # build's own (`Filter.mode`, and `trend._mode_field` draws the control).  It reads
+    # no `delta` and no `pick`/`older`/`newer` -
+    # there is no `±` column and no pair on this page - which is why it is a list of its
+    # own rather than `FILTER_ORDER`.
+    "/trend": FILTER_ORDER + ("tests", "mode", "tz", "lang"),
+
+    # A build's own page reads no window and no tree - `builds._build_cell` says why -
+    # but it does read `limit`: the four lists it draws page at that size (`ui.pager`),
+    # so a page that spelled the size out and then dropped it on the next page link
+    # would send the reader back to page one of fifty.  The named offsets the four
+    # pagers write need no entry here: `_url` keeps an override the caller wrote by hand.
+    #
+    # `test` is here because one pair's run history is drawn on this route: the `ran`
+    # column's pill links to `/local/<build_id>?test=<test>` and the page lists every
+    # archived console of that pair (`builds._run_history_panel`).  `test` is a `Filter`
+    # field already (`one_of("test", TESTS, "")`), so the key needs no `PAGE_STATE` entry
+    # and no second parser - it only had to stop being dropped out of the link.
+    "/local/": ("api", "lang", "limit", "test", "tz"),
 }
 
-# What a page hands on when the reader leaves it.  Smaller than `ROUTE_KEYS` on
-# purpose: whoever moves from `/jobs` to the merged builds page wants the window,
-# not the verdict they typed on the jobs page.  This is the §2 carry table.
+# Page state: the keys a route reads that are **not** conditions, and therefore not
+# `Filter` fields.  `state` is absent because it *is* one (a condition on two other
+# screens), so `from_query` already carries it.  Per route, because that is the only
+# true statement: `kind` means nothing to `/analysis` and `older` means nothing to
+# `/runs`, and a state key attached where no page reads it is a URL that says the
+# reader asked for something nobody looked at.
+#
+# It is a separate table from `ROUTE_KEYS` and not a comment on it, because the two
+# answer different questions: `ROUTE_KEYS` is *what a link into this route must carry*
+# (conditions included), and this is *what the route reads off the query and puts on
+# the check* (`design/serve.py::_page_state`) - the keys `to_query()` cannot speak for,
+# because it only knows `Filter` fields.
+PAGE_STATE = {
+    "/runs": ("kind",),
+    "/worker": ("mode", "platform", "runtime", "since", "local"),
+    # `/trend` has **no** entry, and it is the one station that has none: its two own
+    # keys are both `Filter` fields (`tests` and `mode`, `models.Filter`), so
+    # `from_query` parses them and `to_query` spells them and nothing has to be attached
+    # to the check here.  Page state is the mechanism for a key `Filter` cannot speak
+    # for, and neither of those two is one: `mode` is a `Filter` field rather than an
+    # entry here because a key `to_query` leaves out is a key every link, every bar and
+    # every hidden field has to be taught about by hand, and the trend page's whole
+    # picture changes with this one control.
+    #
+    # `/analysis` used to draw the chart too and never read a mode - only `/trend` calls
+    # `_chart_panel` now - so the key lives on the one route that draws what it selects.
+    "/analysis": ("older", "newer", "vs"),
+    "/analysis/": ("older", "newer", "vs"),
+}
+
+# The two questions `/trend`'s chart can answer, in the order its control draws them
+# (`trend._mode_field`).  `MODE_CUMULATIVE` is the empty string so that a page which
+# never asked for a mode is byte-for-byte the page it was before the key existed, which
+# is the rule every key added to a URL here follows.
+#
+# The names live here and not in the page because **two modules need them**: the control
+# is `trend.py`'s and the arithmetic is `data._points`'.  A literal spelled in both is
+# the drift this tree writes a function to avoid, and `data.py` is not allowed to import
+# a page module (`lib/gui/design/pages/*` reads from `data`, never the other way).
+MODE_CUMULATIVE = ""
+MODE_EACH = "each"
+CHART_MODES = (MODE_CUMULATIVE, MODE_EACH)
+
+# The page-state keys a reader may answer with **several** values at once, read the way
+# the multi-valued `Filter` axes are (`forms._names`): every value the query carried,
+# joined into the one comma spelling `to_query` and every link already carry.
+#
+# `kind` is the only one, and it is the one whose control forced the distinction.
+# `/runs`' box used to be a select whose value was the whole comma list - a value no
+# option carried - so `_kind_options` appended it as a single `(current: a,b,c)` entry
+# and the reader saw one long word where seven ticks were in force.  Drawn as chips
+# (`ui.multi`) the box says what the table is doing, but each chip submits its own
+# `kind=` - and `design/serve.py::_page_state` reads **one value per key** for every
+# other entry above, because those really are single answers: one `mode`, one `older`,
+# one `newer`, one build id each.  A key listed here is the exception, and naming it
+# here is what keeps the general rule general.
+MULTI_PAGE_STATE = ("kind",)
+
+
+def _by_prefix(route: str, table: dict) -> tuple:
+    """The names a route's own entry in `table` holds, by **longest prefix**.
+
+    `/analysis/<id>` is the same page's keys (`/analysis/`) plus the build id in the
+    path, and `/local/<id>` reads the api key even though it is not a station.  An
+    exact-match lookup made a detail route's whitelist empty, so a link into one
+    comparison silently dropped the order and the comparison cap it was made under -
+    and a comparison read out of the context it was made in is a different comparison.
+
+    `"/"` is a route and also a prefix of every route, so it is left out of the loop:
+    leaving it in made every link that named no `carry` inherit the builds page's whole
+    filter.  Its own keys are already in from the exact lookup.  One spelling of the
+    rule, read by `route_keys` and `state_keys` - and `_url` filters by the same rule,
+    which is what makes a link and a pager agree about what a route reads.
+    """
+    wanted = set(table.get(route, ()))
+    for name, allowed in table.items():
+        if name != "/" and name.endswith("/") and route.startswith(name):
+            wanted |= set(allowed)
+    # Sorted, because a set has no order and this is a list of names: what a caller does
+    # with it is decide membership, and `_url` re-orders the query by `FILTER_ORDER`
+    # whatever order it was handed.
+    return tuple(sorted(wanted))
+
+
+def route_keys(route: str) -> tuple:
+    """Every query key a route reads: its `ROUTE_KEYS` entry, detail routes included."""
+    return _by_prefix(route, ROUTE_KEYS)
+
+
+def state_keys(route: str) -> tuple:
+    """Every page-state key a route reads: its `PAGE_STATE` entry, same rule."""
+    return _by_prefix(route, PAGE_STATE)
+
+
+# What a page hands on when the reader leaves it.  This is the §2 carry table.
+#
+# **It used to be smaller than `ROUTE_KEYS` on purpose**, and the stated reason was
+# "whoever moves from `/jobs` to the merged builds page wants the window, not the verdict
+# they typed on the jobs page".  The operator overruled that: 「整个界面的值就是都是持久的
+# 除非你特意点击」 - a value the reader set stays set while they move around, and the one
+# thing that clears it is 重来 (`start over`), which is a link and therefore spells the
+# cleared question out loud.  So the four kbuild stations now hand on the whole question.
+#
+# The four can, because they read **one vocabulary**: `state` is `KBUILD_STATES` on all
+# four and `verdict` is a test's on all four, so a condition means the same thing wherever
+# it lands.  That is exactly what `/runs` and `/worker` cannot say - see their entries
+# below - and it is why this is a widening of four entries and not of the table.
 #
 # `/` carries the union of the three pages it replaced - the conditions the three
 # of them read are now the conditions of one table, and a nav link that dropped
@@ -688,13 +929,58 @@ ROUTE_KEYS = {
 # imported cleanly), which is why both checks run after every edit and before any
 # restart, together with `docs/gui-rework/tools/test_form_body.py` - that file imports
 # this module *and* exercises it, so it is a canary for both failures at once.
+# `tz` is in **every** entry below, which is the one key this table carries to all six
+# stations.  The others are windows and conditions a station is about; the clock is
+# not about any of them - it belongs to the reader, it is set in the top bar that every
+# station wears, and a nav link that dropped it would have the bar and the page
+# disagree the moment the reader moved (`shell.tz_switch` reads `view.check.tz`, so the
+# bar's `aria-current` would move back to 本机 while the URL still said `tz=utc`).
 NAV_KEYS = {
-    "/": ("tree", "branch", "days", "limit", "api", "origin", "missing", "has",
-          "evidence", "lang"),
-    "/jobs": ("tree", "branch", "days", "limit", "test", "api", "lang"),
-    "/runs": ("api", "lang"),
-    "/worker": ("tree", "limit", "api", "lang"),
-    "/analysis": ("tree", "limit", "test", "api", "lang"),
+    "/": FILTER_ORDER + ("tz", "lang"),
+    "/jobs": FILTER_ORDER + ("tz", "lang"),
+    # `tests` joined this entry when `/analysis` grew its own reader of that key (the
+    # bars panel draws a region per test, `ROUTE_KEYS["/analysis"]`), and the two kbuild
+    # stations now hand the set to each other: a reader who asked for `boot` and
+    # `kselftest-kvm` on one of them and clicks the other keeps the two tests rather
+    # than meeting the whole catalogue again.  It stays out of the three entries that
+    # read no such key - `_url` narrows `carry` by `route_keys(target)`, so an entry
+    # there could never arrive, and an entry that cannot arrive reads like a promise.
+    "/analysis": FILTER_ORDER + ("tests", "tz", "lang"),
+    # `/runs` and `/worker` keep a short list, and the reason is not tidiness: **the same
+    # key means a different thing on either side of the door.**  `state` is `KBUILD_STATES`
+    # on the four stations above, a *run*'s state on `/runs` (running/done/failed/
+    # cancelled), and a *queue node*'s on `/worker` (available/reserved/running/…), so
+    # `?state=done` carried from `/jobs` into `/worker` would ask a question about queue
+    # nodes and get a build's answer for it - it matches on the one word the two
+    # vocabularies share and matches nothing at all on `available`.  `/worker`'s
+    # `platform`/`runtime`/`mode` and `/runs`'s `kind` are the same shape: a vocabulary one
+    # page owns.  What the two of them share with the rest is the stack, the window and the
+    # clock, and that is what they carry.
+    #
+    # `/worker`'s entry used to spell a `tree` as well, and nothing was lost by dropping
+    # it: `ROUTE_KEYS["/worker"]` has no such key, so `_url` narrowed it away on every
+    # link that ever passed it.  An entry that cannot arrive is worse than no entry - it
+    # reads like a promise the page keeps.
+    "/runs": ("api", "tz", "lang"),
+    "/worker": ("limit", "api", "tz", "lang"),
+    # `/trend` reads the same vocabulary as `/`, `/jobs` and `/analysis` and adds one key of
+    # its own: `tests`, the *set* of tests it draws a line per (`Filter.tests`).  It is the
+    # fourth kbuild station and it hands on the fourth kbuild question.  Measured before
+    # this entry was widened: a reader who set six conditions on `/trend` and clicked any
+    # station in the bar kept exactly one of them, because the entry listed `tree` and
+    # nothing else of the sort.
+    #
+    # `/trend` is the **only** station that reads `tests`: `_url` narrows `carry` by
+    # `route_keys(target)`, so `/`, `/jobs`, `/runs`, `/worker` and - since the bars
+    # panel moved there - `/analysis` drop it the way they drop `verdict`.  The link back
+    # to `/trend` (the `aria-current` one) keeps it, so a reader who chose two tests and
+    # clicked their own station comes back to the same combination rather than the whole
+    # catalogue.
+    #
+    # `mode` rides with them (`Filter.mode`), and here the entry earns its keep exactly as
+    # it does for `tests`: a reader who switched the curve to each build's own values and
+    # then looked at another station comes back to the picture they were reading.
+    "/trend": FILTER_ORDER + ("tests", "mode", "tz", "lang"),
 }
 
 # The words the stylesheet has a colour for, one entry per pill kind.  The value
@@ -754,6 +1040,9 @@ _LABELS: dict[str, dict[str, str]] = {
                   "reserved": "job_state.label.reserved", "closing": "job_state.label.closing"},
     "run_state": {"running": "run_state.label.running", "done": "run_state.label.done",
                   "failed": "run_state.label.failed", "cancelled": "run_state.label.cancelled"},
+    # The two clocks a stamp is printed in.  A display choice, and the labels say which
+    # value is the stored one - "as stored" is the honest word for the second.
+    "tz": {"local": "tz.label.local", "utc": "tz.label.utc"},
 }
 
 

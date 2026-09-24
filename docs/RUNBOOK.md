@@ -198,8 +198,9 @@ python3 verify.py            # everything
 python3 verify.py --quick    # leaves out the slow page renders
 ```
 
-It runs every check and reports all of them - a gate that stops at the first failure hides the
-other nine. Exit status is 3 when any of them failed.
+It runs every check and reports all of them - a gate that stops at the first failure hides every
+check behind it. Exit status is 3 when any of them failed. The list is `CHECKS` in `verify.py`,
+and there are no checks outside it.
 
 | check | what it covers |
 |---|---|
@@ -210,13 +211,17 @@ other nine. Exit status is 3 when any of them failed.
 | `dom` / `notice` | the page's script, driven in node against a DOM stub |
 | `config cache` | one request parses the workspace once |
 | `form body` | a POST carries the form's own body |
+| `ledger history` | a re-run keeps the record it replaced (`<test>.history.jsonl`) |
+| `callback override` | where a report goes, at both delivery sites, and the one-shot boundary |
 | `pages` | every page renders, in both languages (the slow one) |
 | `pipeline yaml` | the PR1 test profile still parses (**the deliverable**) |
 | `accept` | the page over HTTP, only with `--base URL` |
 
 `callback body` and `pipeline yaml` need the upstream clones and report themselves as skipped
 until `deploy/setup.sh` has made them. The checks' own scripts ship with this tree
-(`tools/gate/`), so a fresh clone can run the gate immediately: 8 passed, 2 skipped, exit 0.
+(`tools/gate/`), so a fresh clone can run the gate immediately; the number of checks is
+whatever `CHECKS` holds and it grows as rules are added, so read the run's own last line
+rather than a number written down here.
 
 ## When something goes wrong
 
@@ -242,6 +247,16 @@ and the exception.
 **A ledger record that will not parse.** `Ledger.read()` raises on purpose ("a ledger that
 quietly loses rows is worse than none"), and every entry point turns that into exit 3 with a
 message rather than a traceback.
+
+**Reports going to the pipeline's endpoint instead of yours.** The callback URL arrives inside
+the job definition the pipeline dispatched, so nothing in this deployment chose it: the worker's
+sinks are the definition's (`poller.Poller.handle`), and `--callback-url` is deliberately not a
+worker flag. `/worker`'s *where a report goes* panel is where it is changed - type your endpoint
+in the box and press *apply*, which writes `var/state/callback-url` (empty clears it). The
+worker reads that file at every delivery, including the re-post of a report that is still
+pending, so no restart is needed. A one-shot `table.py run` is not affected: it posts only when
+it is given `--callback-url`. Both the box and the panel's `callback.url` row are drawn from the
+same read, so the page cannot show one destination while the worker uses another.
 
 ## Where the rest is
 

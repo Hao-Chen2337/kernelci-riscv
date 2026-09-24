@@ -126,14 +126,25 @@ PART: dict[str, dict[str, str]] = {
     # The worker page: what the button would claim, before it is pressed.  A count, so a
     # worker start that finds nothing is readable as "nothing to claim" rather than as a
     # failure - which is the difference the operator could not see.
-    "worker.would_claim": {"en": "{n} claimable now", "zh": "现在可领取 {n} 个"},
+    #
+    # The unit is the word "nodes" and not an implied one.  A bare `6 claimable now`
+    # sat two lines under the pair rail's `6 个` and next to a state file reading
+    # `seen 45`, and the operator's own report of this page was the question "6 of what,
+    # and 45 of what" - the three numbers count three different things (nodes this
+    # button's pair can take, nodes the loop has dealt with, pairs of platform/runtime
+    # that have work) and none of them said which.
+    "worker.would_claim": {"en": "{n} nodes claimable now", "zh": "现在可领取 {n} 个节点"},
 
     # Where the available queue actually is, one click per pair: the default pair on this
     # deployment claims nothing, and "nothing to claim" is not a useful thing to leave a
     # reader holding.
     "worker.pairs_lead": {"en": "the queue has work on these", "zh": "队列里有活的组合"},
 
-    "worker.pair": {"en": "{platform} / {runtime}: {n}", "zh": "{platform} / {runtime}：{n} 个"},
+    # `nodes` spelled out here too: the count is nodes, and the same page prints a count
+    # of pairs a few lines above it (`worker.would_claim` says "nodes" for the same
+    # reason - two counts a page apart should not be two units).
+    "worker.pair": {"en": "{platform} / {runtime}: {n} nodes",
+                    "zh": "{platform} / {runtime}：{n} 个节点"},
 
     # Why a platform is shown and not linkable.  Two sentences, because there are two
     # different facts: a name the vendored scheduler config does not declare (`_offered`
@@ -194,6 +205,13 @@ PART: dict[str, dict[str, str]] = {
 
     "delta.cap": {"en": "delta", "zh": "差异"},
 
+    # The ceiling of that box, which a reader cannot read off it: it is the page's own row
+    # count, so "compare every row" is two controls saying the same number rather than a
+    # third value to invent (`DEFAULT_DELTA`).  A `title=`, not a sentence on the bar: the
+    # box says the number in force and the cells below say what it stopped.
+    "delta.cap_title": {"en": "how many rows of this order spend a config read on their neighbours; the most is this page's row limit - set it to the same number to compare every row drawn",
+                          "zh": "这个顺序里有多少行会顺带读一次 config 跟邻居比；最大就是这一页的「行数」— 两处填一样的数就是画出来的每一行都比"},
+
     "delta.none_prev": {"en": "— the first row in this order", "zh": "— 这个排序里的第一行"},
 
     "delta.none_next": {"en": "— the last row in this order", "zh": "— 这个排序里的最后一行"},
@@ -233,12 +251,15 @@ PART: dict[str, dict[str, str]] = {
     "col.delta": {"en": "config delta", "zh": "config 差异"},
 
     # The column's own label, and the one place the rule is stated: a row with no
-    # `+n −n ~n` was **not** compared (it is past the cap, `DEFAULT_DELTA`), and the
+    # `+n −n ~n` was **not** compared (it is past the cap in force, `?delta=`, whose
+    # default is `DEFAULT_DELTA` and whose ceiling is the page's own row count), and the
     # click that would have produced the number is still there - those cells are doors
-    # into `/analysis/<id>?vs=<id>`, which prints the pair's whole diff.  Said here and
-    # not in the cells: 47 rows each carrying the same sentence is a wall, not a hint.
-    "col.delta_sub": {"en": "vs the row before (↑) and after (↓); no number: not compared, click for the whole diff",
-                        "zh": "对着上一行（↑）和下一行（↓）；没有数字：没比较，点开就是完整 diff"},
+    # into `/analysis/<id>?vs=<id>`, which prints the pair's whole diff.  **So is a cell
+    # that carries a number**: a number is the pair this page read, and the door opens the
+    # same comparison at full length.  Said here and not in the cells: 47 rows each
+    # carrying the same sentence is a wall, not a hint.
+    "col.delta_sub": {"en": "this row is the fork point: the pair before it leaves up (↑), the pair after it down (↓); click any cell - number or not - for that pair's whole diff",
+                        "zh": "这一行是分叉点：与上一行的差走上面（↑），与下一行的差走下面（↓）；点任意一格（有数字没有都行）就是那一对的完整 diff"},
 
     "col.n": {"en": "#", "zh": "序"},
 
@@ -417,6 +438,11 @@ PART: dict[str, dict[str, str]] = {
 
     "word.build": {"en": "build", "zh": "构件"},
 
+    # The pipeline a node sits on, as against the build it belongs to: `word.build` is
+    # the id of the `kbuild` node a job was dispatched for, and this is the chain of
+    # names that id is one element of.
+    "word.route": {"en": "route", "zh": "路线"},
+
     "word.owner": {"en": "owner", "zh": "owner"},
 
     "word.state_result": {"en": "state / result", "zh": "state / result"},
@@ -449,6 +475,15 @@ PART: dict[str, dict[str, str]] = {
 
     "chart.point": {"en": "{test} · {pct}% · position {n}", "zh": "{test} · {pct}% · 第 {n} 个"},
 
+    # The same tooltip on the **per-build** reading (`schema.MODE_EACH`).  The marker is
+    # one component and the percentage is the same three characters on screen in both
+    # modes, so the sentence that says which question the number answers has to be the
+    # caller's: here it is that build's own run and never a rate over everything up to
+    # that position (`data._own_pct` does the arithmetic, `_points` picks it).
+    "chart.point.each": {
+        "en": "{test} · {pct}% · position {n}, that build's own run",
+        "zh": "{test} · {pct}% · 第 {n} 个，这一个构建自己的那次"},
+
     # The arrow is the character and not `&rarr;`: this caption goes through
     # `words.both()`, whose four modes write `textContent`, and an entity would reach
     # the reader as those six characters after the swap (`words._swappable`).
@@ -465,13 +500,17 @@ PART: dict[str, dict[str, str]] = {
 
     # --- `/analysis`, the two `±` columns and the sentences a cell must not omit -------
     #
-    # The board draws **two** config-delta columns and says which neighbour each one is
-    # against; the tree had one word for both, which is why these two are the design's own
-    # pair, verbatim (`proto/words.py`'s names and its two values).
-    "col.delta_up": {"en": "config delta vs the row before (up)",
-                       "zh": "与上一行的配置差 (上)"},
+    # The fork's two arms.  The board drew **two** config-delta columns and said which
+    # neighbour each was against; the tree draws **one** and says it in the arm itself, so
+    # the `↑` / `↓` glyph in the cell and these two sentences - as the arms' `title=` - are
+    # the only things left naming a direction: a column's position used to carry it and one
+    # column has no position to carry it with.  The design's own two names are kept
+    # verbatim (`proto/words.py`), which is why they still read as columns.
+    "col.delta_up": {"en": "the pair before this row (↑): its config against the build above",
+                       "zh": "上一行那一对（↑）：它的配置和它上面那个构件比"},
 
-    "col.delta_down": {"en": "vs the row after (down)", "zh": "与下一行的配置差 (下)"},
+    "col.delta_down": {"en": "the pair after this row (↓): its config against the build below",
+                         "zh": "下一行那一对（↓）：它的配置和它下面那个构件比"},
 
     # The timeline's own column: `re.transitions()`'s count, in the board's word.
     "col.regressions": {"en": "regressions", "zh": "回归"},
@@ -511,25 +550,60 @@ PART: dict[str, dict[str, str]] = {
     "page.analysis.no_tap_note": {"en": "no row in this list holds TAP counts: {test} reports none",
                                     "zh": "这个列表里没有一行有 TAP 计数：{test} 不报"},
 
+    # What the comparisons cost this render, in the two answers a reader can act on
+    # differently: nothing was fetched (the page was read off this disk), or *n* configs
+    # were (and they stay in `var/configs/`, so the reload is the cheap one).  The count
+    # is `rows["fetched"]`, counted by `api.note_fetch` where the reads happen - a number
+    # the page prints rather than one it works out, because the only place that knows
+    # whether a `.config` came off the network or off `var/downloads/` is `drift.py`.
+    # Said under the `delta` cap that asked for the comparisons, and only when there was
+    # at least one pair to compare: a page with a single row read nothing.
+    "page.analysis.fetched": {"en": "{n} configs fetched from the API - the next look reads them here",
+                                "zh": "从 API 拉了 {n} 个 config — 再看一次就是读本地了"},
+
+    "page.analysis.fetched_none": {"en": "every config was already on this disk",
+                                     "zh": "config 都在本地，这次没上网拉"},
+
     # The pair chooser: the board's own bar ("compare two builds"), and the one sentence
-    # that says how a pair is chosen here - by ticking rows, not by typing ids.  It is also
-    # what the disabled `drift` button says in its `title=`, so the instruction and the
-    # refusal are one sentence.
+    # that says how a pair is chosen here - by ticking rows, not by typing ids.  The bar
+    # is the only place either is said, now that the panel below draws nothing at all
+    # until two rows are ticked (`_pair_panel`): the sentence about which end is older
+    # has one home, pointing at the table it is about.
     "page.analysis.pair": {"en": "compare two builds", "zh": "对比两个构建"},
 
     "page.analysis.pair_how": {
         "en": "tick two rows in the table below, then press compare: the upper tick is the older end",
         "zh": "在下面的表里勾两行，然后按对比：靠上那一行是旧的一端"},
 
+
     # The pass-rate chart.  Its three sentences are the board's own sub-line, a caption
-    # that states the axis **and the window**, and the one hint that names the two axes of
-    # this screen - the timeline is by date, this chart is by the order above, and side by
-    # side and unlabelled they read as one axis (`§10.12`).
+    # that states the axis **and the window**, and the line that says which axis it shares
+    # (`page.analysis.axes_note`, printed under the timeline panel above: one axis for the
+    # cells, the counts and this curve - it used to name *two* axes, §10.12, which is what
+    # the operator asked to have taken out).
     "page.analysis.chart": {"en": "pass rate in this order", "zh": "这个顺序下的通过率"},
 
+    # Two modes, two sentences, and the sub-line is where the page says which one is
+    # drawn (`analysis._chart_panel` picks the key off `rows["mode"]`).  The default is
+    # the **accumulated** reading, and its sentence has to carry the one thing the
+    # operator could not read off the picture: the line accumulates from the **left end
+    # of this order** - the oldest position the window drew - and a flat stretch inside
+    # the line is a position with no record, carrying the value the last run left
+    # (「累计为什么还会有断层存在呢…其实累计是从前开始还是后面的」).  A break is therefore
+    # only ever *outside* the records, before the first or after the last, which is what
+    # the second clause says.
     "page.analysis.chart_sub": {
-        "en": "one line per test; a break is a position the ledger has nothing for",
-        "zh": "每个测试一条线；断开的地方是账本里没有记录的位置"},
+        "en": "one line per test, each in a band of its own, every band 0-100%: each line accumulates from its own first record on the left, so a gap inside it carries the last value and only the ends break",
+        "zh": "每个测试一条线，各占一条自己的带，每条带都是 0-100%：每条线从自己最左边那条记录开始累计，所以线里面的空缺沿用上一次的值，只有两头会断开"},
+
+    # The per-build reading (`schema.MODE_EACH`): the same points, and the number at each
+    # one is **that build's own run** rather than a rate over everything up to it.  This
+    # is the mode the operator asked for in as many words (「切换一种模式就是改成能显示具体
+    # 每一项的通过数值那种」), and the clause a reader needs is that a gap is now a gap -
+    # nothing is carried, so the line stops where the records do.
+    "page.analysis.chart_sub_each": {
+        "en": "one line per test: each point is that build's own run, so a position with no record is a break and nothing is carried across it",
+        "zh": "每个测试一条线：每个点就是那个构建自己那一次的数值，没有记录的位置就是断开的，不沿用任何值"},
 
     "page.analysis.chart_cap": {
         "en": "the same {n} positions as the table above, in this order; the window is the newest {cap} builds, so each legend entry says how many of that test's runs are inside it",
@@ -540,24 +614,129 @@ PART: dict[str, dict[str, str]] = {
         "zh": "这个窗口里没有任何一次运行有记录，画不出线：缺口本身就是答案"},
 
     "page.analysis.axes_note": {
-        "en": "these positions are by date; the chart below runs along the order above, so the two are not the same axis",
-        "zh": "这里的格子按日期；下面的曲线按上面的排序，两者不是同一个轴"},
+        "en": "these cells and the chart below are the same axis: the page's own order, and the counts in this panel are that window's",
+        "zh": "这里的格子和下面的曲线是同一个轴：这一页的顺序；这几列的统计也是这个窗口里的"},
 
-    # The timeline panel's sub-line: the board's own sentence about its axis, which is the
-    # half of "two axes" this panel states (`page.analysis.trend_title` is its title).
+    # The panel under the timeline: **what was compared**.  It has been through two
+    # shapes and the operator asked for both changes.  It began as the pass → fail
+    # transitions alone - the integer the timeline's 回归 column is a count of - and that
+    # was the wrong list, because a window of 21 records makes twenty comparisons and
+    # three of them are regressions, so four rows under a heading about regressions reads
+    # as "the ledger holds four things" (「4 行这里为什么只显示 4 行，我的节点远远没这么
+    # 少」「我是想叫你列出所有比较的那个东西，看看我比较的是什么」).  So it became every
+    # adjacent pair, one row per pair - and a pair is still the wrong *subject* for a row,
+    # because it prints the build in the middle of the window twice and never says which
+    # one the row is about (「这里应该给是一 build 为主吧」).  The rows are now one per
+    # record, oldest first, and 判定 is read as an attribute of the record: the step into
+    # it from the row above.
+    "page.analysis.compares_title": {"en": "every record, against the one before it",
+                                     "zh": "每条记录，和它前面那条比"},
+
+    # The sub-line carries all three numbers and the panel needs all three: `{m}` is what
+    # the list is (the window's records, one row each), `{n}` is how many comparisons they
+    # make - one fewer per test, and the number this list used to be a row per - and `{r}`
+    # is what the timeline above counted (the regressions among them).  A reader who sees
+    # only `{r}` reads the four-row panel again; a reader who sees only `{m}` cannot check
+    # the timeline above, which counts the other one.
+    "page.analysis.compares_sub": {
+        "en": "{m} records in this window, {n} comparisons between them, {r} of them a regression",
+        "zh": "这个窗口里 {m} 条记录，相邻比较 {n} 次，其中 {r} 次是回归"},
+
+    "page.analysis.compares_none": {
+        "en": "no test has two records in this window, so there is no pair to compare: widen the window or the filter",
+        "zh": "这个窗口里没有哪个测试有两条记录，没有可比较的一对：把窗口或筛选放宽一点"},
+
+    # The column's heading.  `判定` and not `结果`: the last column prints the record's own
+    # verdict, and this one is what the **step into it** was.
+    "page.analysis.cmp_col": {"en": "judged", "zh": "判定"},
+
+    # The six words the column can print.  `窗口起点` is not a step at all: it is the
+    # oldest record in the window, which has no row above it to have been compared with -
+    # and it is a word rather than a dash because the record is real and only the
+    # comparison is missing.  `回归` is the transition `re.transitions()` returned;
+    # `仍在失败` is the failure right after a failure that is *not* a new regression (the
+    # rule that stops one bad build reporting one every night it stays bad); `恢复` is a
+    # failure followed by a pass; `仍通过` is nothing moving; and `其他` is the honest word
+    # for the rest - `incomplete` and `error` are verdicts too, and a step into or out of
+    # one is none of the four above.
+    "page.analysis.cmp_first": {"en": "window's oldest", "zh": "窗口起点"},
+
+    "page.analysis.cmp_regression": {"en": "regressed", "zh": "回归"},
+
+    "page.analysis.cmp_failing": {"en": "still failing", "zh": "仍在失败"},
+
+    "page.analysis.cmp_recovered": {"en": "recovered", "zh": "恢复"},
+
+    "page.analysis.cmp_holding": {"en": "still passing", "zh": "仍通过"},
+
+    "page.analysis.cmp_other": {"en": "other", "zh": "其他"},
+
+    # The clock control.  A **display** choice and nothing else: the stamps on disk are
+    # UTC and stay UTC, `local` is this machine's clock (what `/worker` already prints
+    # its records in), and the stored value rides in the `title=` of every stamp it
+    # changes.
+    #
+    # This key is the top bar's group label now (`shell.tz_switch`) and no longer any
+    # bar's box label, which is the one thing the move changed about it: 「时间显示成」 is
+    # a label over a select, and over a two-link segment it reads as the group's name,
+    # which is what `aria-label` wants anyway.
+    "filter.tz": {"en": "times shown in", "zh": "时间显示成"},
+
+    # The select's own two options - long, because a select has the room and "this
+    # machine's clock" answers the question a reader actually has.
+    "tz.label.local": {"en": "this machine's clock", "zh": "本机时钟"},
+
+    "tz.label.utc": {"en": "UTC (as stored)", "zh": "UTC（存的就是这个）"},
+
+    # The top bar's switch, where the room is a segment in a row with the language pair
+    # and the theme button: two words, the register `lang.en`/`lang.zh` beside them set.
+    # `local` is `本机`, which is what this strip already calls the machine on `/`
+    # (`counts.here`), and `UTC` is spelled the same in both columns because it is a
+    # clock's name rather than a word either language has an opinion about.
+    "tz.local": {"en": "local", "zh": "本机"},
+
+    "tz.utc": {"en": "UTC", "zh": "UTC"},
+
+    # The timeline panel's sub-line: the board's own sentence about its axis, with the
+    # `newest on the right` half replaced by the order the cells now actually use - this
+    # panel's positions are `rows`, the page's own order and window, the same ones the
+    # chart below runs along (`page.analysis.trend_title` is its title).
     "page.analysis.timeline_sub": {
-        "en": "newest on the right; a gap is a position the ledger has nothing for",
-        "zh": "右边最新；空格是账本里没有记录的位置"},
+        "en": "in the order above; a gap is a position the ledger has nothing for",
+        "zh": "按上面的排序；空格是账本里没有记录的位置"},
 
-    # The bars panel: the board's own title and sub-line, and the one clause the sub-line
-    # was missing.  Without it "one bar per build" can be read as a running total, which is
-    # the opposite of what the panel draws - the numbers are that build's own records for
-    # the test in force.
+    # The bars panel: the board's own title, and the sub-line rewritten twice - once for
+    # the panel that replaced the board's bars, and once for the numbers it prints.
+    #
+    # The numbers are the record's **own case counts** and not a 1/0 verdict: `8 2 0` is
+    # eight cases passed, two failed, none skipped, and it is the same `{total, failed,
+    # skipped}` triple `/analysis`'s picks table prints in its TAP column - because a line
+    # that says `1 0 0` for every build says nothing a reader can rank the builds by
+    # (「我要显示的是那个更详细的数值，比如 8 2 0 或者 10 0 0 或是 12 2 0 等等的，而不是
+    # 什么 1 0 0」).  A test that genuinely reports no TAP counts (a boot record) keeps the
+    # verdict reading, and this sentence is where that is admitted.
+    #
+    # The order of the three is fixed in every region, so "pass, fail, then what did not
+    # answer" is said once here rather than on each line.  The panel moved off `/analysis`
+    # - the page is about a pair and this panel is about one test over the window
+    # (「这个分析的这里的这部分是不是可以移动走」) - so this is now `/trend`'s sub-line.
     "page.analysis.bars": {"en": "how each build came back", "zh": "每个构件的结果"},
 
     "page.analysis.bars_sub": {
-        "en": "one bar per build: pass, fail, then what did not answer - that build's own records for {test}, never a running total",
-        "zh": "每个构件一条：通过、失败、然后是没有答复的 —— 那是这个构件自己在 {test} 上的记录，不是累计"},
+        "en": "one region per test and one line per build: that build's own numbers - cases passed, failed, then skipped - and a test that reports no case counts falls back to its verdict",
+        "zh": "每种测试一个区域、每个构件一条线：这个构件自己的数值 —— 通过的用例、失败、然后跳过；不上报用例数的测试退回判决"},
+
+    # --- `/trend`'s own sentences ------------------------------------------------
+    #
+    # The hint under the chart's mode segment.  A segment has no room to say what it
+    # does - the two labels are two words - so the sentence lives here, the way the
+    # worker's own segment carries its two (`worker.mode_note.once`/`.resident`).  It is
+    # one sentence and not one per mode: what a reader needs is the difference, and the
+    # two halves are only a difference read together.  The chart's own sub-line
+    # (`page.analysis.chart_sub` / `_each`) says which one is drawn in full.
+    "page.trend.mode_note": {
+        "en": "how the curve is read: totals counts everything up to a position, per build is that one build's own run",
+        "zh": "曲线怎么读：累计是把到这一格为止的全部算进去，逐项是这一个构建自己那一次"},
 
     # --- the detail route `/analysis/<build_id>?vs=<other>` ----------------------------
     #

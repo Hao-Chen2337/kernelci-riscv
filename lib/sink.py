@@ -14,6 +14,7 @@ import json
 import os
 import re
 import time
+import urllib.parse
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -35,6 +36,15 @@ if TYPE_CHECKING:
 LEDGER = "ledger"
 CALLBACK = "callback"
 
+# The history that sits beside each record: one line per run of one pair, oldest
+# first (`layout.results_history`).  **The suffix must not end in `.json`**, and that
+# is the whole reason it is spelled this way: `_build_records` lists a build's
+# directory with `name.endswith(".json")`, so a history named `<test>.json` - or
+# `<test>.history.json` - would be read back as a second record of the same pair, and
+# every reader of the ledger would see a pair that disagrees with itself.  `.jsonl`
+# cannot match that test, and it says what the file is: one JSON object per line.
+HISTORY_SUFFIX = ".history.jsonl"
+
 # A remote token shared with the pipeline admins: read from the environment
 # every time it is needed, never a parameter, never held in a config object.
 TOKEN_ENV = "PULL_LABS_CALLBACK_TOKEN"
@@ -43,6 +53,20 @@ TOKEN_ENV = "PULL_LABS_CALLBACK_TOKEN"
 # which is the second half of the resolution `deploy/stack.sh` already does.  The
 # name is `layout.state()`'s, so a moved workspace moves it (grep `local-callback`).
 SETTINGS_NAME = "local-callback.toml"
+
+# Where a report goes when the operator says so rather than the definition
+# (`callback_override`).  One URL, one line, under `var/state/` beside the worker's
+# own file - and absent, which is the ordinary case, means the definition's URL.
+OVERRIDE_NAME = "callback-url"
+
+# The one value that file may hold instead of a URL: not a destination but the decision
+# that there is none ("关掉回调" - run here and report nowhere).  It is a word rather than
+# an empty file because **absent and empty are already taken**: the file missing or blank
+# is the ordinary case and means the definition's URL, so "turn it off" needs a spelling
+# of its own or the two would be one.  `off` and not a `scheme:` shape, because every
+# value this file accepts is a URL and a URL cannot be a bare word - and because it is
+# what an operator would type into the box if the box did not say it first.
+OFF = "off"
 
 # The runtime section's one line, read with the regex `stack.sh` uses rather than
 # parsed: python3 here is 3.10 and has no `tomllib`, `lib/config.py` records the
@@ -104,7 +128,15 @@ class Sink:
 
 
 class Ledger(Sink):
-    """The durable record: one JSON file per (build, test).  History, never pruned."""
+    """The durable record: one current JSON file per (build, test), and its history.
+
+    Two files per pair, not one.  `<test>.json` is the pair's *current* answer and is
+    rewritten by every run - every reader in this tree joins on it (`Ledger.read`,
+    `re.Records`, the GUI's counts) - and `<test>.history.jsonl` keeps the runs it
+    replaced, because the question the current file cannot answer is the one the
+    operator asked of a pair that failed: how often did this run, and what did it say
+    each time.  Both are history and neither is pruned.
+    """
 
     def name(self) -> str:
         """`"ledger"`."""
@@ -115,23 +147,61 @@ class Ledger(Sink):
         return True
 
     def deliver(self, job: Job, outcome: Outcome) -> str:
-        """Write the record and name where it went; a write that failed is reported, never fatal."""
+        """Write the record and name where it went; a write that failed is reported, never fatal.
+
+        **`LedgerError` is caught with `OSError`, and that is not the same list by
+        accident.**  `write` raises `LedgerError` for the one failure `OSError` does not
+        describe - a history line that cannot be read back, which is a fact about the
+        bytes already on disk rather than about this call (`_history_at`).  A ledger that
+        let that escape would be the opposite of what this class promises: `sink.deliver`
+        builds its notes in one dict comprehension, so a sink that raises takes every
+        sink behind it down with it, and the callback - the delivery the operator is
+        actually waiting on - would never be sent because a *record* could not be written.
+        """
         filled = replace(outcome, build_id=outcome.build_id or job.build_id,
                          test=outcome.test or job.test)
         try:
             path = self.write(filled)
-        except OSError as error:
+        except (OSError, errors.LedgerError) as error:
             return f"NOT recorded: {error}"
         return f"recorded in {path}"
 
     @staticmethod
     def write(outcome: Outcome | dict) -> str:
-        """Write one record atomically; a key outside RECORD_FIELDS raises rather than being dropped."""
+        """Write one record atomically; a key outside RECORD_FIELDS raises rather than being dropped.
+
+        **One run writes two files**, and the second is what makes a re-run worth
+        asking for: `<test>.json` stays the pair's current answer, exactly as it was,
+        while `_append_history` adds this run to `<test>.history.jsonl` (see
+        `HISTORY_SUFFIX` for why the history is not a second `.json`).
+
+        **The history line goes first and the record second**, so that `deliver`'s
+        message is true whichever of the two fails: that note is about the record -
+        `recorded in <path>`, or `NOT recorded: <why>` - and writing the record last
+        makes a history that could not be written mean "nothing was written", rather
+        than a record that landed under a note saying it did not.
+        """
         filled = _filled(outcome)
         path = layout.results(filled.build_id, filled.test)
+        _append_history(filled)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         atomic.write_text(path, filled.json())
         return path
+
+    @staticmethod
+    def history(build_id: str, test: str) -> list[Outcome]:
+        """Every record this pair ever wrote, oldest first; `[]` when it has none.
+
+        The surviving record is the newest run of a pair and this is all of them, which
+        is what the page's run-history panel needs: a run whose record a later one
+        replaced is still a run whose verdict can be read (`builds._run_history_panel`).
+
+        A line this reader cannot parse raises, naming its file and line - the same
+        rule and the same vocabulary as `_record_at`, for the same reason: a reader that
+        silently dropped lines would answer "what did this pair do" with a shorter list
+        and no way for the answer to say so.
+        """
+        return _history_at(layout.results_history(build_id, test))
 
     @staticmethod
     def read(build_id: str = "") -> list[Outcome]:
@@ -173,12 +243,31 @@ class Callback(Sink):
         return CALLBACK
 
     def wants(self, job: Job, outcome: Outcome) -> bool:
-        """Only when a URL is known: this sink's own, else the definition's."""
+        """Only when a URL is known: this sink's own, else the definition's.
+
+        **`OFF` is not a fall-through.**  This sink is handed what `delivery_url`
+        resolved, and "off" is a resolution - a deployment that has turned the callback
+        off must not find the definition's URL underneath it, which is exactly what the
+        `or callback_url(job)` below would do with an empty value.  So the check comes
+        first, and an off callback is one this run does not want: `deliver_all` skips it,
+        the ledger still gets its record, and nothing goes pending over a report that was
+        never meant to be sent.
+        """
+        if self.url == OFF:
+            return False
         return bool(self.url or callback_url(job))
 
     def deliver(self, job: Job, outcome: Outcome) -> str:
         """POST the body; 4xx is permanent, 5xx or a network failure is retried, then transient."""
         url = self.url or callback_url(job)
+        if url == OFF:
+            # Reached only by the re-post, which calls this directly and not through
+            # `wants` (`poller._repost_pending`): a report the operator's own setting has
+            # nowhere to send stays pending rather than being thrown away, so turning the
+            # callback back on delivers it.  Transient for the same reason.
+            raise CallbackMissingURLError(
+                f"callbacks are off (var/state/{OVERRIDE_NAME} says {OFF!r}); "
+                "result NOT reported, kept pending")
         if not url:
             raise CallbackMissingURLError(
                 "no callback URL in the job definition; result NOT reported, kept pending")
@@ -289,6 +378,25 @@ def callback_token() -> str:
     return configured
 
 
+def token_source() -> str:
+    """Which of the two places `callback_token()` reads a token from is answering.
+
+    `"env"` is `$PULL_LABS_CALLBACK_TOKEN`, `"settings"` is the rendered
+    `var/state/local-callback.toml`, and `""` is neither - the case where a callback
+    goes out with no `Authorization` header and comes back 401 while the ledger records
+    the run, which is the exact failure this function exists to make visible.
+
+    **The token is not in the answer and must never be**, which is why the caller gets a
+    word and not the value: `/worker` prints this, a page is a thing that gets
+    screenshotted and pasted into a chat, and the difference between "env" and
+    "settings" is the whole of what an operator can act on anyway (`deploy/stack.sh`
+    exports the first; a hand-run `pull_worker.py` inherits neither).
+    """
+    if os.environ.get(TOKEN_ENV):
+        return "env"
+    return "settings" if _settings_token() else ""
+
+
 def deliver(job: Job, outcome: Outcome, sinks: tuple[Sink, ...] | None = None) -> dict[str, str]:
     """Hand one outcome to every sink that wants it, the ledger first and unconditional.
 
@@ -309,6 +417,99 @@ def callback_url(job: Job) -> str:
     """The callback URL the job definition records, or ''."""
     section = job.definition().get("callback") or {}
     return (section.get("url") or "") if isinstance(section, dict) else ""
+
+
+def callback_override() -> str:
+    """The URL this deployment reports to instead; '' for the definition's, `OFF` for none.
+
+    The one setting on this console that changes where a *result* goes.  A job node
+    carries the callback the pipeline that dispatched it declared - in production the
+    pipeline's own endpoint - and an operator running this deployment against their own
+    instance has no way to redirect that, because the URL arrives inside the definition
+    and nothing local reads it: the worker's sinks are the definition's (`poller.handle`),
+    and `--callback-url` is deliberately not a worker flag (`config.parse_poll`).  So the
+    redirect lives where the rest of this deployment's state lives, `var/state/`, and the
+    page that shows the return path is where it is set.
+
+    Read at the instant of delivery and never cached, like `callback_token`: the worker
+    is a long-lived process, and a setting the operator changes on the page has to take
+    effect on the next delivery rather than on the next restart.
+
+    Never raises.  An unreadable file means "no override" - the definition's URL is the
+    documented behaviour, and a delivery that goes to the pipeline's endpoint because a
+    local file was unreadable is better than a run whose result was thrown away.
+
+    The file's third answer is `OFF`, the one value that is not a URL: the deployment
+    reports nowhere (see `OFF`).  It is read here as itself and *not* folded into the
+    empty answer, because the two mean opposite things - empty is "use the definition's"
+    and `off` is "use nobody's".
+    """
+    try:
+        with open(layout.state(OVERRIDE_NAME), encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return ""
+    return text.strip()
+
+
+def set_callback_override(url: str) -> str:
+    """Write (or, for an empty *url*, remove) the override; returns what is now in force.
+
+    Three answers, and the return value is which one was written: a URL, `""` for "back
+    to the definition's" (the file is removed), or `OFF` for "nowhere".
+
+    **Only `http` and `https` with a host**, and that is the whole validation: this is a
+    URL a *token* is POSTed to, so a value with no scheme would be handed to `requests`
+    as a relative path (an error at delivery, long after the page said "saved"), and a
+    value like `file:///etc/...` is not a place a report can go.  Query strings and paths
+    are kept verbatim - the local stack's own callback carries both.  `OFF` passes that
+    check by being caught before it: it is the one accepted value that is not a URL, and
+    it is accepted because a reader who wants no callback has no URL to type.
+
+    Raises `ConfigError` for a URL it will not write, which is the page's 409 and not a
+    stack trace: the operator typed it, so the reader is the one who can fix it.
+    """
+    wanted = (url or "").strip()
+    path = layout.state(OVERRIDE_NAME)
+    if not wanted:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        return ""
+    if wanted.lower() == OFF:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        atomic.write_text(path, OFF + "\n")
+        return OFF
+    parts = urllib.parse.urlsplit(wanted)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise errors.ConfigError(f"not a callback URL: {wanted!r}")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    atomic.write_text(path, wanted + "\n")
+    return wanted
+
+
+def delivery_url(url: str) -> str:
+    """Where a report for this definition really goes: this deployment's override, else it.
+
+    **The one place the choice is made.**  Two callers ask - the worker's delivery
+    (`poller.Poller.handle`) and the re-post of a report that was refused
+    (`poller.Poller._repost_pending`) - and a second copy of `override or url` is how the
+    page and the worker would come to disagree about where the next report is going, which
+    is the exact question the panel exists to answer.
+
+    The answer may be `OFF`, and that is a real answer rather than an empty one: the
+    worker builds `Callback(delivery_url(…))` from this and nothing else, so a deployment
+    that reports nowhere has to arrive at the sink as `OFF` - an empty string here would
+    fall through to the definition's URL inside `Callback.wants` and post to the very
+    endpoint the operator turned off.
+
+    A one-shot run is deliberately *not* a caller: `table.py run` posts only when it is
+    given `--callback-url` (`RunConfig.sinks`), and a deployment setting that silently
+    turned that on would have a command POST to a remote service it was never asked to
+    talk to.
+    """
+    return callback_override() or url
 
 
 def _post(url: str, body: dict, session: requests.Session | None = None) -> str:
@@ -462,7 +663,12 @@ def _filled(outcome: Outcome | dict) -> Outcome:
 
 
 def _build_records(build_id: str) -> list[Outcome]:
-    """Every record of one build, in test-name order; none when it has no directory."""
+    """Every record of one build, in test-name order; none when it has no directory.
+
+    `.json` and nothing else: this listing is what makes `HISTORY_SUFFIX` load-bearing,
+    because a pair's history sits in this same directory and must not be listed here as
+    a second record of the pair.
+    """
     directory = layout.results(build_id)
     if not os.path.isdir(directory):
         return []
@@ -486,11 +692,103 @@ def _record_at(path: str) -> Outcome:
     except (OSError, ValueError) as error:
         raise errors.LedgerError(
             f"result record {path} is unreadable: {error}") from error
+    return _outcome_of(data, f"result record {path}")
+
+
+def _append_history(outcome: Outcome) -> None:
+    """Add one record to its pair's history, unless that run is already in it.
+
+    **The file is rewritten whole, through `lib/atomic.py`.**  Every write in this tree
+    goes through those two functions for one reason - a reader must never open a file
+    that is halfway written - and this is the one ledger file a *page* reads while a
+    worker writes it (`Ledger.history`).  `open("a")` would append without that
+    guarantee; the cost of the rewrite is a short line per run of a single pair.
+
+    **The append is idempotent, and that is a requirement rather than a nicety.**
+    `Ledger.write` is called more than once for one result in this tree (a retry, or a
+    second sink's delivery), and a history that grew a line each time would answer
+    "how often did this pair run" with a number that is not how often it ran.  The join
+    is `_same_run`, which is the page's own join (`builds._ledger_run`) spelled the same
+    way - so the history can never hold two lines a reader would join to one run.
+    """
+    path = layout.results_history(outcome.build_id, outcome.test)
+    known = _history_at(path)
+    if any(_same_run(one, outcome) for one in known):
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    atomic.write_text(path, "".join(json.dumps(one.record(), sort_keys=True) + "\n"
+                                    for one in [*known, outcome]))
+
+
+def _history_at(path: str) -> list[Outcome]:
+    """Every record one history file holds, oldest first; a file that is not there is `[]`.
+
+    A missing file is not an error: it is a pair no run has touched since the history
+    was added, and a reader that raised there would make every ledger written before
+    it unreadable.  An unreadable one is *not* "no history" either, and raises - the
+    distinction `_record_at` already draws between a record that is not there and one
+    that cannot be read.
+
+    A blank line is stepped over; anything else that is not one record raises, naming
+    the line.  `json.dumps` never writes a blank line, so a blank one is the file's own
+    whitespace rather than a record, and nothing is lost by not reading it as one.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except FileNotFoundError:
+        return []
+    except OSError as error:
+        raise errors.LedgerError(f"result history {path} is unreadable: {error}") from error
+    records: list[Outcome] = []
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            data = json.loads(line)
+        except ValueError as error:
+            raise errors.LedgerError(
+                f"result history {path} line {number} is unreadable: {error}") from error
+        records.append(_outcome_of(data, f"result history {path} line {number}"))
+    return records
+
+
+def _outcome_of(data, where: str) -> Outcome:
+    """One already-parsed record as an Outcome; a foreign key set raises, naming *where*.
+
+    `where` is the file - and the line, when the file is a history - so both readers
+    refuse in the same three sentences and neither has to be recognised from its
+    wording.  Two readers of one record shape is exactly how a field ends up dropped
+    by one of them, which is what the unknown-key check exists to prevent.
+    """
     if not isinstance(data, dict):
-        raise errors.LedgerError(f"result record {path} is not an object")
+        raise errors.LedgerError(f"{where} is not an object")
     unknown = sorted(set(data) - set(RECORD_FIELDS))
     if unknown:
         raise errors.LedgerError(
-            f"result record {path} holds field(s) {', '.join(unknown)} "
-            "this reader does not own")
+            f"{where} holds field(s) {', '.join(unknown)} this reader does not own")
     return Outcome(**{name: value for name, value in data.items() if name in RECORD_FIELDS})
+
+
+def _same_run(one: Outcome, other: Outcome) -> bool:
+    """Whether two records are the same run: the console they name, else the stamp.
+
+    `builds._ledger_run` reads a record against the runs of its pair in exactly this
+    order - the console's file name when the record has one, and the run's start stamp
+    when it has not - and this is that rule between two records instead of between a
+    record and a run, so the history can never hold two lines the panel would join to
+    one run.
+
+    Two records that both name a console are the same run when they name the same file
+    and not otherwise; as soon as one of them names none, the file names cannot decide
+    it and the stamp (with the test and the build id) is what is left.  A record with no
+    console is a run that printed nothing (`Job._keep_console` answers `""` for one) and
+    its stamp is the same `started` string its console's file name would have been built
+    from, which is why the fallback is the stamp on both sides of the ledger.
+    """
+    named = os.path.basename(str(one.log or ""))
+    other_named = os.path.basename(str(other.log or ""))
+    if named and other_named:
+        return named == other_named
+    return ((one.timestamp, one.test, one.build_id)
+            == (other.timestamp, other.test, other.build_id))

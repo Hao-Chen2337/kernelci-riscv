@@ -16,9 +16,31 @@ assert what it writes.  The markup below therefore keeps `body[data-drawn]`,
 `span.live-word`, `b.live-headword`, `span.live-count`, `div.live-body`,
 `ul.live-list`, `p.live-empty`, `.spin`, `<div id="notice" role="status"
 aria-live="polite">` as a **sibling** of the panel (never inside `.live-body`), and
-`<script>{_js(...)}{_JS}</script>` written exactly as `_js()` returns it -
+`<script>{_js(...)}</script>` written exactly as `_js()` returns it -
 `test_notice.js` parses `var I18N = …;` out of it with a regular expression, so
 re-formatting or re-serialising that output breaks a suite.
+
+**And `_js()` is the *whole* script - nothing may be appended to it.**  `_js()`'s own
+`return` ends `+ _JS`, so an extra `_JS` in the template inlined every line of the
+shipped script **twice**.  It was there, and nothing failed loudly: the page looked
+right and the second copy's `var` re-declarations were legal.  What it cost was that
+**every `addEventListener` was registered twice**, and neither of the ones that matter
+is idempotent:
+
+- the delegated `submit` listener ran twice per press, so one click on a command
+  button sent **two POSTs** and started **two activities**.  For the worker that is
+  two processes on one lock: the second exits 1 with "Another worker instance holds
+  the lock; exiting." and `/runs` draws it as a **failed** activity beside the run
+  that actually worked - an operator pressing start once and being handed a failure
+  they did not cause.  Measured 2026-09-23: three presses, three `-worker`/`-worker-2`
+  pairs, three of the six rows `failed`.
+- `setInterval(livePoll, 2000)` ran twice, so every open page made **two**
+  `/api/state` requests every two seconds - visible as back-to-back pairs in the
+  access log.  That is double the polling load on top of a render that was already
+  the expensive half.
+
+`test_notice.js` parses `var I18N = …;` out of this element and is satisfied either
+way, which is why a duplicated script survived the suites.
 
 **The panel is drawn here and re-drawn by the script, so the two row shapes must
 agree.**  `live_row()` writes the same cells, in the same order, with the same classes
@@ -76,10 +98,10 @@ from collections.abc import Iterable
 
 from ... import api as api_mod
 from ...i18n import LANGS, t
-from ..schema import LIVE_KEPT, NAV_KEYS
+from ..schema import DEFAULT_TZ, LIVE_KEPT, NAV_KEYS, TZS
 from ..urls import _url
 from . import style, ui, words
-from .script import _JS, _js
+from .script import _js
 from .words import both
 
 # route -> the navigation key of its own name.  The order is the board's, which is the
@@ -91,6 +113,7 @@ STATIONS = (
     ("/worker", "nav.worker"),
     ("/runs", "nav.runs"),
     ("/analysis", "nav.analysis"),
+    ("/trend", "nav.trend"),
 )
 
 # The design's own favicon: a data-URI, because this page has to open with no network.
@@ -158,6 +181,44 @@ def lang_switch(view, keep: Iterable[tuple[str, str]] = ()) -> str:
             f'{words.attr(view.lang, "aria-label", "shell.lang")}>{"".join(parts)}</span>')
 
 
+def tz_switch(view, keep: Iterable[tuple[str, str]] = ()) -> str:
+    """Which clock every stamp on the page is printed in: one link per clock.
+
+    The operator asked for this to stop being a page's own business (「就是能不能搞成
+    那种就是通用的就是在头顶上」), and it was never really one: `/analysis` drew the box
+    in its 更多筛选 row, `/trend` drew a second copy of it, and the four stations that
+    also print stamps - `/`, `/jobs`, `/runs`, `/worker` - had no way to ask at all.
+    A reader who wants their own watch rather than UTC wants it for the whole console,
+    so the control is in the bar that every station wears and the two pages that used
+    to draw one no longer do.
+
+    **Only the printing moves.**  Every stamp this console reads is UTC on disk and
+    every stamp it writes stays UTC (`Filter.tz`); this is a link that changes a
+    `?tz=`, not anything about which rows are read or when a command would run.  The
+    same is true of the clock in the top bar's own 绘制于: it is the request's wall
+    clock, drawn once, and nothing in `lib/run.py` or `lib/poller.py` reads `tz`.
+
+    A link pair and not a select, for `lang_switch`'s reason exactly: the console has
+    no script-free way to submit a control in the chrome, and a reader with the script
+    off must still be able to change the clock.  It is also the same `.seg` shape as
+    the language switch beside it, so the two read as one row of reader-owned switches.
+
+    The default clock is spelled by **not** spelling it (`_url` treats an empty
+    override as a removal), which is what keeps `?tz=local` out of every URL - unlike
+    the language switch, this key has no cookie behind it, so dropping it really does
+    fall back to the default and the 本机 link works from a `tz=utc` page.
+    """
+    parts = []
+    for one in TZS:
+        href = html.escape(_url(view.route, view.check, keep=keep, lang=view.lang,
+                                tz="" if one == DEFAULT_TZ else one))
+        current = ' aria-current="true"' if one == view.check.tz else ""
+        parts.append(f'<a href="{href}"{current}>{html.escape(t(view.lang, f"tz.{one}"))}'
+                     "</a>")
+    return (f'<span class="seg" role="group" '
+            f'{words.attr(view.lang, "aria-label", "filter.tz")}>{"".join(parts)}</span>')
+
+
 def theme_button(view) -> str:
     """The reader's own choice of ground, in the design's third state (`auto`).
 
@@ -220,7 +281,8 @@ def topbar(view, running: int, keep: Iterable[tuple[str, str]] = ()) -> str:
             f'<span class="name">{both(view.lang, "shell.brand")}</span></span>'
             f"{nav(view)}"
             f'<span class="tools">{live_chip(running, view.lang)}'
-            f"{refresh(view)}{lang_switch(view, keep)}{theme_button(view)}</span>"
+            f"{refresh(view)}{tz_switch(view, keep)}{lang_switch(view, keep)}"
+            f"{theme_button(view)}</span>"
             "</header>")
 
 
@@ -252,7 +314,7 @@ def activity(one: dict) -> dict:
     }
 
 
-def live_row(one: dict, lang: str) -> str:
+def live_row(one: dict, lang: str, back: str = "") -> str:
     """One activity: state, elapsed, what it is, its command line, and its two acts.
 
     The cells, their order and their classes are the script's own (`liveRow()` in
@@ -263,6 +325,10 @@ def live_row(one: dict, lang: str) -> str:
     that finished every test it started and failed some of them says `incomplete
     (infra)`, not `failed` - the word a crashed command gets - while it stays the
     colour of the state on disk, which is also the class the script writes for it.
+
+    `back` is the page this panel is drawn on, handed to the 日志 link so the tab it
+    opens can lead back here (`ui.log_link`); the script's own `liveRow` writes the
+    same href from `location`, which is the same page by construction.
     """
     one = activity(one)
     state = one["state"]
@@ -273,8 +339,7 @@ def live_row(one: dict, lang: str) -> str:
     argv = one["argv"]
     home = html.escape(str(one["id"]))
     elapsed = ui.duration(one["seconds"]) if one["seconds"] is not None else one["age"]
-    acts = (f'<a href="/runs/{home}/log" target="_blank" rel="noopener">'
-            f'{html.escape(t(lang, "link.log"))}</a>')
+    acts = ui.log_link(one["id"], html.escape(t(lang, "link.log")), back)
     if not ended:
         acts += (f'<form method="post" action="/api/runs/{home}/cancel">'
                  f'<button class="btn">{html.escape(t(lang, "js.cancel"))}</button></form>')
@@ -304,17 +369,28 @@ def live(view) -> str:
     reader sees it without a click, and a quiet page does not spend a screenful on an
     empty list.  Nothing is computed - a row is an activity on disk, and "recently
     ended" is the first `LIVE_KEPT` rows of the same list that are not running.
+
+    The facts decide until the reader does: the panel carries `data-fold="live"`, so
+    one the reader folded away comes back folded (`_JS`'s `buildFolds`).  The
+    collapsed tab still says what is running - the count is its own word, and the
+    ring is unhidden on the summary too (`drawLive`) - so a reader who chose to keep
+    the list shut is not choosing to be told nothing.
     """
     rows = list(view.rows.get("activities") or ())
     running = [one for one in rows if one.get("state") == "running"]
     ended = [one for one in rows if one.get("state") != "running"][:LIVE_KEPT]
-    body = "".join(live_row(one, view.lang) for one in (*running, *ended))
+    # This page's own address, filter and all: what the 日志 tab's "back to the list"
+    # leads to.  Read once and handed to every row, because every row leaves from the
+    # same page.
+    back = view.url()
+    body = "".join(live_row(one, view.lang, back) for one in (*running, *ended))
     head = t(view.lang, "live.head_running" if running else "live.head_recent")
     word = (t(view.lang, "live.tab_running", n=len(running)) if running
             else t(view.lang, "live.tab_idle"))
     spin = ('<span class="spin" aria-hidden="true"'
             + ("" if running else " hidden") + "></span>")
-    return ('<details class="live" id="live"' + (" open" if running else "") + ">"
+    return ('<details class="live" id="live" data-fold="live"'
+            + (" open" if running else "") + ">"
             f'<summary class="live-tab">{spin}'
             f'<span class="live-word">{html.escape(word)}</span></summary>'
             '<div class="live-body"><div class="live-head">'
@@ -340,9 +416,9 @@ def document(view, body: str, keep: Iterable[tuple[str, str]] = (),
     """The whole file: head, top bar, panel, the page, the footer, the scripts.
 
     `keep` is the page state that is not a filter field (the worker's mode, the runs
-    page's kind and state): the language switch has to carry it - `serve.py`'s
-    `PAGE_STATE` is what collects it, one route at a time - or switching language
-    would answer a question the reader did not ask.
+    page's kind and state): the language switch has to carry it - `schema.PAGE_STATE` is
+    what collects it, one route at a time, and `serve.py` and `ui.pager` are its two
+    readers - or switching language would answer a question the reader did not ask.
 
     `banners` is what this *request* ran into - an API that did not answer, a writer
     that blocks a write - and it goes above the body, which is where the old shell put
@@ -379,7 +455,7 @@ def document(view, body: str, keep: Iterable[tuple[str, str]] = (),
 {ui.foot(view.rows, extra=summary, lang=view.lang)}
 </main>
 <div id="notice" role="status" aria-live="polite"></div>
-<script>{_js(view.lang, _state_digest())}{_JS}</script>
+<script>{_js(view.lang, _state_digest())}</script>
 <script>{_bridge()}</script>
 </body>
 </html>
@@ -408,7 +484,11 @@ def document(view, body: str, keep: Iterable[tuple[str, str]] = (),
 #      rule that gives an element a `display` beats the `hidden` attribute whatever
 #      its specificity - `.f.cb` is `display: flex`, so a select-all box rendered
 #      `hidden` would otherwise be visible before the script wired it, and a box that
-#      ticks nothing is a lie.
+#      ticks nothing is a lie;
+#   4. the one cell the board's grid decides without drawing it: `table.grid td` is
+#      aligned to the top, which is right for a row of one-line cells and wrong for
+#      the one cell that is several rows tall - the merge `ui.table` draws for a
+#      `Col(span=…)`, `/jobs`' build id over its three tests.
 #
 # `_JS` as shipped draws the panel and the runs table, and every name it writes is
 # either a name the design already styles or one of the bridges below - no rule here
@@ -573,6 +653,14 @@ table.grid tr.kind-group { display: none; }
 /* 6. The `hidden` attributes that need saying out loud: an author rule beats the
    attribute, and a control the script has not wired yet must not be visible. */
 .f.cb[hidden], input[type="checkbox"][hidden] { display: none; }
+
+/* 7. The cell the board never draws: a `td[rowspan]`, which is what `ui.table` writes
+   for a `Col(span=…)`.  The board's grid aligns every cell to the top - right for a
+   row of one-line cells, and wrong for the one cell that is three rows tall, where
+   the top reads as belonging to the first row rather than to the three.  The rule is
+   on the attribute and not on a class because that is all the markup says: the merge
+   is the row's shape, not a vocabulary the board has a word for. */
+table.grid td[rowspan] { vertical-align: middle; }
 """
 
 
@@ -660,13 +748,21 @@ BRIDGE_JS = """
   }
 
   // --- 3. the pager's jump box --------------------------------------------
-  // A reader has a page number in mind; the URL carries `offset`, and a plain GET cannot
+  // A reader has a page number in mind; the URL carries an offset, and a plain GET cannot
   // multiply.  So the form is rendered `hidden` and this unhides it - with the script
   // off, a control that cannot work would be a lie - and the conversion happens on
-  // submit, into the `offset` field the form already carries.
+  // submit, into the offset field the form already carries.
+  //
+  // **Which** field is the form's own to say (`data-offset-name`): a page's own list
+  // pages by `offset`, and the second and later lists a page draws together by a name
+  // of their own (`schema.LIST_OFFSETS`, so `/local/<build_id>`'s four lists turn
+  // independently).  Naming the key in the markup is what keeps this loop from knowing
+  // one list from another; the `offset` fallback is for a pager drawn before the
+  // attribute existed.
   document.querySelectorAll("form[data-pager]").forEach(function (form) {
     var box = form.querySelector("input.pjump");
-    var field = form.querySelector('input[name="offset"]');
+    var name = form.getAttribute("data-offset-name") || "offset";
+    var field = form.querySelector('input[name="' + name + '"]');
     if (!box || !field) { return; }
     form.hidden = false;
     form.addEventListener("submit", function () {
@@ -703,7 +799,11 @@ BRIDGE_JS = """
     });
     menu.hidden = !shown;
   }
-  function addChip(box, value) {
+  // `label` is the word the menu button showed, and it is what the chip reads: an
+  // axis whose values are a vocabulary (`evidence`) draws its chips in words, and a
+  // chip that fell back to the raw value here would re-spell a set the moment the
+  // reader picked a second value from the menu.
+  function addChip(box, value, label) {
     var tags = box.querySelectorAll(".tag"), i;
     for (i = 0; i < tags.length; i += 1) {
       if (tags[i].getAttribute("data-v") === value) { return; }
@@ -711,7 +811,7 @@ BRIDGE_JS = """
     var tag = document.createElement("span");
     tag.className = "tag";
     tag.setAttribute("data-v", value);
-    tag.appendChild(document.createTextNode(value));
+    tag.appendChild(document.createTextNode(label || value));
     var hidden = document.createElement("input");
     hidden.type = "hidden";
     hidden.name = box.getAttribute("data-name") || "";
@@ -746,7 +846,7 @@ BRIDGE_JS = """
         // decision to submit - `apply` is.
         ev.preventDefault();
         var first = box.querySelector(".menu button[data-add]:not([hidden])");
-        if (first) { addChip(box, first.getAttribute("data-add")); }
+        if (first) { addChip(box, first.getAttribute("data-add"), first.textContent); }
       } else if (ev.key === "Escape") {
         box.querySelector(".menu").hidden = true;
         input.blur();
@@ -754,7 +854,7 @@ BRIDGE_JS = """
     });
     box.addEventListener("click", function (ev) {
       var add = ev.target.closest("[data-add]");
-      if (add) { addChip(box, add.getAttribute("data-add")); return; }
+      if (add) { addChip(box, add.getAttribute("data-add"), add.textContent); return; }
       var drop = ev.target.closest("[data-drop]");
       if (drop) { dropChip(box, drop.closest(".tag").getAttribute("data-v")); }
     });

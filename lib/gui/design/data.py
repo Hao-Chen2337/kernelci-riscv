@@ -75,7 +75,7 @@ Column-for-column the mapping, and the reader behind each key:
     queue       Gui.job_node_rows                               (`activities.py`)
     runs        Gui.run_rows                                    (`activities.py`)
     picks       _build_rows/_sort_rows + Gui._config_edges      (below, `reads.py`)
-    bars        Records.for_test/for_build .tally()             (`lib/re.py`)
+    bars        _test_bars: one region per test, tally() each   (below, `lib/re.py`)
     timelines   Records.series/transitions + _wave_slots below
     series      Gui.trend + Records.series                      (`reports.py`)
     drift       Gui._config_edges' Drift reports                (`lib/drift.py`)
@@ -99,25 +99,32 @@ import html
 import re
 import time
 from collections.abc import Mapping
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 
 from ... import api as api_mod
-from ... import errors, layout
+from ... import errors, layout, sink
 from ... import re as re_mod
 from ... import run as run_mod
+from ...build import Build
 from ...i18n import DEFAULT_LANG, t
 from ...kbuild import Kbuild, Kbuilds
 from ...tests import DEFAULT_TESTS, TESTS
+from .. import values
 from ..activities import WORKER_KIND
+from ..forms import _names
 from ..models import Filter
 from ..pairs import _build_ref
 from ..schema import (
     API_TIMEOUT,
+    CHART_MODES,
     DEFAULT_DELTA,
+    DEFAULT_TZ,
     EVIDENCE,
     JOB_STATES,
     KINDS,
     LIVE_KEPT,
+    MODE_EACH,
     ORIGINS,
     PILL_WORDS,
     QUEUE_ROWS,
@@ -181,19 +188,48 @@ def rows(gui: Any, check: "Filter | None" = None,
     # row reader does not hand on is read from the objects it was built from
     # (memoised with them: no second walk of `var/runs/`).
     processes = {one.id: one for one in gui.runs()}
+    # Which tests this render draws a line per.  `?tests=` is the trend page's own
+    # axis and the reason it can be a set at all (`models.Filter.tests`); every other
+    # page asks nothing and lands on the catalogue's whole set, which is what these
+    # two readers iterated before the key existed - so a page that has no such filter
+    # is byte-for-byte the page it was.
+    chosen = _names(check.tests) or DEFAULT_TESTS
+    # Which question the chart below answers.  `mode` is `/trend`'s page state
+    # (`schema.PAGE_STATE`) and not a `Filter` field, so it is read off the check the
+    # way `/runs` reads `kind` - and a value the box does not offer falls back to the
+    # accumulated reading rather than reaching the arithmetic, which is the one place a
+    # stray string could turn a curve into an empty picture.
+    mode = str(getattr(check, "mode", "") or "")
+    mode = mode if mode in CHART_MODES else CHART_MODES[0]
+    queue, queue_why = _queue(gui, check)
     return {
         "builds": _builds(gui, check, held, answer, lang),
         "pulls": _pulls(gui.pull_acts()),
         "gap": _gap(gui.job_rows(check)),
         "ledger": _ledger(records),
-        "worker": _worker(gui, activities, processes),
-        "queue": _queue(gui, check),
-        "runs": _runs(activities, processes),
+        "worker": _worker(gui, activities, processes, check.tz),
+        # The reason rides beside the rows and not inside them: an empty queue and a
+        # queue nobody could ask are two different sentences, and the reader answers
+        # both with the same empty list.  Dropping it here is what let `/worker` print
+        # "the API answered, and its queue holds nothing" over a read that never
+        # arrived - the catalogue has had `empty.queue_no_answer` for exactly this the
+        # whole time, and nothing could reach it.
+        "queue": queue,
+        "queue_why": queue_why,
+        "return_path": _return_path(gui, queue),
+        "runs": _runs(activities, processes, check.tz),
         "picks": _picks(ordered, edges, records, check),
-        "bars": _bars(ordered, records, check),
-        "timelines": _timelines(pool, records, check),
-        "series": _series(ordered, gui, records),
+        "bars": _test_bars(ordered, records, chosen),
+        "timelines": _timelines(ordered, records, chosen),
+        "series": _series(ordered, gui, records, chosen, mode),
+        "mode": mode,
         "drift": _drift(edges),
+        # How many `.config` files this render had to read over the API rather than find
+        # on disk, counted where the reads happen (`api.note_fetch`, called by
+        # `drift._config_text`).  Read here, **after** the edges above, because the
+        # comparisons are the reads it counts - a page that pulled forty files and said
+        # nothing is the one thing the freshness rule in this layer is against.
+        "fetched": api_mod.fetches(),
         "activities": _live(activities),
         "counts": _counts(gui, table, records, held, check, lang),
         "apis": [(name, base) for name, base in gui.apis.entries()],
@@ -249,6 +285,14 @@ def _builds(gui: Any, check: Filter, held: dict, answer: Any,
     * **`ran`** is one `(test, verdict-or-None)` per `DEFAULT_TESTS`, from
       `records.last(test, build_id)` - the ledger's own answer, which does not care
       whether the table or only a directory named this build.
+    * **`source`** is `Local.origin()` - where the bytes came from, read off the newest
+      act's URLs (`models.Local.origin` says why it is the act and not the card).  The
+      value is one of `models.COPY_ORIGINS`; the words are the page's (`col.provenance`).
+    * **`in_table`** is `build_row.in_table` - the local table's own answer to "is there
+      a card for this build".
+    * **`present`**/**`present_paths`** are `Local.present`, the artifacts whose file is
+      on disk: the names for the cell, the paths for its `title=`.  A *different*
+      question from `checks`, which is the three a test needs.
 
     **One row is one id, and this function does not enforce that**: `build_rows`
     collects its ids from the API's answer as they come, while its own lookup dict
@@ -263,6 +307,28 @@ def _builds(gui: Any, check: Filter, held: dict, answer: Any,
     found = []
     for one in gui.build_rows(check, held, answer, lang):
         kbuild = one["remote"]
+        copy = one["local"]
+        # The artifacts whose file is on disk *right now*, as `{name: path}` - the
+        # whole of `Local.present`, `config` included: this is the resource column's
+        # answer and it asks what is here, not which of the three a test needs.
+        #
+        # `config` is then **widened to the shared cache** and the other three are not,
+        # because that is the only one of the four with a second home: this build's own
+        # directory (what a pull left) and `var/configs/<sha256(url)>.config` (what any
+        # comparison that ever read this build's URL left, and what the drift analysis
+        # reads - `Build.artifact_path` is the one function that knows both).  A config
+        # in the cache is the same bytes from the same URL, so the column that says what
+        # this build can be asked about has to count it; `Build.present()` alone answered
+        # **0 of 1702** builds on the production stack while 319 configs sat in the cache
+        # (`ls var/configs/*.config | wc -l`), i.e. the column drew `—` for every row of
+        # a build the comparison page would happily diff (「先看本身有没有，再看配置偏移的
+        # 缓存」).  `bytes_mib` above is deliberately *not* widened: `Local.size()` sums
+        # the files in this build's own directory, and counting a shared 194 KB file once
+        # per build would be a byte count that adds up to more than the disk holds.
+        present = {name: path for name, path in (copy.present if copy else {}).items()
+                   if path}
+        if kbuild is not None and (path := Build(kbuild).artifact_path("config")):
+            present["config"] = path
         found.append({
             "build_id": one["build_id"], "tree": one["tree"], "branch": one["branch"],
             "created": one["created"],
@@ -277,6 +343,22 @@ def _builds(gui: Any, check: Filter, held: dict, answer: Any,
             "api": ((kbuild.state, kbuild.result, _short(kbuild.node_id))
                     if kbuild is not None else None),
             "ran": [(test, one["verdicts"].get(test) or None) for test in DEFAULT_TESTS],
+            # Where the bytes came from (`Local.origin`), one of `models.COPY_ORIGINS` or
+            # `""` for a copy no act describes.  This is a *value* and not a word: the
+            # three words are the page's, and `""` is the dash it draws for "nothing
+            # recorded" - which is not a fourth origin and must not be spelled as one.
+            "source": copy.origin() if copy is not None else "",
+            # Is this build in the local table?  `build_row.in_table` is that answer
+            # already (`Local.card is not None`) - the same fact the card view is a
+            # view *of*, and not a second reading of it.
+            "in_table": bool(one["in_table"]),
+            # What is on disk, by the names the page uses for artifacts everywhere
+            # (`Local.present`, one `os.path.isfile` each, `config` included), and
+            # those files' paths for the cell's `title=`.  The three ticks beside this
+            # column ask the same question about the three a test needs; this answers
+            # it about everything, which is why the two are not one column.
+            "present": sorted(present),
+            "present_paths": ", ".join(present[name] for name in sorted(present)),
         })
     return found
 
@@ -358,15 +440,23 @@ def _ledger(records: Any) -> list[dict[str, Any]]:
 
 # ----------------------------------------------------------------- the worker
 def _worker(gui: Any, activities: list[dict[str, Any]],
-            processes: dict[str, Any]) -> dict[str, Any]:
+            processes: dict[str, Any], tz: str = DEFAULT_TZ) -> dict[str, Any]:
     """What the poll loop is doing: the live process, and the state file it writes.
 
     Two readers, and neither is interpreted here.  `Gui.worker_state()` is the JSON
     `lib/poller.py` wrote, read as the document it is (`STATE_FIELDS` is
-    `timestamp`/`seen`/`pending`, and the cursor is the `timestamp` - the poller's
-    own name for it, not a second timestamp this page keeps).  The process side is
-    `Gui.run_rows()`'s own worker row, which is where `running`, `pid`, `argv` and
-    the age come from: `uptime` is `Run.age()`'s answer and not a subtraction here.
+    `timestamp`/`seen`/`pending`/`refused`, and the cursor is the `timestamp` - the
+    poller's own name for it, not a second timestamp this page keeps).  The process
+    side is `Gui.run_rows()`'s own worker row, which is where `running`, `pid`,
+    `argv` and the age come from: `uptime` is `Run.age()`'s answer and not a
+    subtraction here.
+
+    Four counts and not three, because `seen` and `refused` answer different
+    questions and the operator asked for the second one by name.  `seen` is how many
+    node ids the loop has dealt with; `refused` is how many of those it put down
+    without running, and a worker older than that field answers `0` for it while its
+    `seen` still holds the nodes - which is why the page prints the two beside each
+    other instead of subtracting one from the other.
 
     `pid` is read off the `Run` the row was built from, because `run_rows` does not
     hand it on: `pid` is a fact about a process and `run_rows` is a fact about a
@@ -381,30 +471,67 @@ def _worker(gui: Any, activities: list[dict[str, Any]],
     process = processes.get(newest["id"]) if newest is not None else None
     stored = state.get("seen") or []
     pending = state.get("pending") or {}
+    refused = state.get("refused") or {}
     return {
         "running": bool(live),
         "run_id": newest["id"] if newest is not None else "",
         "pid": process.pid if process is not None else 0,
-        "started": _clock(newest["started"], "%Y-%m-%dT%H:%M:%S")
+        "started": values._clock(newest["started"], tz, "%Y-%m-%dT%H:%M:%S")
                    if newest is not None else "",
         "uptime": newest["age"] if newest is not None else "",
         "argv": " ".join(newest["argv"]) if newest is not None else "",
         "state_file": layout.worker_state(),
         "cursor": str(state.get("timestamp") or ""),
-        "seen": len(stored), "pending": len(pending),
+        "seen": len(stored), "pending": len(pending), "refused": len(refused),
     }
 
 
-def _queue(gui: Any, check: Filter) -> list[dict[str, Any]]:
-    """The API's job queue, newest first - the rows `Gui.job_node_rows` answers.
+def fate_of(one: dict[str, Any]) -> str:
+    """What this machine did with a queue node, as one of `schema.LOCAL_FATES`.
+
+    Four answers and they are ordered by how much is *known*, not by how good the
+    news is - `held` is the one that is certain (only `_remember_pending` writes it,
+    and it runs after the job's ledger sink has already been written), `refused` is
+    the poller's own sentence, and `ran` is what is left when a node is in `seen`
+    with nothing recorded against it.  That last one is a **default and not a
+    finding**: nothing on this disk keys a run to a node id, so "dealt with, no
+    reason to think otherwise" is the strongest true statement.  A worker older than
+    `poller.refuse` writes no refusals at all, and its nodes land here.
+
+    Read in one place because two readers need the same word - the table's cell and
+    the `local` filter that selects it - and a filter that disagreed with the cell
+    it selects would be a page arguing with itself.
+    """
+    if one.get("held"):
+        return "held"
+    if one.get("refused"):
+        return "refused"
+    return "ran" if one.get("claimed") else "never"
+
+
+def _queue(gui: Any, check: Filter) -> tuple[list[dict[str, Any]], str]:
+    """The API's job queue, newest first, and why it is empty - the rows `Gui.job_node_rows` answers.
 
     Read as wide as `/worker` reads it (`QUEUE_ROWS`, because the page's own
     platform and runtime boxes are built out of the same answer) and printed as
     wide as this filter's `limit`, exactly as `worker.py` does: one read of
     the largest collection in the API for one question.
 
+    **Newest first, and it was not.**  `Kjobs.getjob` reads the API oldest-first on
+    purpose (`lib/kjob.py` says why: a worker taking the *head* of a queue wants the
+    end that has been waiting longest), so a page that printed that order put the
+    node an operator is watching for at the bottom of fifty.  The sort is here and
+    not in the reader, because the worker's claim loop needs the other order and
+    this is the one caller that does not.
+
+    `check.local` is applied here too, after the read and before the cap: it is a
+    condition on the *rows*, but not one the API can be asked (`seen`/`pending`/
+    `refused` are files on this disk), so it cannot ride `getjob`'s filters and it
+    must be applied before `limit` or a page of fifty would show however many of
+    them happened to be local.
+
     The state is `check.state or "available"`, which is the shipped route's own
-    default (`serve.py`'s `PAGE_STATE` for `/worker`): a worker page is about what a worker
+    default (`schema.PAGE_STATE` for `/worker`): a worker page is about what a worker
     can *claim*, and a table of 200 finished nodes beside a "nothing to claim"
     badge is two true sentences that mean nothing together.  `Filter.state` also
     spells the *kbuild* state axis, and the two vocabularies overlap where they
@@ -413,8 +540,9 @@ def _queue(gui: Any, check: Filter) -> list[dict[str, Any]]:
     string.
     """
     state = check.state or JOB_STATES[1]
-    found, _why = gui.job_node_rows(check, state, QUEUE_ROWS)
-    return [{
+    wanted = str(getattr(check, "local", "") or "any")
+    found, why = gui.job_node_rows(check, state, QUEUE_ROWS)
+    rows = [{
         "node_id": one["node_id"], "name": one["name"], "state": one["state"],
         # `result` is `""` on a node that has not run yet (`lib/kjob.py` reads the
         # API's own field), and the design's shape says `None`: both are falsy, and
@@ -423,11 +551,112 @@ def _queue(gui: Any, check: Filter) -> list[dict[str, Any]]:
         "result": one["result"] or None, "platform": one["platform"],
         "runtime": one["runtime"], "created": one["created"],
         "claimed": one["claimed"], "definition": one["definition"],
-    } for one in found[:check.limit]]
+        "held": one["held"], "refused": one["refused"], "build_id": one["build_id"],
+        # The pipeline route, for the `route` column.  Named here for the reason the
+        # `definition_url` note below gives - this projection *is* a whitelist, and a
+        # key left out of it renders as the design's dash on every row rather than
+        # failing: the column drew `—` for every node until this line existed.
+        "path": one["path"],
+        # The URL itself, and not just the `definition` boolean beside it.  This
+        # projection is a whitelist - every key a page reads has to be named here -
+        # and `_return_path` reads this one off the rows it is handed.  Leaving it out
+        # was silent: the panel kept rendering, and rendered its *empty* state, which
+        # is a sentence about the queue rather than about the missing key.  A field
+        # that only the empty state depends on has no way to fail loudly.
+        "definition_url": one["definition_url"],
+    } for one in found]
+    if wanted != "any":
+        rows = [one for one in rows if fate_of(one) == wanted]
+    rows.sort(key=lambda one: (str(one["created"]), str(one["node_id"])), reverse=True)
+    return rows[:check.limit], why
 
 
 # ------------------------------------------------------------------- the runs
-def _runs(activities: list[dict[str, Any]], processes: dict[str, Any]) -> list[dict[str, Any]]:
+def _return_path(gui: Any, queue: list[dict[str, Any]]) -> dict[str, Any]:
+    """Where a finished job's report goes, what signs it, and what is still waiting.
+
+    The operator lost an afternoon to this exact question - a job ran, the ledger had
+    the row, and the API said the node was never reported - and every fact needed to
+    answer it was on the disk or one read away, in four places: the definition artifact
+    (the `callback.url` the report is POSTed to), `sink.callback_token` (the token,
+    whose *source* is the part that can be wrong), the state file's `pending` (reports
+    written and refused), and the definition's own `token_name`.
+
+    **One definition is read, not one per row.**  Every node in a queue was dispatched
+    by the same lab and carries the same callback block, so the answer is one answer;
+    fetching it per row would be thirty HTTP reads for one sentence.  The first row that
+    names a definition is the one read, and the `definition` key in the answer is which
+    row it came from, so a reader who wants to check that claim can.
+
+    The token's **value never reaches this dict** - `sink.token_source()` answers which
+    of the two places a token would be read from, and a page that cannot leak a secret
+    is worth more than a page that shows one.  The definition's `token_name` is not read
+    at all: nothing in this tree ever used it, what is really sent is
+    `Authorization: Token <the token>`, and the row that printed it was the row that sent
+    the operator looking for a token named in a file that has nothing to do with the
+    header.
+
+    **One destination, resolved here.**  `destination` is `sink.delivery_url`'s own
+    answer for this definition - the same call the worker's delivery and the re-post make
+    - so the panel's one row about where reports go cannot disagree with what the worker
+    does.  It is resolved *in this layer* rather than left to each of the three readers
+    to work out, and that is the opposite of what this function used to do: the value was
+    withheld on the argument that a resolved URL would be a second owner for "which one is
+    in force", which is true only while a page draws the definition's URL and the
+    override as two separate answers.  The panel draws one, so there is one owner, and it
+    is `sink.delivery_url` - by way of this reader, which does not decide anything itself.
+    `override` rides beside it because the box is prefilled with what would be *written*,
+    and empty (or `sink.OFF`) is not the same thing as the destination.
+    """
+    url = next((str(one.get("definition_url") or "") for one in queue
+                if one.get("definition_url")), "")
+    callback = why = ""
+    if url:
+        try:
+            definition = gui.job_definition(url)
+        except errors.KciError as exc:
+            why = str(exc)
+        else:
+            block = definition.get("callback") if isinstance(definition, dict) else None
+            if isinstance(block, dict):
+                callback = str(block.get("url") or "")
+    return {"definition": url, "callback": callback,
+            "override": sink.callback_override(),
+            "destination": sink.delivery_url(callback),
+            "why": why, "token_source": sink.token_source(),
+            "pending": _pending(gui.worker_state())}
+
+
+def _pending(state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The reports written and not delivered, as rows: the node, where it was going, and what it says.
+
+    `pending` is the state file's third list and the only one whose contents are a
+    *record* rather than a fact about the loop, so it is read here rather than counted:
+    a bare count on the panel is what left the operator unable to tell "nothing is
+    waiting" from "six things are waiting and I cannot see them".  The reason a
+    delivery failed is deliberately not among the keys - it is not stored (the report
+    is what has to survive the process, not the error), and inventing one from the
+    callback's URL would be this layer guessing at an HTTP answer it never saw.  The
+    run's own log has it.
+    """
+    rows = []
+    for node_id, entry in sorted((state.get("pending") or {}).items()):
+        entry = entry if isinstance(entry, dict) else {}
+        record = entry.get("record") if isinstance(entry.get("record"), dict) else {}
+        rows.append({"node_id": str(node_id),
+                     # The URL the *re-post* will use and not the one in the file: the
+                     # stored one is the definition's (`Poller._remember_pending` says
+                     # why), and a column headed "callback" over a row that is about to
+                     # be posted somewhere else is the table disagreeing with the
+                     # worker.  Same resolution the worker itself calls.
+                     "callback": sink.delivery_url(str(entry.get("callback") or "")),
+                     "verdict": str(record.get("verdict") or ""),
+                     "detail": str(record.get("detail") or "")})
+    return rows
+
+
+def _runs(activities: list[dict[str, Any]], processes: dict[str, Any],
+          tz: str = DEFAULT_TZ) -> list[dict[str, Any]]:
     """Every background process this console started, newest first.
 
     `Gui.run_rows()` is the whole activity tree (`var/runs/<id>/run.json`), newest
@@ -451,7 +680,8 @@ def _runs(activities: list[dict[str, Any]], processes: dict[str, Any]) -> list[d
         found.append({
             "id": one["id"], "kind": one["kind"], "state": one["state"],
             "pid": process.pid if process is not None else 0,
-            "started": _clock(one["started"]), "ended": _clock(one["ended"]) or None,
+            "started": values._clock(one["started"], tz),
+            "ended": values._clock(one["ended"], tz) or None,
             "exit": one["exit_code"], "age": one["age"], "what": one["what"],
             "argv": " ".join(one["argv"]),
             # `tally` is the chip the script draws beside a `run`/`runday`/`table`
@@ -523,7 +753,19 @@ def _build_rows(known: list[str], builds: list[Kbuild], check: Filter, records: 
             continue
         found = records.for_build(build_id)
         revision = (kbuild.revision or {}) if kbuild is not None else {}
-        config = kbuild.artifact("_config") if kbuild is not None else ""
+        # Two different questions about one artifact, and this page has to ask both.
+        # `config_url` is where the bytes *would* come from - the card's own artifact URL,
+        # which is the `title=` a reader who wants the raw file follows.  `config` is
+        # whether there is anything to read **here and now**, which is the tick, and it is
+        # `Build.artifact_path` and not `present()`: a config this build never pulled is
+        # still readable if a comparison of it ever filled the shared cache
+        # (`var/configs/<sha256(url)>.config`), and that is the same bytes from the same
+        # URL - so a `—` there was the page saying "no config" about a build `/analysis`
+        # would happily compare (「先看本身有没有，再看配置偏移的缓存」).  The two are not
+        # interchangeable in either direction: `config_url` is never empty (it falls back
+        # to the storage service), so driving the tick from it would tick every row.
+        config_url = kbuild.artifact("_config") if kbuild is not None else ""
+        config = Build(kbuild).artifact_path("config") if kbuild is not None else ""
         rows.append({
             "build_id": build_id, "kbuild": kbuild,
             "created": str(kbuild.created or "") if kbuild is not None else "",
@@ -531,12 +773,12 @@ def _build_rows(known: list[str], builds: list[Kbuild], check: Filter, records: 
             "branch": str(kbuild.branch or "") if kbuild is not None else "",
             "series": _series_of(revision.get("describe")),
             "verdict": found.items[-1].verdict if found.items else "",
-            "config": bool(config), "config_url": config,
+            "config": bool(config), "config_url": config_url,
             "records": len(found),
             "held": bool(local is not None and local.present),
             "ref": _build_ref(kbuild),
             "line": _build_line(kbuild, revision, build_id),
-            "marks": _build_marks(config, local, len(found), lang),
+            "marks": _build_marks(config, config_url, local, len(found), lang),
         })
     return rows
 
@@ -578,13 +820,24 @@ def _build_line(kbuild: "Kbuild | None", revision: Mapping[str, Any], build_id: 
             f'<br><span class="sub">{html.escape(detail)}</span>')
 
 
-def _build_marks(config: str, local: Any, records: int, lang: str = DEFAULT_LANG) -> str:
+def _build_marks(config: str, config_url: str, local: Any, records: int,
+                 lang: str = DEFAULT_LANG) -> str:
     """Three marks per row: can this build be compared, is there a copy here, has it run.
 
     They are the facts that decide the questions a reader is about to ask, and two of
     them are what makes a doomed pair visible **before** it is picked: `config -` is a
     build no comparison can use (`06-analysis.md` §A7), and the artifact URL is in the
     `title=` for the reader who wants the raw file.
+
+    `config` and `config_url` are the two halves of that first mark and they answer two
+    questions: the first is whether the bytes are readable **here** (this build's own
+    copy, or the shared config cache it shares with every comparison - `_build_rows`,
+    which computes both halves of this mark, says why both count), and the second is
+    where a reader would go for the original.
+    The URL is therefore the `title=` even on a row whose mark is a dash: "not on this
+    disk" and "not anywhere" are different facts, and the URL is how a reader tells them
+    apart.  It is never the *tick*, because `Build.config_url` falls back to the storage
+    service and is non-empty for every build.
     """
     def mark(word: str, yes: bool, title: str = "") -> str:
         attr = f' title="{html.escape(title)}"' if title else ""
@@ -593,7 +846,7 @@ def _build_marks(config: str, local: Any, records: int, lang: str = DEFAULT_LANG
 
     held = bool(local is not None and local.present)
     return ('<span class="marks">'
-            + mark(t(lang, "word.config"), bool(config), config) + " "
+            + mark(t(lang, "word.config"), bool(config), config_url) + " "
             + mark(t(lang, "col.bytes"), held) + " "
             + f'<span>{t(lang, "mark.records")} {records}</span></span>')
 
@@ -669,33 +922,83 @@ def _delta(edges: list[dict[str, Any]], at: int) -> "tuple[int, int, int] | None
     return (len(report.added), len(report.removed), len(report.changed))
 
 
-def _bars(ordered: list[dict[str, Any]], records: Any, check: Filter) -> list[dict[str, Any]]:
-    """One bar per build for the test in force: what answered, and how it answered.
+def _test_bars(ordered: list[dict[str, Any]], records: Any,
+               chosen) -> list[dict[str, Any]]:
+    """One region per test, one bar per build inside it: what answered, and how.
 
-    The three numbers are **this build's own** records and not a running total -
-    the distinction the design's panel exists to draw - and they are a tally of the
-    ledger's own verdict words (`Records.for_test(...).for_build(...).tally()`,
-    which is `Records.tally()` narrowed twice, not a count kept here).
+    The panel reads this as a **region per test** (`chosen`, `DEFAULT_TESTS` order or the
+    set the reader picked) and, inside a region, one line per build of the page's order -
+    the region's own three totals in its heading, that build's own three numbers on its
+    line.  Two scopes of one arithmetic and not two readers: the totals are the sum of
+    the lines below them.
 
-    The ledger has four verdicts (`lib/errors.py`) and the design three colours:
-    `pass` is `ok`, `fail` is `bad`, and the third is **what did not answer** -
-    `incomplete` and `error` both mean the run produced no verdict about the
-    kernel, which is one thing to a reader looking at a bar.  The scope is the test
-    the page is about, like `_picks`, so the bar above a row and the pill in it are
-    about the same run.
+    The three numbers are **this build's own run for this test** and not a running total -
+    the distinction the design's panel exists to draw, and the reason a region may hold a
+    row that is all zeros.
+
+    **They are the run's own case counts where it has them, and its verdict where it does
+    not** (`_tally`).  They used to be the ledger's verdict words tallied, which made every
+    line in every region read `1 0 0` - one record, passed - while the record beside the
+    page was saying `10 selftests: 10 pass, 0 fail, 0 skip`.  The operator read the panel
+    as a lie about the run (「我要显示的是更详细的数值，比如 8 2 0 或者 10 0 0 或者 12 2 0
+    等等，而不是什么 1 0 0」) and it was one: *one* there was the number of records, not
+    the number of cases.  A region's heading is still the sum of the lines under it, so
+    the two scopes stay one arithmetic - but the unit is now the test's own, which is what
+    makes a heading a fact about the window rather than a count of rows drawn.
     """
-    test = check.test or DEFAULT_TESTS[0]
-    scoped = records.for_test(test)
-    found = []
-    for one in ordered:
-        counts = scoped.for_build(str(one["build_id"])).tally()
-        bad = counts.get(errors.VERDICT_FAIL, 0)
-        ok = counts.get(errors.VERDICT_PASS, 0)
-        found.append({"build_id": one["build_id"], "ok": ok, "bad": bad,
-                      "warn": sum(many for verdict, many in counts.items()
-                                  if verdict not in (errors.VERDICT_PASS,
-                                                     errors.VERDICT_FAIL))})
-    return found
+    out = []
+    for test in chosen:
+        scoped = records.for_test(test)
+        bars = []
+        for one in ordered:
+            record = scoped.for_build(str(one["build_id"])).last(test)
+            bars.append({"build_id": str(one["build_id"]), **_tally(record)})
+        out.append({"test": test, "bars": bars,
+                    **{name: sum(bar[name] for bar in bars)
+                       for name in ("ok", "bad", "warn")}})
+    return out
+
+
+def _tally(record) -> dict[str, int]:
+    """One record as the design's three numbers: `ok`, `bad`, and what did not answer.
+
+    **The record's own case counts when it has them.**  `results` is the TAP summary
+    (`lib/judge.py`: `total`, `failed`, `skipped`), so a kselftest run of twelve cases
+    with one failure and three skips is `8 1 3` - the three numbers the record's own
+    `detail` line prints, which is the whole point of the panel and the reason it cannot
+    be a tally of records.
+
+    **Its verdict when it has none.**  `boot` reports no case counts (`results` is `{}`),
+    and one boot that answered is honestly `1 0 0`: the number is the run, because the
+    run is the only thing there is to count.  Saying so is `page.analysis.bars_sub`'s job
+    and not this function's - a reader who sees `1 0 0` beside a `10 0 0` has to be told
+    the unit is the test's own.
+
+    **The three words are still the triad they were.**  `ok` is how many cases answered
+    and passed, `bad` how many failed, and `warn` is **what did not answer** - the record's
+    own skips where it counts cases, and its verdict where it does not.  `incomplete` and
+    `error` are two verdicts of the ledger (`lib/errors.py`) and one thing to a reader: the
+    run produced no verdict *about the kernel*.  A verdict this function has never been
+    taught falls in there too, which is the honest place for it - an unknown word is not a
+    pass.
+
+    A pair with no record is all zeros, which `ui.test_bars` draws as the design's dash:
+    zero records and zero passes are different facts, and only one of them is a zero.
+    """
+    if record is None:
+        return {"ok": 0, "bad": 0, "warn": 0}
+    results = getattr(record, "results", None) or {}
+    total = int(results.get("total") or 0)
+    if total > 0:
+        failed = max(0, int(results.get("failed") or 0))
+        skipped = max(0, int(results.get("skipped") or 0))
+        return {"ok": max(0, total - failed - skipped), "bad": failed, "warn": skipped}
+    verdict = str(getattr(record, "verdict", "") or "")
+    if verdict == errors.VERDICT_PASS:
+        return {"ok": 1, "bad": 0, "warn": 0}
+    if verdict == errors.VERDICT_FAIL:
+        return {"ok": 0, "bad": 1, "warn": 0}
+    return {"ok": 0, "bad": 0, "warn": 1}
 
 
 def _wave_slots(rows: list[dict[str, Any]], records: "Records",
@@ -750,41 +1053,113 @@ def _last_verdict_row(records: "Records", test: str, build_id: str) -> dict[str,
             "results": getattr(newest, "results", {}) or {}}
 
 
-def _timelines(pool: list[dict[str, Any]], records: Any,
-               check: Filter) -> list[dict[str, Any]]:
+def _timelines(rows: list[dict[str, Any]], records: Any,
+               tests: tuple[str, ...] = DEFAULT_TESTS) -> list[dict[str, Any]]:
     """One line per test: how many records, the newest verdict, and the run of them.
 
-    `runs` and `last` are `Records.series`/`values._last_verdict` and `regressions`
-    is `re.transitions()` - the engine's own three answers, unchanged.
+    **Every one of the four answers is about `rows`** - the page's own order, filtered,
+    sorted and capped the way the reader asked for it.  It used to be two answers about
+    that window and three about the whole ledger: `marks` came from the newest
+    `check.limit` builds in *date* order while `runs`, `last` and `regressions` were
+    `Records.series(test)`/`values._last_verdict`/`re.transitions()` over every record the
+    ledger holds.  A reader who narrowed the page to one tree, or reversed the order, got
+    a sparkline of one population and three numbers of another - and the numbers were the
+    ones that looked authoritative, because they are integers in a column.
 
-    `marks` is the one place this dict chooses a *position axis*, and the choice is
-    stated rather than implied: **one mark per build, oldest first**, `None` where
-    the ledger has nothing for that (build, test) pair.  A timeline is a test over
-    time, so the axis is the date order and not the reader's sort (`sort` decides
-    what is compared with what, and that is the `picks` list's job); the positions
-    are the builds this page can name - the newest `check.limit` of them, which is
-    the same window the `picks` list shows under the default order, kept newest
-    rather than oldest so that "the last 25 builds" means the same thing in both
-    panels.  `_wave_slots` below is the reader that already answers exactly this
-    per position - it is what the wave chart of `/analysis` always drew - and `None`
-    is a position and not a run: the design draws it as an empty square
+    So the three counts and the marks all read one `Records` - `for_builds(rows)` - and
+    the axis is `rows` itself, in `rows`' order: cells, counts and the curve below them are
+    one answer about one window, which is what the panel's sub-line now says.  Narrowing
+    the ledger first is also the cheaper reader, not just the honest one: `_wave_slots`
+    looks each build up by id, and every lookup it makes is inside this subset anyway.
+
+    `None` is a position and not a run: the design draws it as an empty square
     (`no record`), which is how a test that *stopped* is visible instead of a line
     that pretends it never ran.
+
+    `tests` is the set this axis draws one row per - `DEFAULT_TESTS` for every page
+    that asks for nothing, and the reader's own combination on the page that has a
+    box for it (`/trend`).  It is a *subset* of the catalogue and never a fourth
+    name: `lib/tests.py:TESTS` is what the filter accepts, so a value outside it
+    never reaches here (`forms._tests_many`).
+
+    Two lists of pairs ride along, and they are two questions about one window:
+    `transitions` is the regressions **the count is `len()` of**, and `comparisons` is
+    every adjacent pair of this test's records in the window whether or not it counted.
+    Both are read off the same `series` and the same `pairs`, so a row marked as a
+    regression in one is a row of the other - the panel draws the second and marks it
+    with the first, which is what makes a four-row "where did it break" and a sixty-row
+    "what did I compare" one answer instead of two.
     """
-    marks_order = _sort_rows(pool, "date-asc")[-check.limit:]
+    window = records.for_builds(str(one["build_id"]) for one in rows)
     found = []
-    for test in DEFAULT_TESTS:
-        marks = _wave_slots(marks_order, records, test)
+    for test in tests:
+        marks = _wave_slots(rows, window, test)
+        # This test's records **in the window**, oldest first - the order
+        # `re.transitions` reads them in, and the order the comparisons below are taken
+        # between.  Read once: `runs` is its length and both lists below walk it.
+        series = window.series(test)
+        # The transitions **themselves**, not only their number: `regressions` is the
+        # count a reader scans for, and the panel prints these rows under the table so
+        # the count can be checked against the pairs it was counted from - which build
+        # passed, which one then failed, and when each was recorded.  It is the same
+        # answer the config-drift sections give for two builds' options, and it is why
+        # the count above is `len(pairs)` and not a second reading of the ledger.
+        pairs = re_mod.transitions(window, test)
+        # Which comparisons the ledger called a regression, as the pair of build ids
+        # `transitions` returned them under.  A comparison is a regression **when it is
+        # one of these**, and not when it happens to go pass -> fail: consecutive
+        # failures are one regression (`re.transitions` says why), so the run of fails
+        # after the first is compared and is not counted, and reading the verdicts alone
+        # would report three regressions where the column says one.
+        regressed = {_pair_key(failed, passed) for failed, passed in pairs}
         found.append({
-            "test": test, "runs": len(records.series(test)),
-            "last": _last_verdict(records, test),
-            "regressions": len(re_mod.transitions(records, test)),
+            "test": test, "runs": len(series),
+            "last": _last_verdict(window, test),
+            "regressions": len(pairs),
             "marks": [one["verdict"] or None for one in marks],
+            "transitions": [{"test": test,
+                             "passed": str(getattr(passed, "build_id", "") or ""),
+                             "failed": str(getattr(failed, "build_id", "") or ""),
+                             "passed_at": str(getattr(passed, "timestamp", "") or ""),
+                             "failed_at": str(getattr(failed, "timestamp", "") or "")}
+                            for failed, passed in pairs],
+            # **Every comparison this window made**, adjacent record against adjacent
+            # record, and not only the ones that counted.  The `transitions` list above
+            # answers "where did it break"; this one answers "what did I compare", which
+            # is the other half of the same question and the one the operator asked for
+            # when the panel showed four rows and the ledger held sixty
+            # (「我是想叫你列出所有比较的那个东西，一个类似分析的列表，看看我比较的是什么」).
+            # A window with 21 `kselftest-riscv` records makes 20 comparisons and 3 of
+            # them are regressions, and the ratio is the thing a four-row panel hid.
+            "comparisons": [{"test": test,
+                             "older": str(getattr(older, "build_id", "") or ""),
+                             "newer": str(getattr(newer, "build_id", "") or ""),
+                             "older_at": str(getattr(older, "timestamp", "") or ""),
+                             "newer_at": str(getattr(newer, "timestamp", "") or ""),
+                             "older_verdict": str(getattr(older, "verdict", "") or ""),
+                             "newer_verdict": str(getattr(newer, "verdict", "") or ""),
+                             "regression": _pair_key(newer, older) in regressed}
+                            for older, newer in pairwise(series)],
         })
     return found
 
 
-def _series(ordered: list[dict[str, Any]], gui: Any, records: Any) -> list[dict[str, Any]]:
+def _pair_key(failed, passed) -> tuple[str, str]:
+    """A `(failed, passed)` transition's two build ids, as the key the comparisons match on.
+
+    `re.transitions` hands back `(failed, passed)` - newest first - and a comparison is
+    `(older, newer)`, so the two are the same pair of records read in opposite directions
+    and the key is spelled once, here, rather than reversed at each of the two call sites.
+    A build id is unique within one test's series (`var/results/<build>/<test>.json` is one
+    file per pair), so the two ids identify the pair.
+    """
+    return (str(getattr(failed, "build_id", "") or ""),
+            str(getattr(passed, "build_id", "") or ""))
+
+
+def _series(ordered: list[dict[str, Any]], gui: Any, records: Any,
+            tests: tuple[str, ...] = DEFAULT_TESTS,
+            mode: str = "") -> list[dict[str, Any]]:
     """One line per test across the positions of the page's order: the pass rate.
 
     The design's chart panel (`ui.line_chart`, `ui.legend`) draws one polyline per
@@ -795,28 +1170,24 @@ def _series(ordered: list[dict[str, Any]], gui: Any, records: Any) -> list[dict[
     Every row carries the axis as well as its own points, so a row is complete on
     its own (`slots` and `ends` are the same in all of them - there is one axis).
 
-    **A point exists only where the ledger has a record.**  A position this test
-    has nothing for is left out rather than drawn at zero or carried forward: a gap
-    is not a failure, it is the same gap `timelines.marks` prints as an empty
-    square - which is the break the design's own caption promises and its invented
-    drawing does not have.  What a renderer does with a jump in `at` is the
-    renderer's business (`ui.line_chart` draws the polyline it is given and leaves
-    the missing position out of it); what this key owes it is that there is **no
-    point** at a position the ledger has nothing for, so a break can be drawn at
-    all.
+    **What a point means is `mode`'s, and `_points` is where that is decided.**  The
+    two readings are the accumulated pass rate (the default, and every page but
+    `/trend` asks for nothing) and each build's own numbers; `_points` documents both,
+    including why the accumulated one now carries a value across a position the ledger
+    has nothing for instead of leaving the line broken there.
 
-    **The percentage is the record's own verdicts, accumulated over these
-    positions.**  At position *i* it is the share of this test's runs up to and
-    including *i* that came back `pass` - the accumulated shape
-    `_series` below documents as the only honest one ("a build has at most
-    one record for a test, so a per-class value that is not accumulated is `0` or
-    `1` at every position - a rug and not a line"), expressed as a share because
-    this axis is a percentage.  Nothing is classified here: the numerator is the
-    count of `errors.VERDICT_PASS` among the record's own words and the denominator
-    is how many runs are in the window, which is also why every test has a line -
-    a TAP ratio would leave `boot`, which reports no TAP counts at all, without one.
-    The accumulation is over the page's positions and not over the ledger's history,
-    exactly as `_trend_lines` says, so the two pictures of one answer agree.
+    What this key owes the renderer is unchanged: the points are `(position, percent)`
+    pairs on **the order's** positions, and a position this test has no run for is a
+    position with no *run* - whether it also draws a point is `mode`'s business, and
+    `carried` on the point says which kind of point it is.
+
+    `kept` is the legend's numerator and **not** `len(points)`.  The two are the same
+    number on the per-build reading and are not on the accumulated one, where a position
+    inside the run draws a point it has no record for (`_points` carries the value): the
+    first draft printed the drawn points over the total, and the local stack rendered
+    `31 / 26 runs` - more runs on the legend than the ledger has.  `kept` counts the
+    points that *are* records, which is what the legend is a statement about, and it is
+    computed here rather than at the renderer because `carried` is this layer's word.
 
     The points come from `Gui.trend(test, scope)`, which owns "this test's records
     with their regressions" (a point carries the record's `verdict` and whether the
@@ -826,35 +1197,117 @@ def _series(ordered: list[dict[str, Any]], gui: Any, records: Any) -> list[dict[
     does not list is dropped by the mapping below and never by a cap here; where a
     build has several records for one test the newest speaks, which is the rule
     `_wave_slots` and `timelines.marks` use for the same axis.
+
+    `tests` is the set this draws a line per, exactly as `_timelines` takes it: the
+    catalogue's whole set unless the page has a box for choosing (`/trend`), so the
+    legend names the tests that were asked for and the colour slots follow the list
+    (`_chart_series` reserves a slot per position in it).
     """
     slots = len(ordered)
     ends = ((str(ordered[0]["build_id"]), str(ordered[-1]["build_id"]))
             if ordered else ("", ""))
     found = []
-    for test in DEFAULT_TESTS:
+    for test in tests:
         history = records.series(test)
         newest: dict[str, dict[str, Any]] = {}
         # `trend`'s points are the series oldest first, so the last write per build
         # is that build's newest record - no second lookup, no second parse.
         for point in gui.trend(test, max(1, len(history)))["points"]:
             newest[str(point["build_id"])] = point
-        points = []
-        runs = 0
-        passed = 0
-        for at, one in enumerate(ordered):
-            point = newest.get(str(one["build_id"]))
-            if point is None:
+        points = _points(ordered, newest, mode)
+        found.append({"test": test, "runs": len(history), "slots": slots,
+                      "ends": ends, "mode": mode,
+                      "kept": sum(1 for one in points if not one["carried"]),
+                      "points": points})
+    return found
+
+
+def _points(ordered: list[dict[str, Any]], newest: dict, mode: str) -> list[dict[str, Any]]:
+    """One test's line as the `(position, percent)` pairs the chart draws.
+
+    One axis, two questions, and `mode` picks which - the switch the operator asked for
+    (「切换一种模式就是改成能显示具体每一项的通过数值那种」).  `schema.CHART_MODES` holds
+    the vocabulary and `data.rows` has already refused anything outside it, so this
+    function only has to answer the two.
+
+    **`MODE_CUMULATIVE` - the accumulated pass rate.**  At position *i* it is the share
+    of this test's runs, up to and including *i*, that came back `pass`.  Two properties
+    of it are worth spelling out, because both have been read off the picture wrongly:
+
+    * **It accumulates from the left end of the order, not from the oldest build.**  The
+      axis is the reader's own order (`sort`), so on a page sorted newest-first the first
+      position is the newest build and the curve runs backwards through time.  That is
+      not a bug and it cannot be fixed here - the axis is the order, and the order is the
+      question - so the panel's caption says which end the accumulation starts at
+      (`page.analysis.chart_cap`).
+    * **A position with no record carries the previous value.**  It used to be left out,
+      and the picture was a line broken into as many pieces as the window had gaps: the
+      operator read four or five separate measurements where there is one curve
+      (「如果是累计为什么还会有断层存在呢」).  Carrying is not an invention - if nothing
+      ran at a position then the accumulated rate *is* the previous one - and the point
+      is marked `carried` so a tooltip can say "no record here, the value is the previous
+      one's" rather than pretending a run happened.  Nothing is carried **before the
+      first record** or **after the last**: a rate with no runs behind it is not a rate,
+      and a flat line to the right edge would claim a test was still being measured.
+
+    **`MODE_EACH` - each build's own numbers.**  Every point is that one run and never a
+    running total, so the line moves at every build and a position with no record is a
+    gap, exactly as the timeline's empty square above says.  The percentage is
+    `_own_pct`, which prefers the record's own case counts.
+    """
+    points: list[dict[str, Any]] = []
+    runs = 0
+    passed = 0
+    for at, one in enumerate(ordered):
+        point = newest.get(str(one["build_id"]))
+        if point is None:
+            # No record here.  In the accumulating reading the value stands still, and
+            # only once it has a value to stand still at - a carried point before the
+            # first run would be a number with nothing behind it.
+            if mode == MODE_EACH or not runs:
                 continue
-            runs += 1
+            points.append({"at": at, "build_id": "", "pct": points[-1]["pct"],
+                           "verdict": "", "regression": False, "carried": True})
+            continue
+        runs += 1
+        if mode == MODE_EACH:
+            pct = _own_pct(point)
+        else:
             if point["verdict"] == errors.VERDICT_PASS:
                 passed += 1
-            points.append({"at": at, "build_id": str(one["build_id"]),
-                           "pct": round(100.0 * passed / runs, 1),
-                           "verdict": point["verdict"],
-                           "regression": bool(point["regression"])})
-        found.append({"test": test, "runs": len(history), "slots": slots,
-                      "ends": ends, "points": points})
-    return found
+            pct = round(100.0 * passed / runs, 1)
+        points.append({"at": at, "build_id": str(one["build_id"]), "pct": pct,
+                       "verdict": point["verdict"],
+                       "regression": bool(point["regression"]), "carried": False})
+    return points
+
+
+def _own_pct(point: Mapping[str, Any]) -> float:
+    """One record's own pass rate, as a percentage.
+
+    **The record's own case counts when it has them.**  `results` is the TAP summary
+    (`lib/judge.py`: `{"total", "failed", "skipped"}`), so a kselftest record that ran
+    twelve cases and failed one is `91.7` and not a flat `100` - which is the number the
+    operator was reading off the detail line and expecting to see on the chart
+    (「理论应该 100 和 80」).  A percentage is the only way one axis can carry both a
+    twelve-case suite and a boot.
+
+    **Its verdict when it has none.**  `boot` reports no TAP counts at all (`results` is
+    `{}`), and "did this build boot" is still a question with an answer: 100 for a pass
+    and 0 for everything else.  An undefined would leave `boot` without a line, which is
+    the one test whose line a reader is surest of.
+
+    The pass count is derived and clamped: `total - failed - skipped` is what the record
+    means by "passed" (`judge.tap_summary` counts the three and the detail line prints
+    them), and a record whose three numbers disagree cannot make the curve go below zero.
+    """
+    results = point.get("results") or {}
+    total = int(results.get("total") or 0)
+    if total > 0:
+        failed = max(0, int(results.get("failed") or 0))
+        skipped = max(0, int(results.get("skipped") or 0))
+        return round(100.0 * max(0, total - failed - skipped) / total, 1)
+    return 100.0 if point.get("verdict") == errors.VERDICT_PASS else 0.0
 
 
 def _drift(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -929,15 +1382,6 @@ def _sorts(lang: str) -> list[tuple[str, str]]:
     return [(value, _sort_label(value, lang)) for value in SORTS if value]
 
 
-def _clock(seconds: float, shape: str = "%H:%M:%S") -> str:
-    """An activity's own epoch stamp as the design's table prints it; `0.0` is no time.
-
-    `run.json` holds `started`/`ended` as epoch floats (`lib/run.py`), and `ended`
-    is `0.0` while a run is going - which is why this answers `""` for a falsy
-    stamp instead of `1970-01-01 00:00:00`, and why a caller can read "no end yet"
-    off the same field it prints.
-    """
-    return time.strftime(shape, time.localtime(seconds)) if seconds else ""
 
 
 # ---------------------------------------------------------------- the self-check
@@ -997,9 +1441,10 @@ def _summaries(gui: Any, check: Filter, found: dict[str, Any]) -> list[tuple[str
         ("queue", queue_said),
         ("runs", f'{len(found["runs"])} rows, newest {newest_run}'),
         ("picks", picks_said),
-        ("bars", f'{len(found["bars"])} rows, first three '
-                 + ", ".join(f'{one["ok"]}/{one["bad"]}/{one["warn"]}'
-                             for one in found["bars"][:3])),
+        ("bars", f'{len(found["bars"])} regions, '
+                 + (", ".join(f'{one["test"]}: {one["ok"]}/{one["bad"]}/{one["warn"]} '
+                              f'over {len(one["bars"])} builds'
+                              for one in found["bars"]) or "-")),
         ("timelines", timelines),
         ("series", series),
         ("drift", f'{len(found["drift"])} rows, '

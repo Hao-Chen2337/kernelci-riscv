@@ -127,6 +127,26 @@ def results(build_id=None, test=None):
     return os.path.join(base, f"{test}.json") if build_id and test else base
 
 
+def results_history(build_id, test):
+    """`var/results/<build-id>/<test>.history.jsonl` - every run of that pair, one line each.
+
+    Beside `results()` because it is the same ledger read twice: `<test>.json` is the
+    pair's current record and this is the runs it replaced, so the two files belong to
+    the same build's directory and are written by the same call (`sink.Ledger.write`).
+
+    Built **on `results()`** rather than on `work()`: `$KCI_RESULTS_DIR` replaces the
+    whole tree for reads and writes both, and a second function that walked `work()`
+    would put the history in one tree and the record in another the moment a test - or
+    a second deployment on one checkout - set the variable (`RESULTS_ENV`).
+
+    The suffix is `.jsonl` and that is load-bearing, not cosmetic: `sink._build_records`
+    lists a build directory with `name.endswith(".json")`, so a `.json` history would be
+    read back as a second record of the same pair.  `HISTORY_SUFFIX` says it at the
+    writer's end.
+    """
+    return os.path.join(results(build_id, ""), f"{test}.history.jsonl")
+
+
 def state(name=None):
     """`var/state/` - deployment facts: which build is served, which tree was seeded."""
     return _under("state", name)

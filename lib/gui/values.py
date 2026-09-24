@@ -16,16 +16,19 @@ module's subject, and nothing is read for this one.
 """
 
 import os
+import time
 import urllib.parse
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from ..i18n import DEFAULT_LANG, t
+from ..poller import parse_iso
 from ..re import Records
 from .forms import _names, _token
 from .schema import (
     ARCH_KNOWN,
     BRANCH_SEEDS,
+    DEFAULT_TZ,
     EVIDENCE,
     TREES_KNOWN,
     _branches_from_config,
@@ -57,6 +60,39 @@ def _ago(seconds: float) -> str:
         if seconds >= size:
             return f"{int(seconds // size)}{unit}"
     return f"{int(seconds)}s"
+
+
+def _clock(seconds: float, tz: str = DEFAULT_TZ, shape: str = "%H:%M:%S") -> str:
+    """An epoch float as the clock the reader chose; a falsy stamp is no time.
+
+    `run.json` holds `started`/`ended` as epoch floats (`lib/run.py`), and `ended`
+    is `0.0` while a run is going - which is why this answers `""` for a falsy
+    stamp instead of `1970-01-01 00:00:00`, and why a caller can read "no end yet"
+    off the same field it prints.
+
+    `tz` is `Filter.tz` and **only the printing moves**: every stamp this console
+    reads is UTC on disk and every stamp it writes stays UTC.  The two clocks are
+    `utc`, which is the value as stored, and `local`, which is the machine this
+    console runs on and what a reader comparing a page against their own watch wants.
+    """
+    if not seconds:
+        return ""
+    return time.strftime(shape, time.gmtime(seconds) if tz == "utc"
+                         else time.localtime(seconds))
+
+
+def _in_clock(stamp: str, tz: str = DEFAULT_TZ, shape: str = "%Y-%m-%d %H:%M") -> str:
+    """A stored UTC stamp in the reader's chosen clock, in the shape asked for.
+
+    The same choice `_clock` makes, for the stamps that arrive as text rather than as
+    epoch floats - and the same rule, that **only the printing moves**.  A stamp nobody
+    can read comes back untouched, because a page's job is to print what the file says
+    and `parse_iso` is the poller's own reader: the page and the loop that wrote the
+    stamp agree about what the value means rather than each having a spelling of its
+    own.
+    """
+    parsed = parse_iso(stamp)
+    return _clock(parsed, tz, shape) if parsed else stamp
 
 
 def _human(size: int) -> str:

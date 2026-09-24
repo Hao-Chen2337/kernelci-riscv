@@ -142,7 +142,11 @@ function build(pageDrawn, storage, tableRows, digest) {
     DIGEST: digest || 'base',
     fetch: (url) => Promise.resolve({ json: () => Promise.resolve(sandbox.__answer) }),
     setInterval() { return 0; }, setTimeout() { return 0; },
-    location: { reload() { sandbox.reloaded = (sandbox.reloaded || 0) + 1; } },
+    // `pathname`/`search` are `logHref`'s - the 日志 link's `?back=`, which is the page
+    // the notice's log tab leads back to.  This harness never clicks one, but `_JS`
+    // reads them, so a missing one is a `TypeError` waiting for the test that does.
+    location: { pathname: '/runs', search: '',
+                reload() { sandbox.reloaded = (sandbox.reloaded || 0) + 1; } },
     encodeURIComponent,
     document: {
       title: 'kernelci-riscv runs', hidden: false, activeElement: null,
@@ -290,16 +294,19 @@ function check(name, ok, note) { out.push([name, ok, note]); }
     await third.sandbox.livePoll(); await drain();
     const carriedCard = second.noticeText();
     // The card's own log link, and the *form* of it that counts: `/runs/<id>/log` is
-    // the whole log as `text/plain` (`lib/gui/server.py`, `log_body`) and the notice
-    // opens it in a tab of its own.  What stood here was `/\/log\?offset=0/` - the
-    // query string of the JSON tail endpoint the removed log box polled - and it was
-    // stale for as long as nobody ran this file (`verify.py` never listed it): the
-    // string `offset=0` appears nowhere in `lib/gui` and `server.py` ignores query
-    // params on that route, so the assertion could never have passed again.
+    // the whole log as a page (`lib/gui/server.py`, `log_body`) and the notice opens it
+    // in a tab of its own - with this page as its `?back=`, so the tab can lead back to
+    // the table the click was made in (`ui.log_link`).  What stood here was
+    // `/\/log\?offset=0/` - the query string of the JSON tail endpoint the removed log
+    // box polled - and it was stale for as long as nobody ran this file (`verify.py`
+    // never listed it): the string `offset=0` appears nowhere in `lib/gui` and
+    // `server.py` ignores query params on that route, so the assertion could never have
+    // passed again.  The `back` here is the harness's own `location` (`/runs`), spelled
+    // the way `logHref` spells it.
     check('S9 digest change reloads once, the notice rides across it with its own controls, and a later reload does not repeat it',
           dom.sandbox.reloaded === 1 && !!carriedRaw && second.notices() === 1 && third.notices() === 0
           && /data-dismiss/.test(carriedCard)
-          && /<a href="\/runs\/A\/log" target="_blank" rel="noopener">/.test(carriedCard),
+          && /<a href="\/runs\/A\/log\?back=%2Fruns" target="_blank" rel="noopener">/.test(carriedCard),
           `reloads=${dom.sandbox.reloaded} carried=${!!carriedRaw} afterReload=${second.notices()} thirdLoad=${third.notices()} card=${carriedCard.slice(0, 130)}`);
   }
   // S10: no digest change -> no reload; the table is patched only with data-rows=all.

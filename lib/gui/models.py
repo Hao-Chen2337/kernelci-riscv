@@ -14,7 +14,9 @@ No markup and no page lives here: these are what a page reads, and every rendere
 this package is a function of them."""
 
 import html
+import ipaddress
 import os
+import urllib.parse
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -27,28 +29,34 @@ from ..re import Records
 from ..tests import TESTS
 from .forms import (
     _api_url,
-    _artifacts,
+    _artifacts_all,
+    _chosen_many,
     _clamp,
     _first,
     _named,
     _named_many,
     _names,
     _numbers,
+    _origins,
+    _tests_many,
     _token,
 )
 from .schema import (
     API_LAUNCH,
     API_NAMES,
+    API_PRODUCTION,
+    CHART_MODES,
     DEFAULT_DELTA,
     EVIDENCE,
     FILTER_ORDER,
+    LIST_OFFSETS,
     MAX_DAYS,
-    MAX_DELTA,
     MAX_LIMIT,
+    MODE_CUMULATIVE,
     NO_WINDOW,
-    ORIGINS,
     RANS,
     SORT_KEYS,
+    TZS,
     VERDICTS,
 )
 from .sorting import _sort_refused, _sort_spec
@@ -163,16 +171,48 @@ class Filter:
     result: str = ""
     job: str = ""
     days: int = NO_WINDOW             # 0 = no window: the job's whole history
-    origin: str = "any"              # any | local | remote | both
+    origin: str = "any"              # any | local | remote | both | card | a side set
     has: tuple[str, ...] = ()        # artifacts the row must have (of ARTIFACTS)
     missing: tuple[str, ...] = ()    # artifacts the row must be missing
     ran: str = "any"                 # any | never | ever | failing
     test: str = ""                   # narrows ran and verdict to one test
+    # Which tests the trend page draws, as a set and not one value: `test` above is a
+    # *condition* ("rows whose ledger for this test says so"), while this is the axis of
+    # one page that draws a line per test (`/trend`) and the operator's own ask was to
+    # pick the combination - 「可以把三种测试就是任意组合」.  A comma-joined string and
+    # not a tuple for the same reason `tree` is one: `_url` collapses a query through a
+    # dict, so a repeated key cannot ride a link, and `to_query` spells this the way the
+    # multi box submits it.  Empty means the catalogue's whole set (`DEFAULT_TESTS`), and
+    # it is not in `FILTER_ORDER`: it is read by one route and means nothing to the rest.
+    tests: str = ""
+    # Which of `schema.CHART_MODES` the trend page's chart answers - the accumulated pass
+    # rate, or each build's own numbers.  Beside `tests` and a `Filter` field for the
+    # same reason it is one: it is the *page's* axis and not a condition (it narrows no
+    # row and admits no build the other answer refuses), and being a field is what makes
+    # it ride every link and every bar of that page without any of them naming it -
+    # `to_query` carries it, `urls._url` keeps it for the one route that reads it, and
+    # `urls._carried` hands it to a form that draws no control for it.  Page state
+    # (`schema.PAGE_STATE`) is the other way to hold a key like this, and it is the wrong
+    # one here: those keys are invisible to `to_query`, so each of the three above would
+    # have had to be taught about `mode` by hand (`/worker` threads `keep=` through every
+    # link for exactly that reason, and a page whose whole picture changes with one
+    # control may not lose it on a sort chip).
+    mode: str = ""
     verdict: str = ""                # the most recent verdict is this one
     evidence: str = "any"            # what the pull record says (EVIDENCE)
     text: str = ""
     limit: int = 50
     offset: int = 0
+    # The offset of a page's **second and later** lists, by the key the list's own
+    # pager writes (`schema.LIST_OFFSETS`): `/local/<build_id>` draws four lists at
+    # once and each has to turn its own page.  Sparse on purpose - a key that appeared
+    # in no URL is simply absent, and `list_offset` answers 0 for it, so this stays
+    # empty on every page that has one list and costs nothing there.
+    #
+    # Page state and not a condition, exactly like `offset` above: `to_query` leaves
+    # it out, so every link that is not a pager starts every list over.  It is *not*
+    # in `FILTER_ORDER` either, for the same reason.
+    offsets: dict[str, int] = field(default_factory=dict)
     # The order `/analysis` puts its rows in, and the reason it is a `Filter` field
     # and not page state like `pick` (see `SORTS`): a row's adjacent delta is defined
     # by the order, so every link that keeps the row has to keep this too.  `""` is
@@ -222,15 +262,35 @@ class Filter:
     # (`same-branch`) is not a refusal: that is an alias and means what it always meant.
     sort_raw: str = ""
     # How many rows of the order may spend a config read on their neighbours.  It was
-    # read by the renderer alone (`_clamp(_numbers(query, "delta", DEFAULT_DELTA), 0,
-    # MAX_DELTA)`), so it was in no `Filter` and therefore in no link - and the walls
-    # between the list and one comparison (`_compare_url`) are built from a `Filter`.
-    # A comparison read out of the context it was made in is a different comparison.
+    # read by the renderer alone (a clamp against a constant), so it was in no `Filter`
+    # and therefore in no link - and the walls between the list and one comparison
+    # (`_compare_url`) are built from a `Filter`.  A comparison read out of the context
+    # it was made in is a different comparison.
+    #
+    # Its cap is `limit` - the rows this page drew, and no more (see `DEFAULT_DELTA`):
+    # comparing a row the reader did not ask for is work no number on the page can
+    # account for, and "all of them" is then a thing the two controls can say between
+    # them rather than a third value to invent.
     delta: int = 0
     # Page state that is not a filter: the two builds to compare (`/analysis`), and
     # the rows a link asked to pre-tick on the pull page.
     pick: tuple[str, ...] = ()
     tick: tuple[str, ...] = ()
+
+    # **Which clock the stamps are printed in, and nothing else.**  Every stamp this
+    # console reads is UTC on disk (`lib/kbuild.py`'s `_stamp`) and every stamp it
+    # *writes* - a record, a callback body - stays UTC; this key changes the two
+    # characters of a date a page puts on screen, which is the whole of the operator's
+    # ask (「这个可能只是一个显示的功能因为可能存储等等的还是看那个原来的」).  The
+    # pages that print stamps default to this machine's clock (`local`), which is what
+    # `/worker`'s `_stamp` already does for its records, with the stored value one
+    # hover away in the `title=`.
+    #
+    # It rides the `Filter` although it is not a condition, for the reason `tests`
+    # does: every link, chip and command is built from a `Filter`, so a display choice
+    # held anywhere else would be lost by the reader's next click.  `Filter.accepts`
+    # does not read it - no row is dropped because of the clock it is shown in.
+    tz: str = "local"                 # local | utc
 
     @classmethod
     def from_query(cls, query: Mapping[str, list[str]], lang: str = DEFAULT_LANG,
@@ -245,13 +305,20 @@ class Filter:
         (`production`) or spell it out (`https://api.kernelci.org`), and only this
         deployment knows which names mean which addresses.  Both spellings land on
         the same `api` key, and a value nobody here recognises - or one that is not
-        an address at all - is *ignored*: the filter comes back on the startup base,
+        an address at all - is *ignored*: the filter comes back on the default base,
         with `api_raw` remembering what was dropped so the page can say so instead of
         quietly answering a question nobody asked.
+
+        **An absent `api` key means `production`, not the base this process started
+        on.**  The console is read against the real KernelCI API by default; a
+        deployment on the local stack asks for `?api=local` (the pages write that key
+        themselves once the filter says so), and `--api-url` still decides what
+        `local` resolves to.  On a machine started *on* production the two are the
+        same base, so `key()` answers `""` and today's URLs are unchanged there.
         """
         apis = apis if apis is not None else Apis()
         raw_api = _first(query, "api")
-        api_base = apis.base(raw_api)
+        api_base = apis.base(raw_api) if raw_api else apis.base(API_PRODUCTION)
 
         def one_of(key: str, options: Iterable[str], default: str) -> str:
             value = _first(query, key)
@@ -276,30 +343,73 @@ class Filter:
                    arch=_named_many(query, "arch"),
                    defconfig=_named_many(query, "defconfig"),
                    compiler=_named_many(query, "compiler"),
-                   state=_named(query, "state"),
-                   result=_named(query, "result"),
+                   # **The kbuild axes a reader narrows to a set of, not to a value.**  This
+                   # is the operator's 「一个指标多个值」: `?state=done,running` asks for either
+                   # - the same comma-joined spelling `tree`/`arch` already use, read by the
+                   # same `_named_many` and compared by the same membership test below.
+                   # `_named` used to refuse a comma outright (not one `_token`), so two
+                   # values was a red error page rather than a wider question; and on the
+                   # wire a join is only honest because `state__in` is answered as the union
+                   # (`state__in=available,done` answers on the local stack — see
+                   # `MULTI_FIELDS`, which is what sends it).
+                   state=_named_many(query, "state", lang),
+                   result=_named_many(query, "result", lang),
                    job=_first(query, "job"), days=days,
-                   # **The cards are what `/` shows when nothing is asked.**  The
-                   # operator's ask this round was 「专门搞一个存卡片的地方，就是默认显示
-                   # 全部卡片」, and the page that holds every card is this one with
-                   # `origin=card` - so that is the default, and `?origin=any` is how a
-                   # reader asks for the union (the API's window and this disk together).
-                   # The three union readers that are *not* pages pin it themselves:
-                   # `summary`, `remote_query` and every internal `Filter(…, origin="any")`
-                   # fallback, so the machine interface keeps its contract and the gap the
-                   # strip counts is still counted over everything.
-                   origin=one_of("origin", ORIGINS, "card"),
-                   has=_artifacts(_first(query, "has")),
-                   missing=_artifacts(_first(query, "missing")),
+                   # **`any` is what a page shows when nothing is asked** - the union:
+                   # the API's window and this disk together.  It was `card` for one
+                   # round (「默认显示全部卡片」), which made a bare `/` a page about
+                   # *this machine's* cards rather than about the builds; the operator's
+                   # ask this round was the other way (「默认选项不要选有卡片，选不限」),
+                   # so `?origin=card` is now the explicit request and `any` the default.
+                   # Nothing else moved: the readers that pin the union themselves
+                   # (`summary`, `remote_query`, every internal `Filter(…, origin="any")`
+                   # fallback) are unchanged, and the gap the strip counts is still
+                   # counted over everything.
+                   #
+                   # **The axis is a set of sides, not one of five values.**  `/`'s box
+                   # draws 本地 and 远端 as two ticks (「两个都要完全可以钩两个」), so a
+                   # reader may name either side or both - and two ticks is a value
+                   # `one_of` cannot hold.  `forms._origins` is the reader of that
+                   # spelling; `accepts` below ORs the sides it names.  `card` and `both`
+                   # are still values a URL may carry, and neither is a side.
+                   origin=_origins(query),
+                   # **Every value the query carried, not only its first.**  Both of these
+                   # are already sets (`accepts` tests membership), and the page has
+                   # always drawn them as one select whose value is a comma list - so the
+                   # field could hold several names while `_first` read only the first
+                   # one, and a hand-written `?missing=kernel&missing=modules` silently
+                   # asked about `kernel` alone.  `_artifacts_all` is `_artifacts` over
+                   # all of them, which is the spelling the page's own control sends.
+                   has=_artifacts_all(query, "has"),
+                   missing=_artifacts_all(query, "missing"),
                    ran=one_of("ran", RANS, "any"),
                    test=one_of("test", TESTS, ""),
-                   verdict=one_of("verdict", VERDICTS, ""),
-                   evidence=one_of("evidence", EVIDENCE, "any"),
+                   tests=_tests_many(query),
+                   mode=one_of("mode", CHART_MODES, MODE_CUMULATIVE),
+                   # A display choice, read like any other value: a `tz` this console
+                   # does not know is refused to the default rather than printed as an
+                   # empty clock (`tz`'s own comment says why it rides a `Filter`).
+                   tz=one_of("tz", TZS, "local"),
+                   # The same set of values as `state`/`result` above, and for the same
+                   # reason: `/jobs`' 最近 and 证据 columns ask "any of these verdicts",
+                   # which is a question this page can answer and a select box cannot
+                   # state.  These two vocabularies are *closed* and small (`VERDICTS`,
+                   # `EVIDENCE`), so the reader refuses a value they do not carry rather
+                   # than repairing it to the default (`_chosen_many` says why), and the
+                   # comparison is the membership test in `accepts` - a list, where
+                   # `one_of` compared one word.
+                   verdict=_chosen_many(query, "verdict", VERDICTS, "", lang),
+                   evidence=_chosen_many(query, "evidence", EVIDENCE, "any", lang),
                    text=_first(query, "text"), limit=limit,
                    offset=max(0, _numbers(query, "offset", 0)),
+                   # Only the keys the URL actually carried: an absent one is 0 by
+                   # `list_offset`'s own answer, and storing a 0 for all six would put
+                   # five keys nobody asked for into every filter on every page.
+                   offsets={key: max(0, _numbers(query, key, 0))
+                            for key in LIST_OFFSETS if _first(query, key)},
                    sort=_sort_spec(_first(query, "sort")),
                    sort_raw=_sort_refused(_first(query, "sort")),
-                   delta=_clamp(_numbers(query, "delta", DEFAULT_DELTA), 0, MAX_DELTA),
+                   delta=_clamp(_numbers(query, "delta", DEFAULT_DELTA), 0, limit),
                    asked_days=raw_days, asked_limit=raw_limit,
                    api=apis.key(api_base), api_base=api_base, api_given=raw_api,
                    api_raw=raw_api if (raw_api and not api_base) else "",
@@ -313,6 +423,17 @@ class Filter:
                    tick=tuple(one for value in (query.get("tick") or [])
                               for one in (_token(part) for part in str(value).split(","))
                               if one))
+
+    def list_offset(self, key: str) -> int:
+        """Where page N of this page's named list starts, 0 when its URL said nothing.
+
+        The reader's own `?pulls=50` and nothing else: this is not clamped against the
+        list's length, because the length is not known until the rows have been read
+        and a pager for an out-of-range offset draws the page links that lead back in
+        (`ui.pager` clamps the page it *prints*, and a slice past the end is empty
+        rather than wrong).
+        """
+        return self.offsets.get(key, 0)
 
     def clamps(self, lang: str = DEFAULT_LANG) -> list[str]:
         """The values this query asked for and did not get, in words.
@@ -365,12 +486,15 @@ class Filter:
         cannot be told apart from a link that asked for it by hand.
 
         `pick`/`tick` are page state rather than conditions and stay out: the
-        ticks of one page must not follow the reader to the next.
+        ticks of one page must not follow the reader to the next.  `offset` and
+        `offsets` (the second and later lists' own offsets, `LIST_OFFSETS`) are out
+        for the same reason: only a pager carries them, so every other link starts
+        every list at the first row.
 
-        `api` follows the same rule with the one default it has - the base this
-        process started on.  A page reading that base carries nothing, which is why
-        today's URLs are unchanged; a page reading another API says which one, and
-        says it first.
+        `api` follows the same rule with the one default it has - `production`
+        (`from_query`).  A page already reading that base carries nothing; a page on
+        any other base says which one, and says it first.  On a machine started on
+        production the two answers are one, so its URLs are unchanged.
         """
         wanted = (("api", self.api, ""),
                   ("tree", self.tree, ""), ("branch", self.branch, ""),
@@ -380,8 +504,24 @@ class Filter:
                   ("days", str(self.days), str(NO_WINDOW)),
                   ("limit", str(self.limit), "50"),
                   ("test", self.test, ""), ("ran", self.ran, "any"),
+                  # `tests` is the trend page's axis and not a `FILTER_ORDER` entry, so
+                  # it rides the tail beside `job`/`delta`: a key the order does not know
+                  # about is still a key the URL has to keep, or the multi box would
+                  # submit a set and every link out of the page would drop it.
+                  ("tests", self.tests, ""),
+                  # The chart's own question, in the tail beside `tests` for the same
+                  # reason: one route reads it (`ROUTE_KEYS["/trend"]`), the empty value
+                  # is the accumulated reading, so a page that never asked for a mode
+                  # spells nothing and is byte-for-byte the URL it was before the key
+                  # existed (`schema.MODE_CUMULATIVE`).
+                  ("mode", self.mode, MODE_CUMULATIVE),
+                  # The display clock, beside `tests` for the same reason and with the
+                  # same default rule: `local` is what a page prints when nothing is
+                  # asked, so the default is never spelled and `?tz=utc` is the whole
+                  # difference between two URLs.
+                  ("tz", self.tz, "local"),
                   ("verdict", self.verdict, ""), ("evidence", self.evidence, "any"),
-                  ("origin", self.origin, "card"),
+                  ("origin", self.origin, "any"),
                   ("missing", ",".join(self.missing), ""),
                   ("has", ",".join(self.has), ""), ("text", self.text, ""),
                   # `job` is the worker page's own filter - the name of a job node - and
@@ -451,33 +591,50 @@ class Filter:
                     return False
         if self.origin != "any":
             here, remote = bool(local and (local.present or local.card)), kbuild is not None
-            if self.origin == "local" and not here:
-                return False
-            if self.origin == "remote" and not remote:
-                return False
-            if self.origin == "both" and not (here and remote):
-                return False
-            # `carded`: this machine has a card for it, which is neither "local" (a
-            # card *or* bytes) nor "remote".  It exists because it is the one set the
-            # numbers strip's `cards` chip counts, and a chip whose link cannot
-            # reproduce its number is a number the reader cannot check - the 52 cards
-            # and the 53 directories differ by exactly the copies no card names
-            # (`_numbers_strip`, and `accept.py`'s S6).
-            if self.origin == "card" and not (local is not None and local.card is not None):
+            # **The sides are a set, and a row is in when it satisfies any of them.**
+            # `?origin=local,remote` is two ticks - the union of what this machine holds
+            # and what the API answered - which is what `any` also spells; the value
+            # exists because the two ticks are what a reader pressed, and a page that
+            # collapsed them back to `any` would redraw the boxes unticked
+            # (`forms._origins`).  One side is the same test with a set of one, so
+            # nothing about a single-value URL changed.
+            sides = set(self.origin.split(","))
+            if "card" in sides:
+                # `carded`: this machine has a card for it, which is neither "local" (a
+                # card *or* bytes) nor "remote".  It exists because it is the one set the
+                # numbers strip's `cards` chip counts, and a chip whose link cannot
+                # reproduce its number is a number the reader cannot check - the 52 cards
+                # and the 53 directories differ by exactly the copies no card names
+                # (`_numbers_strip`, and `accept.py`'s S6).
+                if local is None or local.card is None:
+                    return False
+            elif "both" in sides:
+                if not (here and remote):
+                    return False
+            elif not (("local" in sides and here) or ("remote" in sides and remote)):
                 return False
         if self.has or self.missing:
             held = set(local.present) if local is not None else {
                 name for name in ARTIFACTS if kbuild is not None and kbuild.artifact(name)}
             if any(name not in held for name in self.has) or any(name in held for name in self.missing):
                 return False
-        if self.evidence == "bytes":
-            # Not a `Local.state`: "the artifacts are on disk" is a fact about the
-            # download tree, and the two states around it need the record or the
-            # absence of it.  The numbers strip's `with bytes` chip is this value.
-            if local is None or not local.present:
+        # `evidence` names several values like the axes above (`?evidence=pulled,
+        # unrecorded`), and a row is in when **any** of them holds of it - the same
+        # membership test.  `any` inside such a set is still the value it is alone
+        # (no condition): "any or pulled" cannot mean less than "any", so it is
+        # dropped from the set rather than compared against a state no copy has.
+        wanted = [one for one in _names(self.evidence) if one != "any"]
+        if wanted:
+            def holds(one):
+                if one == "bytes":
+                    # Not a `Local.state`: "the artifacts are on disk" is a fact about the
+                    # download tree, and the two states around it need the record or the
+                    # absence of it.  The numbers strip's `with bytes` chip is this value.
+                    return local is not None and bool(local.present)
+                return local is not None and local.state == one
+
+            if not any(holds(one) for one in wanted):
                 return False
-        elif self.evidence != "any" and local is not None and local.state != self.evidence:
-            return False
         if kbuild is None:
             return True
         if self.ran != "any" or self.verdict:
@@ -489,7 +646,11 @@ class Filter:
                 return False
             if self.ran == "failing" and errors.VERDICT_FAIL not in verdicts:
                 return False
-            if self.verdict and (not verdicts or verdicts[-1] != self.verdict):
+            # The **latest** verdict of the row is what `verdict` asks about, and it is
+            # asked about as a set: "the newest record says fail or incomplete" is one
+            # question (`?verdict=fail,incomplete`), where a single value was a
+            # comparison and a comma-joined one used to match nothing at all.
+            if self.verdict and (not verdicts or verdicts[-1] not in _names(self.verdict)):
                 return False
         return True
 
@@ -497,6 +658,41 @@ class Filter:
 # ---------------------------------------------------------------------------
 # One local copy, and what the record does (not) say about it
 # ---------------------------------------------------------------------------
+
+# What a recorded act can prove about where the bytes came from, coarsest last:
+# `made-here` is a `file://` artifact (this deployment's own `var/serve/`), `local-api`
+# is a host on this machine's own network (the stack's artifact server, the console's
+# own API), and `official` is anywhere else.  Three words and not two, because "pulled"
+# covers both of the first two and they are the two the operator has to tell apart: a
+# build the local stack made is not a build upstream published.
+#
+# **Not `schema.ORIGINS`**, which is the *filter*'s axis (`any`/`local`/`remote`/
+# `both`/`card` - which builds a table is about).  This one is where one copy's bytes
+# came from, and the two answer different questions with the same English word.
+COPY_ORIGINS = ("made-here", "local-api", "official")
+
+
+def _own_host(host: str) -> bool:
+    """Is this host this machine's own network rather than somewhere out there?
+
+    The two local bases this deployment has are `http://127.0.0.1:8001` (the console's
+    own API) and `http://172.17.0.1:8999` (the stack's artifact server, on the docker
+    bridge), so loopback and the private ranges are the whole test - plus a bare name
+    with no dot, which can only resolve through this machine's own resolver.  No
+    address is spelled out here: a host is judged by what it *is*, so moving the stack
+    to another private address does not need an edit, and a deployment that published
+    from a public host is not mistaken for a local one.
+    """
+    if not host:
+        return False
+    if host == "localhost" or "." not in host:
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private or address.is_unspecified
+
 
 @dataclass
 class Local:
@@ -583,6 +779,46 @@ class Local:
             if host and host not in found:
                 found.append(host)
         return found
+
+    def origin(self) -> str:
+        """Where these bytes came from, as one of `COPY_ORIGINS` - `""` when nothing says.
+
+        Read off **the newest act's artifact URLs** (`Build.make()`'s own record) and
+        never off the card.  The card is where the bytes are *declared*; the act is
+        where they *came from*, and on this workspace the two really do disagree:
+        `Build.merge()` heals a card whose artifact URL names no build with one that
+        does, so a copy fetched from the local stack's own server ends up carrying
+        `https://files.kernelci.org/…` in its card while its act says
+        `http://172.17.0.1:8999/…`.  Classifying from the card would call that copy an
+        official pull, which is the one thing the reader asks this column to tell apart.
+
+        A copy with no act is not guessed at.  A card with no node id is this machine's
+        own (`state` says `made-here`: `publish_local()` wrote it and no query ever had
+        it), so it is `made-here` here too; every other no-act copy answers `""` -
+        bytes whose origin nobody recorded, which is what `provenance()`'s docstring
+        calls a hand-copied directory, and the page prints those as nothing rather than
+        as a fourth word this method would have to invent.
+
+        An act that names both an official host and a local one answers `official`
+        (the last of `COPY_ORIGINS` wins): a byte that crossed the internet is not a byte
+        this machine made, and a word that meant "some of both" would have to be drawn
+        in a cell that has room for one.
+        """
+        if not self.entries:
+            return "made-here" if self.state == "made-here" else ""
+        kinds = set()
+        for entry in self.entries:
+            parts = urllib.parse.urlsplit(str(entry.get("url") or ""))
+            if parts.scheme in ("", "file"):
+                kinds.add("made-here")
+            elif _own_host(parts.hostname or ""):
+                kinds.add("local-api")
+            else:
+                kinds.add("official")
+        for one in reversed(COPY_ORIGINS):
+            if one in kinds:
+                return one
+        return ""
 
     def state_text(self, lang: str = DEFAULT_LANG) -> str:
         """One sentence, saying what the record does say and what it does not."""

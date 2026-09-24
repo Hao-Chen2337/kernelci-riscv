@@ -52,6 +52,17 @@ class Records:
         """Only the records of one build."""
         return Records([one for one in self.items if one.build_id == build_id])
 
+    def for_builds(self, build_ids):
+        """Only the records of these builds, as one `Records`.
+
+        `for_build` narrowed to a set: a page that shows a *window* of builds - the
+        filtered, ordered, capped list `/analysis` draws - has to be able to ask the
+        ledger about exactly that window, or the counts beside it answer a question the
+        reader did not ask ("who passed in the last 25" answered over all 60).
+        """
+        wanted = set(build_ids)
+        return Records([one for one in self.items if one.build_id in wanted])
+
     def for_test(self, test):
         """Only the records of one test."""
         return Records([one for one in self.items if one.test == test])

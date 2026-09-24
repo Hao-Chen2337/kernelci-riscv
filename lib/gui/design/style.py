@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """The console's stylesheet: the design, as CSS.
 
-Extracted verbatim from `design/kernelci-design.html` (md5 `f9cb7459b2f7a92c0abe3d5afb541532`, 197552 bytes) by
+Extracted verbatim from `design/kernelci-design.html` (md5 `7420d0cec1b9b0d6e2cc8d28953aa1d9`, 197538 bytes) by
 `tools/design_extract.py`.  Do not hand-edit the rules below: the board is the
 design of record, and the extraction and the board are compared by
 `python3 tools/design_extract.py --check`.
@@ -443,7 +443,7 @@ table.grid th, table.grid td {
   border-bottom: 1px solid var(--line-soft);
 }
 table.grid thead th {
-  position: sticky; top: var(--topbar-h); z-index: 10;
+  position: sticky; top: 0; z-index: 10;
   background: var(--raised); color: var(--ink-soft);
   font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
   white-space: nowrap; border-bottom: 1px solid var(--line);
@@ -481,6 +481,41 @@ table.grid tr.group td {
 .delta .plus { color: var(--ok); }
 .delta .minus { color: var(--bad); }
 .delta .same { color: var(--ink-soft); }
+/* A `±` cell that carries a number is a door into that pair's whole comparison, and it
+   has to look like one: the global `a` rule would colour the numbers accent-blue, so the
+   link inherits and only the underline marks it - dotted, because the cell is a number
+   first and a link second, and solid under a red `−3` reads as a typo flag. */
+a.delta-link { color: inherit; text-decoration: underline dotted var(--accent-line); text-underline-offset: 3px; }
+a.delta-link:hover { text-decoration: underline solid var(--accent); }
+
+/* The config delta as one **fork**: the row's own build is the fork point, the pair
+   before it leaves on the upper arm and the pair after it on the lower one.  Each arm
+   draws its own half of the trunk - `.arm.up` the half above the seam, `.arm.down` the
+   half below - and a stub running right into its numbers; the seam between the two arms
+   is left open on purpose, because that opening **is** the fork point, the place the row's
+   own build sits.  Drawn with borders and no glyphs, so it holds at any row height the
+   table gives it and needs no per-row markup. */
+.fork { display: inline-flex; flex-direction: column; }
+.fork .arm {
+  display: grid; grid-template-columns: 12px 11px 1fr; align-items: center; gap: 3px;
+  font-family: var(--mono); font-size: 11.5px;
+}
+.fork .arm + .arm { margin-top: 2px; }
+.fork .arm .trunk { position: relative; align-self: stretch; }
+.fork .arm .trunk::before {
+  content: ""; position: absolute; left: 0; width: 1px; background: var(--line);
+}
+.fork .arm.up .trunk::before { top: 0; bottom: 50%; }
+.fork .arm.down .trunk::before { top: 50%; bottom: 0; }
+/* The stub: the horizontal that joins the trunk to this arm's numbers.  It starts at the
+   trunk and runs the full width of the arrow column, so the seam between the two arms is
+   where the fork opens. */
+.fork .arm .trunk::after {
+  content: ""; position: absolute; left: 0; right: -14px; top: 50%; height: 1px;
+  background: var(--line);
+}
+.fork .arm .arrow { color: var(--ink-soft); text-align: center; line-height: 1; }
+.fork .arm .body { min-width: 0; }
 
 .spark { display: inline-flex; gap: 2px; align-items: center; }
 .spark i {
@@ -510,8 +545,21 @@ details.more .filters { border-bottom: 0; background: var(--raised); padding-top
 
 .panel > .body.flush > .note { margin: 10px 12px 0; }
 
+/* The bars panel: one region per test, one line per build inside it.  The region is a
+   block of its own - the rule between two of them is what makes "three readings of one
+   list of builds" visible instead of one long column of lines - and its heading carries
+   the test's totals, right-aligned so they stand over the number column of the lines
+   below (`ui.test_bars`). */
+.regions { display: flex; flex-direction: column; }
+.region + .region { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.region .rhead { display: flex; align-items: baseline; gap: 8px; margin-bottom: 7px; }
+.region .rhead .rt { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+
 .bars { display: flex; flex-direction: column; gap: 7px; }
-.bar { display: grid; grid-template-columns: minmax(90px, 200px) 1fr 54px; align-items: center; gap: 10px; }
+/* The number column is a minimum and not a width: three counts and a dash are all it
+   ever holds, and `auto` is what keeps a four-digit count from wrapping under itself. */
+.bar { display: grid; grid-template-columns: minmax(90px, 200px) 1fr minmax(56px, auto);
+  align-items: center; gap: 10px; }
 .bar .bt { font-family: var(--mono); font-size: 11.5px; color: var(--code);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar .track { height: 9px; background: var(--sunken); border-radius: var(--r-pill); overflow: hidden; display: flex; }
@@ -520,7 +568,20 @@ details.more .filters { border-bottom: 0; background: var(--raised); padding-top
 .bar .track i.bad { background: var(--bad); }
 .bar .track i.warn { background: var(--warn); }
 .bar .track i.idle { background: var(--idle); }
-.bar .bn { text-align: right; font-family: var(--mono); font-size: 11.5px; color: var(--ink-mid); }
+/* A line's three numbers stand in the same three places on every line, and a count of
+   zero keeps its `<i>` and its place while losing the colour: the columns are then
+   scannable down the page, and a zero does not read as news.  The region's totals wear
+   the same shape, so a heading and the lines under it are one readout at two scopes. */
+.region .rhead .rn, .bar .bn {
+  display: flex; gap: 7px; font-family: var(--mono); font-size: 11.5px;
+  color: var(--ink-soft); font-variant-numeric: tabular-nums;
+}
+.region .rhead .rn { margin-left: auto; }
+.bar .bn { justify-content: flex-end; }
+.bar .bn i, .region .rhead .rn i { font-style: normal; }
+.bar .bn i.ok, .region .rhead .rn i.ok { color: var(--ok); }
+.bar .bn i.bad, .region .rhead .rn i.bad { color: var(--bad); }
+.bar .bn i.warn, .region .rhead .rn i.warn { color: var(--warn); }
 
 .kv { display: flex; flex-direction: column; }
 .kv > div {
@@ -565,14 +626,56 @@ table.grid tbody tr.logrow:hover { background: var(--sunken); }
 .logbox pre { margin: 0; max-height: 168px; overflow: auto; font-family: var(--mono); font-size: 11.5px; line-height: 1.6; color: var(--ink-mid); white-space: pre; }
 .logbox .logfoot { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--ink-soft); }
 .logbox .logfoot code { color: var(--code); }
+/* The charts.  The board draws its own chart as a picture and hands over its geometry,
+   not its rules, so this block is the console's: one rule per thing `ui.line_chart`
+   writes and nothing else.  `.band` is the plate a band is drawn on - `--raised` with
+   `--line` for an edge, because in light mode the fill is a 3% difference from the
+   panel and the card is what a reader actually sees - while the grid inside it stays on
+   `--line-soft`, one step softer than its own boundary.  `.area` is the fill under a
+   run's line, and `.bandlbl`/`.endlbl` are the two kinds of name the picture carries:
+   the band's own in its series colour (`style=` inline, since `.chart text` is a rule
+   and a rule beats a presentation attribute) and the axis' two ends in the design's
+   mid ink. */
 .chart { display: block; width: 100%; height: auto; }
 .chart text { font-family: var(--mono); font-size: 10px; fill: var(--ink-soft); }
+.chart .band { fill: var(--raised); stroke: var(--line); stroke-width: 1; }
 .chart .yline { stroke: var(--line-soft); stroke-width: 1; stroke-dasharray: 3 4; }
 .chart .axis { stroke: var(--line); stroke-width: 1; }
 .chart .endlbl { fill: var(--ink-mid); }
-.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; padding-bottom: 10px; }
-.legend .lg { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-mid); }
-.legend .lg i { width: 15px; height: 2px; border-radius: 2px; flex: 0 0 auto; }
+.chart .bandlbl { font-size: 10.5px; font-weight: 600; }
+.chart .area { stroke: none; fill-opacity: .14; }
+/* A chart with nothing to draw.  One band's own height, so the panel a reader scrolled
+   to keeps the shape of a chart when its window has no records at all - the common case
+   at `/trend?ran=never` and the first thing a new stack shows (`ui.chart_none`). */
+.chart-none {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 188px; margin: 0; padding: 16px;
+  border: 1px dashed var(--line); border-radius: var(--r);
+  background: var(--raised); color: var(--ink-soft);
+  font-size: 12.5px; line-height: 1.55; text-align: center;
+}
+.legend { display: flex; flex-wrap: wrap; gap: 7px 18px; padding-bottom: 12px; }
+.legend .lg { display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--ink-mid); }
+.legend .lg i { width: 18px; height: 3px; border-radius: 2px; flex: 0 0 auto; }
 .legend .lg code { color: var(--ink); }
-.chartcap { text-align: center; font-size: 11px; color: var(--ink-soft); padding-top: 7px; }
+.legend .lg .muted { font-variant-numeric: tabular-nums; }
+.chartcap { text-align: center; font-size: 11px; color: var(--ink-soft); padding-top: 8px; }
+
+/* The key over the builds table, naming the three marks in the 卡片 column
+   (`builds._card_legend`).  This block is self-contained and touches nothing another
+   hand is holding: one class, written only by that one function.
+
+   It needs a rule at all because the panel it sits in is `flush` - the padding is off so
+   the table can meet the panel's edge - and a bare `<p>` in a flush body starts hard
+   against the top border.  The offsets follow the design's own `.note` in a flush body
+   (same 10px/12px, line 517 above), because this line is the same kind of thing: a
+   sentence sitting over a table, at the panel's own side padding, saying what the thing
+   below it is.  It is not a `.note` - no plate, no accent, no border - since it is
+   permanent furniture of the column rather than a message about the current view, and a
+   boxed line over every view of the table would read as a warning that never goes away.
+   Colour is `--ink-soft` like the other standing explanations, and the glyphs inside it
+   carry the column's own `.tick`/`.cross`, so the ✓ the sentence names is the ✓ in the
+   row - colour plus sign plus word, never colour alone. */
+.cardkey { margin: 10px 12px 10px; font-size: 11.5px; line-height: 1.55; color: var(--ink-soft); }
+.cardkey .tick, .cardkey .cross { font-weight: 600; }
 """

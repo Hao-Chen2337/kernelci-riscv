@@ -18,6 +18,13 @@ PART: dict[str, dict[str, str]] = {
 
     "nav.analysis": {"en": "analysis", "zh": "分析"},
 
+    # The trend page's own name.  Short like the other four, because it is a nav link
+    # and the page's `<title>` (`shell.document` reads the same key): "trend" is the
+    # word the other five stations' one-word names set the register for, and 趋势 is
+    # what a reader of the five beside it would call a page about lines going up and
+    # down over time.
+    "nav.trend": {"en": "trend", "zh": "趋势"},
+
     # --- the numbers strip: every number a link, every number read uncapped ----
 
     # The counts line was three sentences and three absolute paths.  Its replacement is
@@ -41,7 +48,9 @@ PART: dict[str, dict[str, str]] = {
 
     "view.union": {"en": "both {n}", "zh": "并集 {n}"},
 
-    "page.builds.ledger_title": {"en": "the ledger's own numbers", "zh": "账本自己的数"},
+    # `page.builds.ledger_title` stood here.  It named the panel `_ledger_panel` drew,
+    # and the operator cut the panel (「这个可以删除了就是」), so the key went with it -
+    # a key with no drawer is what `--check`'s unused list is for.
 
     "page.builds.acts_title": {"en": "what has been pulled", "zh": "拉过什么"},
 
@@ -53,6 +62,20 @@ PART: dict[str, dict[str, str]] = {
     "page.builds.image_sub": {"en": "how a card with no remote counterpart is made",
                                 "zh": "没有远端对应物的卡片是怎么来的"},
 
+    # The answer, in the panel and not only in the subtitle: the operator read the old
+    # subtitle as too thin (「写的不详细」) and asked for the parameters that let them make
+    # such a card themselves.  What the two facts are - that no API can answer for a build
+    # it has never heard of, and that a blank box is left to the environment rather than
+    # sent as an empty value - cannot be read off the boxes, so they are said here.
+    "page.builds.image_how": {"en": "The API answers for the builds it holds, so a card for a build it has never heard of cannot come from it: it is made here, by publishing an artifact already on this disk as a build of its own. The boxes below are that build's own facts, and a box left blank is not sent at all - the command then falls back to this workspace's environment and to the file this panel is about.",
+                                "zh": "接口只为它自己持有的 build 作答，所以它从没听说过的 build，卡片不可能来自接口：只能是本地自己产的——把这块磁盘上已有的产物发布成一个 build。下面这些框就是那个 build 自己的事实；留空的框根本不会被送出去，命令会退回这个工作区的环境，和这个面板在说的那个文件。"},
+
+    # What the button runs.  It carries no argv *line* under it the way the pull bar does
+    # (`builds._origin_panel`), because five of the six values are typed after the page
+    # was drawn: the command is knowable only in its shape, and its shape is this.
+    "page.builds.image_command": {"en": "runs run_latest.py --provision-only, with one --parameter key=value for every box filled in above (tree, branch, commit, describe, defconfig, kernel_url)",
+                                    "zh": "运行 run_latest.py --provision-only，上面每填一个框就多一个 --parameter key=value（tree、branch、commit、describe、defconfig、kernel_url）"},
+
     # The builds table's head, as the board's own sub-line: how many rows this window
     # holds.  The board printed a literal `7 rows in this window` over a 24-row table
     # (its script corrected the English at run time, so the served markup was wrong in
@@ -60,10 +83,13 @@ PART: dict[str, dict[str, str]] = {
     # fills from the rows it drew.
     "page.builds.rows_window": {"en": "{n} rows in this window", "zh": "这个窗口里 {n} 行"},
 
-    # The card column's three cells: `present` is the board's own word for a tick whose
-    # artifact `Build.present()` found on disk, and its absence is the existing
-    # `state.not_here`.  A tick with no word for "here" beside it reads as decoration.
-    "page.builds.present": {"en": "present", "zh": "在"},
+    # `page.builds.present` was here - the board's own word for a tick whose artifact
+    # `Build.present()` found on disk - and it is gone with the shape that needed it.
+    # The mark used to carry 在/不在 and the artifact's *name* sat on a span wrapped
+    # around it, so the inner `title=` shadowed the outer one and hovering a tick said
+    # "在" and never said which file.  Each mark now carries one sentence naming both
+    # (`card.tick_here`/`card.tick_absent`), which is the same fact in the place the
+    # reader's pointer actually lands.
 
     # The two commands in the local-origin panel, in the board's own words.  They are new
     # keys rather than the old layer's `btn.publish_image`/`btn.record_window` because the
@@ -120,14 +146,18 @@ PART: dict[str, dict[str, str]] = {
 
     # --- / : three things, the record, the ledger, what is running ----------
 
-    "label.records_in_ledger": {"en": "records in the ledger", "zh": "账本里的记录"},
+    # `label.records_in_ledger` was here: the ledger panel's `records` chip, which
+    # printed the same number the strip's own `counts.records` chip already printed
+    # from the same directory (see `builds._ledger_panel`).  The panel's copy went -
+    # it was the one the operator called redundant (「感觉有点多余」) - and the key
+    # went with it, so `--check`'s unused list stays a list of things to look at.
 
-    "label.verdicts": {"en": "verdicts", "zh": "判决"},
+    # `label.verdicts` and `label.regressions` stood here, the two chips of the cut
+    # `_ledger_panel`.  The regressions count is still on the page that lists the pairs
+    # themselves (`/analysis`, `/trend`), where it is a number a reader can act on.
 
     "label.gap": {"en": "the gap: (build, test) with no record",
                     "zh": "缺口：还没有记录的 (build, test)"},
-
-    "label.regressions": {"en": "regressions", "zh": "回归"},
 
     # --- /remote : what the API has ----------------------------------------
 

@@ -3,6 +3,7 @@
 """The local build table, offline: what this machine has, and what it still owes.
 
     table index     ask the API which builds exist and add them to the table
+    table index-pull  index that window, then pull the builds named with --build
     table jobs      one build's tests, with the reason for each that cannot run
     table todo      the table minus the ledger: what has not run yet
     table summary   counts by tree and verdict
@@ -33,7 +34,7 @@ from lib import config, errors
 from lib import job as job_mod
 from lib import re as re_mod
 
-COMMANDS = ("index", "jobs", "todo", "summary", "pull", "run")
+COMMANDS = ("index", "index-pull", "jobs", "todo", "summary", "pull", "run")
 
 
 def _looks_like_network(exc: Exception) -> bool:
@@ -49,6 +50,102 @@ def _looks_like_network(exc: Exception) -> bool:
     text = str(exc).lower()
     return any(word in text for word in ("proxy", "timed out", "timeout", "connection",
                                          "unreachable", "temporary failure", "ssl"))
+
+
+def _pull(table, wanted) -> int:
+    """Materialize the bytes for these build ids: the loop both pull commands run.
+
+    One loop and not two, because "pull" has to mean the same thing under both buttons
+    that ask for it - the bar's and the third button's - and a second copy of this is a
+    second answer to what happens when one build of fifty cannot be fetched.
+
+    **One unfetchable build does not cancel the others.**  `build.make()` raises
+    `ArtifactError` for a build whose URL 404s, whose host is down, or which simply
+    has no URL for an artifact (`deadbeef1234` has no `modules` and no `kselftest`
+    at all) - and the loop used to let that escape, so the rest of the list was never
+    pulled and `table.save()` never ran.  On this workspace that is not hypothetical:
+    three of the 52 cards cannot be fetched, so a blanket pull could never exit 0
+    while still doing 49 builds' worth of correct work
+    (`docs/gui-rework/round2/01-cards.md` §3.5 measured it).  Each build is now its
+    own attempt: the failures are printed as failures, the successes are saved, and
+    the exit code is 3 - this program's "we never got what we came for" - so a
+    button's activity says `failed` only when something really failed.
+
+    **A dead network is not fifty dead builds.**  Each `make()` retries a timeout
+    three times, so a pull of fifty builds against an unreachable artifact host is
+    fifty three-attempt hangs - ten minutes of an activity reporting nothing while
+    the page's own API calls queue behind it (measured: the operator's own 51-build
+    pull ran for minutes against `files.kernelci.org: ProxyError: handshake timed
+    out`).  After two builds in a row fail for a reason that is *about the network*
+    rather than about the build, this stops and says so; whatever was pulled is
+    already saved (`Build.make` writes each artifact as it lands).
+    """
+    failed: list[str] = []
+    network_failures = 0
+    for build_id in wanted:
+        build = table.get(build_id)      # a Build already: the table holds cards
+        try:
+            build.make()
+        except (errors.KciError, OSError) as exc:
+            failed.append(build_id)
+            print(f"! {build_id}: {exc}", flush=True)
+            if isinstance(exc, errors.InfraError) or _looks_like_network(exc):
+                network_failures += 1
+                if network_failures >= 2:
+                    left = len(wanted) - len(failed)
+                    print(f"stopping: {left} build(s) left, and the last two failures "
+                          "were the network, not the builds", flush=True)
+                    break
+            else:
+                network_failures = 0
+            continue
+        network_failures = 0
+        print(f"pulled {build.build_id}")
+        build.print()
+    table.save()
+    if failed:
+        count = len(failed)
+        print(f"{count} build{'s' if count != 1 else ''} could not be pulled: "
+              + ", ".join(failed), flush=True)
+        return errors.EXIT_INFRA
+    return errors.EXIT_PASS
+
+
+def _jobs(table, builds, tests, pairs):
+    """The (build, test) pairs `run` was asked for, in the order they were named.
+
+    **Two spellings of the same question, and the difference is real.**  `--build A
+    --build B --test boot` is the cross product of what was named - every build times
+    every test - which is what a one-shot line and every CLI caller mean by it.
+    `--pair A:boot --pair A:kselftest-riscv` names the pairs themselves, one row each,
+    which is what `/jobs`' tick boxes are: a box under a row is that row's own
+    (build, test), and a box on two tests of one build is two runs, not four.
+
+    The cross product cannot say that, and it is not a spelling problem: with two tests
+    and two builds it runs *both* tests on *both* builds, so the page that let a reader
+    tick them had to refuse the second tick (`jobs._boxed`, retired the day this
+    arrived).  `--pair` is the same executor over a list that was named instead of
+    multiplied, which is why it is a flag here and not a second command.
+
+    A `--pair` with no colon is refused rather than guessed at: a build id is 40 hex
+    characters and no test name carries a colon, so a value without one names nothing -
+    and quietly reading it as a build would run all three tests for it, which is a
+    different question from the one that was asked.
+    """
+    if pairs:
+        jobs = []
+        for spec in pairs:
+            build_id, sep, test = str(spec).partition(":")
+            if not (sep and build_id and test):
+                raise errors.ConfigError(
+                    f"--pair wants <build_id>:<test>; got {spec!r}")
+            jobs.append(job_mod.Job(table.get(build_id), test))
+        return jobs
+    # `table.get()` hands back a Build already (`pull` above says the same): wrapping
+    # it in Build() again makes its `kbuild` a Build, and the first artifact lookup
+    # then dies on `Build` having no `artifacts`.
+    wanted = [table.get(one) for one in builds] if builds else list(table)
+    return [job for build in wanted for job in job_mod.Jobs.for_build(build, tests=tests)]
 
 
 def main(argv=None):
@@ -68,6 +165,9 @@ def _main(argv=None):
     parser.add_argument("--build", action="append", default=[],
                         help="one build id; repeat for several")
     parser.add_argument("--test", action="append", choices=sorted(job_mod.TESTS))
+    parser.add_argument("--pair", action="append", default=[],
+                        help="one <build_id>:<test> pair, repeatable; names the pairs "
+                             "themselves and wins over --build/--test")
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--tree", default="")
     parser.add_argument("--limit", type=int, default=200)
@@ -111,59 +211,30 @@ def _main(argv=None):
             print(f"{build.build_id}  {test:<16} {reason or 'ready'}")
         return errors.EXIT_PASS
 
+    if command == "index-pull":
+        # The page's third button: the window's cards and the ticked rows' bytes, in one
+        # activity.  It exists because the two halves are one intention - a row that
+        # cannot be pulled is a row with no card, and the card comes from indexing the
+        # window the row is drawn from.  The button that could not say that made the
+        # reader press 登记卡片, wait, and press 拉取勾选的, which is the same two commands
+        # with a person holding the ticks across them.
+        #
+        # The order is the point and is not a preference: `table.get()` below reads the
+        # table this call is about to write, so a pull first would refuse every id the
+        # window had not been indexed for yet - which, on a view of another API, is all
+        # of them.
+        table.fetch(config.client(args) if not args.no_api else None,
+                    tree=args.tree or None, days=args.days, limit=args.limit)
+        table.save()
+        table.print()
+        # Nothing ticked: registering the window *is* the whole of what was asked, and
+        # that is `index` - so this returns the same answer `index` would have.
+        return _pull(table, args.build) if args.build else errors.EXIT_PASS
+
     if command == "pull":
         # Materialize the bytes for the builds the caller names (`--build`, repeated):
         # this is what a page's "pull the selected builds" button runs.
-        #
-        # **One unfetchable build does not cancel the others.**  `build.make()` raises
-        # `ArtifactError` for a build whose URL 404s, whose host is down, or which simply
-        # has no URL for an artifact (`deadbeef1234` has no `modules` and no `kselftest`
-        # at all) - and the loop used to let that escape, so the rest of the list was never
-        # pulled and `table.save()` never ran.  On this workspace that is not hypothetical:
-        # three of the 52 cards cannot be fetched, so a blanket pull could never exit 0
-        # while still doing 49 builds' worth of correct work
-        # (`docs/gui-rework/round2/01-cards.md` §3.5 measured it).  Each build is now its
-        # own attempt: the failures are printed as failures, the successes are saved, and
-        # the exit code is 3 - this program's "we never got what we came for" - so a
-        # button's activity says `failed` only when something really failed.
-        wanted = args.build or [b.build_id for b in table]
-        failed: list[str] = []
-        # **A dead network is not fifty dead builds.**  Each `make()` retries a timeout
-        # three times, so a pull of fifty builds against an unreachable artifact host is
-        # fifty three-attempt hangs - ten minutes of an activity reporting nothing while
-        # the page's own API calls queue behind it (measured: the operator's own 51-build
-        # pull ran for minutes against `files.kernelci.org: ProxyError: handshake timed
-        # out`).  After two builds in a row fail for a reason that is *about the network*
-        # rather than about the build, this stops and says so; whatever was pulled is
-        # already saved (`Build.make` writes each artifact as it lands).
-        network_failures = 0
-        for build_id in wanted:
-            build = table.get(build_id)      # a Build already: the table holds cards
-            try:
-                build.make()
-            except (errors.KciError, OSError) as exc:
-                failed.append(build_id)
-                print(f"! {build_id}: {exc}", flush=True)
-                if isinstance(exc, errors.InfraError) or _looks_like_network(exc):
-                    network_failures += 1
-                    if network_failures >= 2:
-                        left = len(wanted) - len(failed)
-                        print(f"stopping: {left} build(s) left, and the last two failures "
-                              "were the network, not the builds", flush=True)
-                        break
-                else:
-                    network_failures = 0
-                continue
-            network_failures = 0
-            print(f"pulled {build.build_id}")
-            build.print()
-        table.save()
-        if failed:
-            count = len(failed)
-            print(f"{count} build{'s' if count != 1 else ''} could not be pulled: "
-                  + ", ".join(failed), flush=True)
-            return errors.EXIT_INFRA
-        return errors.EXIT_PASS
+        return _pull(table, args.build or [b.build_id for b in table])
 
     if command == "jobs":
         build = table.get(args.build[0]) if args.build else table.newest()
@@ -221,30 +292,28 @@ def _main(argv=None):
     records = None if args.redo else re_mod.Records.load()
     outcomes = []
     skipped = []
-    # `table.get()` hands back a Build already (`pull` above says the same):
-    # wrapping it in Build() again makes its `kbuild` a Build, and the first
-    # artifact lookup then dies on `Build` having no `artifacts`.
-    wanted = [table.get(one) for one in args.build] if args.build else list(table)
-    for build in wanted:
-        for one in job_mod.Jobs.for_build(build, tests=tests):
-            recorded = records.last(one.test, build.build_id) if records is not None else None
-            if recorded is not None:
-                print(f"skip {build.build_id} {one.test} (already recorded)")
-                skipped.append(recorded)
-                continue
-            # `append`, not `+=`: `Job.run()` answers with one `Outcome`, and only
-            # the collection's `Jobs.run()` answers with a list.  Iterating the
-            # jobs to skip them means calling the singular one, so the loop has to
-            # collect them itself - which is the whole cost of having a per-test
-            # skip at all.
-            outcome = one.run(run, sinks=run.sinks(), source=source)
-            outcomes.append(outcome)
-            if not outcome.passed:
-                # Said when it happens, not only in the summary at the end: an
-                # activity's log is read while it runs, and a fifty-build run
-                # that reports its first failure an hour later is the same
-                # problem `pull`'s per-build line already fixes.
-                print(f"! {build.build_id} {one.test}: {outcome.detail}", flush=True)
+    # The pairs, from `--pair` or from the cross product (`_jobs` says which is which),
+    # and the skip/run loop below is the same over either: it reads a job's `test` and
+    # its `build_id` off the job, so a named pair and a multiplied one cannot diverge.
+    for one in _jobs(table, args.build, tests, args.pair):
+        recorded = records.last(one.test, one.build_id) if records is not None else None
+        if recorded is not None:
+            print(f"skip {one.build_id} {one.test} (already recorded)")
+            skipped.append(recorded)
+            continue
+        # `append`, not `+=`: `Job.run()` answers with one `Outcome`, and only
+        # the collection's `Jobs.run()` answers with a list.  Iterating the
+        # jobs to skip them means calling the singular one, so the loop has to
+        # collect them itself - which is the whole cost of having a per-test
+        # skip at all.
+        outcome = one.run(run, sinks=run.sinks(), source=source)
+        outcomes.append(outcome)
+        if not outcome.passed:
+            # Said when it happens, not only in the summary at the end: an
+            # activity's log is read while it runs, and a fifty-build run
+            # that reports its first failure an hour later is the same
+            # problem `pull`'s per-build line already fixes.
+            print(f"! {one.build_id} {one.test}: {outcome.detail}", flush=True)
     for outcome in outcomes:
         outcome.print()
     if not outcomes:

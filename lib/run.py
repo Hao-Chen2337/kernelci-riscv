@@ -58,6 +58,26 @@ WRITERS = ("job", "pull", "run", "fetch", "worker", "runday", "table", "stack",
 _LIVE: dict[str, "int | None"] = {}
 
 
+def age_of(seconds: float) -> str:
+    """A duration as a page prints it: `9s`, `4m`, `2h`, `3d`.
+
+    Module-level and not only `Run.age`, because it is asked about things that are not
+    activities: `/worker` prints how long ago the poll loop last moved its cursor, and
+    the answer has to be spelled the same way as the `uptime` beside it or the reader
+    compares two different alphabets.
+
+    `(limit, unit, seconds)` - the divisor is spelled out and is not the limit divided
+    by something.  It used to be `limit / 60`, which was right for minutes by accident
+    (3600/60) and wrong for hours by a factor of 24: an activity two hours old printed
+    `5h`.
+    """
+    delta = max(0.0, seconds)
+    for limit, unit, size in ((60, "s", 1), (3600, "m", 60), (86400, "h", 3600)):
+        if delta < limit:
+            return f"{int(delta / size)}{unit}"
+    return f"{int(delta / 86400)}d"
+
+
 def _settle_when_done(run: "Run", process: "subprocess.Popen") -> None:
     """Wait for one activity's child and settle it, whatever the page is doing."""
     try:
@@ -292,15 +312,7 @@ class Run:
 
     def age(self):
         """How long ago it started, as a page prints it."""
-        delta = max(0.0, time.time() - self.started)
-        # `(limit, unit, seconds)` - the divisor is spelled out and is not the
-        # limit divided by something.  It used to be `limit / 60`, which was
-        # right for minutes by accident (3600/60) and wrong for hours by a factor
-        # of 24: an activity two hours old printed `5h`.
-        for limit, unit, size in ((60, "s", 1), (3600, "m", 60), (86400, "h", 3600)):
-            if delta < limit:
-                return f"{int(delta / size)}{unit}"
-        return f"{int(delta / 86400)}d"
+        return age_of(time.time() - self.started)
 
     def line(self):
         """One line for a table: id, kind, state, how long, exit code, what."""

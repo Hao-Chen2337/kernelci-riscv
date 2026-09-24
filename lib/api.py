@@ -83,7 +83,8 @@ _SCOPE = threading.local()
 # existed.  A caller that is not a served request - a probe calling
 # `Gui.render()` directly - therefore gets no cache and no deadline unless it says
 # so itself with `begin_request()`.
-_NO_SCOPE = {"memo": {}, "ttl": 0.0, "deadline": None, "budget": 0.0, "age": None}
+_NO_SCOPE = {"memo": {}, "ttl": 0.0, "deadline": None, "budget": 0.0, "age": None,
+             "fetched": 0}
 
 # Answers, by `_key()`, with the monotonic time each was read.  Process-wide on
 # purpose - this is the cache that makes a reload inside the TTL free, and four
@@ -133,7 +134,7 @@ def begin_request(ttl: float | None = None, budget: float | None = None) -> dict
     39.2s because the number was read as per call).
     """
     seconds = 0.0 if budget is None else max(0.0, float(budget))
-    found = {"memo": {}, "age": None,
+    found = {"memo": {}, "age": None, "fetched": 0,
              "ttl": DEFAULT_TTL if ttl is None else max(0.0, float(ttl)),
              "budget": seconds,
              "deadline": time.monotonic() + seconds if seconds else None}
@@ -159,6 +160,30 @@ def request_ttl() -> float:
     quotes it (`gui._refresh`).
     """
     return _scope()["ttl"]
+
+
+def note_fetch() -> None:
+    """Count one artifact this request had to read over the API rather than find here.
+
+    Called by the one reader in this tree that fetches a *text* artifact
+    (`drift._config_text`, which looks in the kept copy and in the build's own
+    pulled copy before it asks), and read back by the page that has to say so out
+    loud: `/analysis` prints how many of the configs it compared this render had to
+    fetch (`fetches`), because a page that pulled forty files and said nothing is
+    the one thing §D2's rule about staleness is against.
+
+    It is a fact about the *request*, so it lives in the same scope as the memo and
+    the deadline, and the next request starts at 0.  No request, no count: outside
+    `begin_request()` this is a no-op on the throwaway scope, which is the same
+    "no cache, no deadline" promise the rest of this module makes to a caller that
+    is not a served page.
+    """
+    _scope()["fetched"] += 1
+
+
+def fetches() -> int:
+    """How many artifacts this request has read over the API (`note_fetch`)."""
+    return _scope()["fetched"]
 
 
 def _key(base: str, method: str, url: str, params: Any) -> tuple:

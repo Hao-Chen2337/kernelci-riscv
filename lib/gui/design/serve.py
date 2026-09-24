@@ -19,12 +19,15 @@ What the glue owns, and why each is here rather than in a page:
   is the station's module drawing one row.
 * **Page state.**  `kind` (`/runs`) and `mode`/`platform`/`runtime`/`since`
   (`/worker`) are keys a route reads that are *not* filter conditions, so they are not
-  `Filter` fields and `to_query()` leaves them out.  The pages ask for them on the
-  check, which is what the retired shell did by handing them to its drawers as
-  arguments; this is that hand-off, in the one place that builds the check.
+  `Filter` fields and `to_query()` leaves them out.  `schema.PAGE_STATE` is the table
+  that names them per route, and this hands them to the check, which is what the retired
+  shell did by handing them to its drawers as arguments; this is that hand-off, in the
+  one place that builds the check.
 * **The shells' own links.**  `keep` is what the top bar, the language switch and the
   refresh link carry, so a reader who switches language or reloads stays on the
-  question they asked instead of landing on its default.
+  question they asked instead of landing on its default.  `ui.pager` keeps the same set
+  on a page link (`ui._kept_state`), for the same reason: turning a page is not
+  answering a different question.
 
 A path no drawer answers is a 404: the five stations are all the screens there are, and
 `error.no_page` names them, so a hand-edited URL that names nothing gets a sentence
@@ -33,7 +36,9 @@ instead of a blank page.
 
 from ... import errors
 from ...i18n import DEFAULT_LANG, t
+from ..forms import _names
 from ..models import Filter
+from ..schema import MULTI_PAGE_STATE, state_keys
 from ..schema import PAGES as STATION_NAMES
 from . import data, pages, shell
 from .view import View
@@ -46,36 +51,6 @@ ALIASES = {"": "/", "/index.html": "/", "/builds": "/"}
 # in it.  The station itself is the module's own name (`pages/builds.py::builds`).
 DETAILS = {"/local/": ("builds", "local"), "/analysis/": ("analysis", "detail")}
 
-# Page state: the keys a route reads that are **not** conditions, and therefore not
-# `Filter` fields.  `state` is absent because it *is* one (a condition on two other
-# screens), so `from_query` already carries it.  Per route, because that is the only
-# true statement: `kind` means nothing to `/analysis` and `older` means nothing to
-# `/runs`, and a state key attached where no page reads it is a URL that says the
-# reader asked for something nobody looked at.
-PAGE_STATE = {
-    "/runs": ("kind",),
-    "/worker": ("mode", "platform", "runtime", "since"),
-    "/analysis": ("older", "newer", "vs"),
-    "/analysis/": ("older", "newer", "vs"),
-}
-
-
-def _state_names(route: str) -> tuple:
-    """The page-state keys a route reads: its own, or a detail route's station's.
-
-    Resolved by longest prefix the way `_url` resolves a route's query keys, and for
-    the same reason: `/analysis/<id>` *is* `/analysis` with a row named in the path,
-    and a comparison that lost `older`/`newer` on the way to its own detail page is a
-    different comparison.
-    """
-    if route in PAGE_STATE:
-        return PAGE_STATE[route]
-    for name, keys in PAGE_STATE.items():
-        if name.endswith("/") and route.startswith(name):
-            return keys
-    return ()
-
-
 def _page_state(check: Filter, query, names: tuple) -> None:
     """Hand the route's own keys to the check, the way the old shell handed them over.
 
@@ -84,8 +59,24 @@ def _page_state(check: Filter, query, names: tuple) -> None:
     `Filter` has no `__slots__`, and a value the URL did not carry is left **absent**
     rather than set to `""`, so a page can tell "asked for nothing" from "asked for
     the empty string".
+
+    One value per key is the rule, and the keys in `schema.MULTI_PAGE_STATE` are the
+    named exception: those are read as the whole set the query carried, joined.
     """
     for name in names:
+        if name in MULTI_PAGE_STATE:
+            # A key a reader answers with several values (`schema.MULTI_PAGE_STATE`):
+            # every value under it, joined into the one comma spelling the page parses
+            # (`_names` reads both a repeated key and a comma-joined value, so a link
+            # and a chip group are the same answer).  Without this the chips would
+            # submit seven `kind=` values and `[:1]` below would keep only the first -
+            # a control that shows seven ticks and applies one.
+            parts = [one for value in (query.get(name) or [])
+                     for one in _names(str(value))]
+            joined = ",".join(dict.fromkeys(parts))
+            if joined:
+                setattr(check, name, joined)
+            continue
         value = (query.get(name) or [""])[0]
         if value:
             setattr(check, name, value)
@@ -119,7 +110,7 @@ class DesignRenderMixin:
             raise errors.ConfigError(t(lang, "error.no_page", page=repr(page),
                                        routes=", ".join(name for name, _ in STATION_NAMES)))
         check = Filter.from_query(query, lang, self.apis)
-        names = _state_names(route)
+        names = state_keys(route)
         _page_state(check, query, names)
         rows = data.rows(self, check, lang)
         view = View(rows, check, lang, route, self, self.apis)
