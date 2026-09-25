@@ -113,6 +113,19 @@ _FOLD = ("state", "result", "origin", "evidence", "missing", "days", "limit", "t
 # reordering in `data.py` - and a label no key owns is printed as the literal it is.
 _COUNT_KEYS = ("counts.cards", "counts.here", "counts.bytes", "counts.acts",
                "counts.records", "counts.gap", "counts.activities")
+
+# The chips whose link is a `limit` window - and therefore the ones a number of **zero**
+# cannot be linked from, because `models.Filter` clamps `limit` to at least 1
+# (`_clamp(..., 1, MAX_LIMIT)`): `?limit=0` is a request for one row, so a chip that
+# counted none would link to a page that draws one.  That is not hypothetical and not a
+# fault of the filter - zero is the honest answer for 在缺口里 on a deployment whose
+# records cover every pair (the fresh-clone and post-`prune` state this tree is supposed
+# to be able to be in), and the measured result was that chip linking to
+# `/jobs?limit=0` and the page drawing a row anyway.  `counts.activities` reached this
+# conclusion first, for its own reason (`_kinds_of`): a count no link can reproduce gets
+# no link and is drawn as a `<span>`, rather than a link kept and a number bent to fit.
+_WINDOW_KEYS = ("counts.cards", "counts.here", "counts.bytes", "counts.records",
+                "counts.gap")
 _COUNT_KEY_OF = {t(one, key): key for key in _COUNT_KEYS for one in LANGS}
 
 # The two sides a row can come from, as the reader's own words for them, in the order the
@@ -431,8 +444,15 @@ def _chip(view, key: str, value) -> tuple:
     below on this page (`#acts`, and the panel carries that id - the board's 21
     `href="#acts"` pointed at an anchor nothing had), and a count with no `href` at all is
     one no page draws.
+
+    A count of **zero** is that second case when its link would be a `limit` window
+    (`_WINDOW_KEYS`), and for the reason the constant gives: there is no URL that asks this
+    tree for no rows, so the chip is drawn without a link instead of with one that answers
+    a row.
     """
     number = _countable(value)
+    if number == "0" and key in _WINDOW_KEYS:
+        return number, ""
     if key == "counts.cards":
         # `origin=card` is the one view `build_rows` lets past the row cap, so the card
         # table prints all of its rows whatever `limit` says: the number and the target
