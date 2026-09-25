@@ -41,10 +41,21 @@ The verdict is therefore a count, `5 of 6 page(s) rendered, /local/<build_id> sk
 printed beside the renders.  A missing precondition is not a failed render - the empty
 workspace still exits 0 - it is a smaller answer, and the answer is what the reader is
 owed; the API-silence verdict below is a separate one and is unaffected.
+
+**A page that renders is not a page whose controls work.**  The markup is therefore
+read as a browser would parse it (`_form_trouble`): a `<form>` inside a `<form>` is
+dropped by the parser and its `</form>` closes the outer form, so a button written
+after it belongs to no form and does nothing when pressed - which is a live bug on
+this console, not a hypothesis (`/worker`'s 「启动轮转」, dead since 2026-09-25).  That
+is a fourth canary, and like the others it is here because everything else passed:
+neither `ruff`, nor the import check, nor the DOM check, nor `accept` ever asked which
+form a button belongs to.
 """
 
 import argparse
+import html
 import os
+import re
 import sys
 import time
 import traceback
@@ -56,11 +67,69 @@ sys.path.insert(0, ROOT)
 # The pages that read only `var/`: these are the cheap, always-run part, and they are
 # where a render-time break shows up first.
 LOCAL_PAGES = ("/jobs", "/runs")
-API_PAGES = ("/", "/worker", "/analysis")
+# Every route that carries an action form is rendered, `/trend` and `/builds` included:
+# the form-tree reading below (`_form_trouble`) is only as good as the routes it is run
+# over, and `/builds` is where the most forms live (a bar with three buttons over one set
+# of ticks, a per-row pull, a provision box).  Two more renders is the price of a check
+# that cannot say "no page hands you a dead button" while looking at two thirds of them.
+API_PAGES = ("/", "/worker", "/analysis", "/trend", "/builds")
 
 # `/local/<id>` is the one route that is not in `PAGES`; it needs an id that exists,
 # so it is tried only when the workspace has one.
 DETAIL = "/local/{build_id}"
+
+# `<script>` and `<style>` bodies are cut before the markup is judged: the shipped
+# script *builds* a form as a string (`'<form method="post" action="/api/runs/' + …`),
+# and reading that text as markup reports a nested form on pages that have none.
+_SCRIPT_BODY = re.compile(r"(?is)<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>")
+_FORM_TAG = re.compile(r"(?i)<(/?)(form|button)\b[^>]*>")
+_BUTTON_TYPE = re.compile(r'(?i)\btype="([^"]*)"')
+
+
+def _form_trouble(markup: str) -> list:
+    """The forms a browser would build differently from the way the page wrote them.
+
+    One `(kind, offset, what)` per complaint: `nested` for a `<form>` start tag inside
+    an open form, `dead` for a submit button with no form around it.
+
+    **Why this is a check of its own.**  Both complaints are one bug seen twice, and
+    neither is visible in the markup as written: the tags read as nested, the button
+    reads as inside the panel, and a reviewer agrees with both.  The *parser* is what
+    disagrees - the HTML tree-construction rules **ignore** a `form` start tag while a
+    form element is open, so the inner form never exists and the inner `</form>` closes
+    the outer one, leaving every button written after it (the outer form's own submit
+    button included) in no form at all.
+
+    Measured on 2026-09-25: `/worker`'s 「启动轮转」 had been dead since the `since` box
+    became a form of its own *inside* the start form - the box is a GET over the same
+    question, the button a POST.  Pressing it did nothing: no request, no error, no
+    failed check.  80 structure checks, 61 DOM checks and `accept`'s 17 all passed,
+    because not one of them asked which form a button belongs to.  The rules are
+    simulated rather than parsed: this file has no HTML parser and needs none, since
+    the two rules above are the whole of what a form tree does.
+    """
+    found = []
+    body = _SCRIPT_BODY.sub(" ", markup)
+    open_at = None                      # offset of the form the parser considers open
+    for one in _FORM_TAG.finditer(body):
+        closing, name = one.group(1), one.group(2).lower()
+        if name == "form":
+            if not closing:
+                if open_at is None:
+                    open_at = one.start()
+                else:
+                    found.append(("nested", one.start(), one.group(0)[:80]))
+            elif open_at is not None:
+                open_at = None
+        elif not closing:
+            kind = _BUTTON_TYPE.search(one.group(0))
+            if kind and kind.group(1).lower() != "submit":
+                continue
+            if open_at is None:
+                label = re.sub(r"<[^>]*>", " ", body[one.end():one.end() + 120])
+                found.append(("dead", one.start(),
+                              re.sub(r"\s+", " ", html.unescape(label)).strip()[:60]))
+    return found
 
 
 def main(argv=None) -> int:
@@ -103,7 +172,7 @@ def main(argv=None) -> int:
     if args.all or args.api:
         client = api_mod.Api(args.api or None, timeout=args.timeout)
 
-    bad, slow = [], []
+    bad, slow, tree_bad = [], [], []
     calls = {}
     current = [""]                      # which page/language the counter is attributing to
 
@@ -176,10 +245,13 @@ def main(argv=None) -> int:
                 print(f"RAISE {page:<{width}} [{lang}] {type(exc).__name__}: {exc}")
                 traceback.print_exc(limit=3)
                 continue
+            found = _form_trouble(markup)
+            for kind, offset, what in found:
+                tree_bad.append((page, lang, kind, offset, what))
             took = time.monotonic() - started
             if took > 5.0:
                 slow.append((page, lang, took))
-            mark = "slow " if took > 5.0 else "ok   "
+            mark = "FORM " if found else ("slow " if took > 5.0 else "ok   ")
             print(f"{mark} {page:<{width}} [{lang}] {len(markup):>7} bytes  {took:6.2f}s")
 
     print()
@@ -202,6 +274,22 @@ def main(argv=None) -> int:
     if slow:
         print(f"{len(slow)} render(s) over 5s (the API's cost, not the renderer's): "
               + ", ".join(f"{p}[{l}] {t:.1f}s" for p, l, t in slow))
+
+    # The form tree, page by page, and the reason it is its own verdict: a page can
+    # render perfectly and still hand the reader a button that does nothing.  The
+    # complaint is named with the page, the language and the offset, because "a form is
+    # malformed somewhere" would leave an operator grepping 250 KB of markup.
+    #
+    # It is printed **after** the slow-render line on purpose: `verify.py` prints the
+    # last three lines of a failing check and nothing else, and "10 render(s) over 5s"
+    # is exactly the kind of true-but-unrelated line that would bury the reason.
+    if tree_bad:
+        print()
+        print(f"{len(tree_bad)} form(s) a browser would not build the way the page wrote "
+              f"them - a nested <form> is dropped by the parser and its </form> closes the "
+              f"outer form, so the button after it is in no form at all:")
+        for page, lang, kind, offset, what in tree_bad:
+            print(f"  {page} [{lang}] {kind} at {offset}: {what}")
 
     # **The evidence, page by page.**  A boolean would leave an operator with "the pages
     # rendered, and the check failed" and no way to tell which read died; and "the API is
@@ -228,7 +316,7 @@ def main(argv=None) -> int:
               "is not there - `every page rendered` is not the same answer as `the pages "
               "had a data source`")
 
-    failed = bool(bad) or silence
+    failed = bool(bad) or silence or bool(tree_bad)
     if args.calls:
         print()
         print("# API reads per render (the deterministic form of `a language must not "

@@ -389,11 +389,19 @@ def _start(view, w, queue, picked) -> str:
                    if picked["since_raw"] and not picked["since"] else ""))
     return ui.panel("", "".join((
         _facts(view, w),
+        # The rails sit **beside** the form, not `inner=` inside it, because `_since`
+        # draws a GET form of its own.  A `<form>` inside a `<form>` is not a nested
+        # element in the DOM: the parser drops the inner start tag and the inner
+        # `</form>` closes the **outer** form, so every button drawn after it - this
+        # form's own submit button included - ends up in no form at all and does
+        # nothing when pressed.  That is how 启动轮转 was dead (`smoke_pages.py`'s
+        # `_form_trouble` is the check that now says so).  Nothing else moves: the
+        # rails draw before the button and the argv after it, exactly as before.
+        _rails(view, queue, picked),
         ui.action_form("worker", both(view.lang, "btn.start_worker"),
                        fields=[("api", view.check.api), ("mode", picked["mode"]),
                                ("platform", picked["platform"]),
                                ("runtime", picked["runtime"]), ("since", picked["since"])],
-                       inner=_rails(view, queue, picked),
                        argv=_argv(view, picked), hint="worker.start_hint", blocked=blocked,
                        lang=view.lang),
         _claim_badge(view, queue, picked),

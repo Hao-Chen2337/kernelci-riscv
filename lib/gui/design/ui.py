@@ -1283,7 +1283,12 @@ def action_form(action: str, label_html: str, fields=(), inner: str = "", argv: 
     controls with one name would submit both values and leave the server to pick one,
     so a caller that draws a condition as `inner` leaves it out of `fields`.  `inner`
     must not contain a `<button>`: the script disables the pressed button of the form
-    while it posts.
+    while it posts.  It must not contain a `<form>` either, and that one is worse than
+    invalid markup: the parser **ignores** a `form` start tag while a form is open, so
+    the inner form never exists and its `</form>` closes *this* one - leaving every
+    button drawn after it, including this form's own, outside any form and unpressable.
+    A control that needs its own form (a GET box beside a POST button) is drawn as a
+    sibling instead; `/worker`'s `_start` did that the hard way.
 
     `blocked` is the reason this action must not be pressable, and the reason is what
     the disabled button says in its `title=` - it keeps its label and explains
