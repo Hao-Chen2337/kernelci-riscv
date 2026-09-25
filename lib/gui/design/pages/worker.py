@@ -405,8 +405,35 @@ def _start(view, w, queue, picked) -> str:
                        argv=_argv(view, picked), hint="worker.start_hint", blocked=blocked,
                        lang=view.lang),
         _claim_badge(view, queue, picked),
+        _no_token(view),
         ui.hint(view.t("worker.where_results")),
     )), lang=view.lang)
+
+
+def _no_token(view) -> str:
+    """The one thing that makes a run's report bounce, said before the button is pressed.
+
+    A worker with no token still works: the tests are real and the ledger records them,
+    which is what a local run is for.  What it cannot do is *report* them - every callback
+    leaves with no `Authorization` header and comes back 401, so the node the API
+    dispatched stays in its queue while this machine's ledger says the work is done.
+    That is the state of a fresh clone: the token lives in the rendered
+    `var/state/local-callback.toml` (`deploy/stack.sh` writes it, `sink.callback_token`
+    reads it at the instant of delivery) and in `$PULL_LABS_CALLBACK_TOKEN`, and a
+    checkout that has never had a stack run has neither.  The operator's afternoon went
+    into this - six runs, six reports refused, and the only place that said so was the
+    return-path panel further down the same page, *after* they had gone looking.
+
+    **Not a `blocked=`.**  `_start` blocks the button on a combination the worker would
+    refuse, and this is not one: a run whose result never leaves this host is a thing an
+    operator does on purpose, and the ledger is the record of exactly that.  So the
+    sentence is drawn beside the button rather than in its place, and only when both
+    places are empty - `token_source()` answers the GUI *server's* own question, which is
+    the right one because the worker this button spawns inherits its environment.
+    """
+    if sink.token_source():
+        return ""
+    return ui.hint(view.t("worker.no_token"))
 
 
 def _facts(view, w) -> str:

@@ -533,6 +533,21 @@ PART: dict[str, dict[str, str]] = {
     # asked to stop showing; keeping the footnotes would be keeping the explanation of a
     # table that is no longer drawn.
     "worker.where_results": {"en": "results land in <a href=\"/jobs\">jobs</a> (the worker rows) and in the panel below", "zh": "跑完的结果在 <a href=\"/jobs\">测试</a>（worker 那几行）和下面那一块"},
+    # The start bar's only warning, and it is `t()`-only for the same reason the line
+    # above is: it carries markup.  Drawn only when `sink.token_source()` is empty - the
+    # fresh-clone case, where the token's two homes (`$PULL_LABS_CALLBACK_TOKEN` and the
+    # rendered `var/state/local-callback.toml`) are both absent and every report will be
+    # refused.  The panel at the bottom of this page says it too, in the token row; this
+    # says it where the button is, because the operator who has just watched six runs
+    # report nothing was looking here.
+    "worker.no_token": {
+        "en": "<b>no callback token</b>: this deployment has neither "
+              "<code>PULL_LABS_CALLBACK_TOKEN</code> nor a rendered "
+              "<code>local-callback.toml</code>, so every report will come back 401 - the run "
+              "lands in the ledger and the node stays unreported on the API",
+        "zh": "<b>没有 callback token</b>：这个部署既没有 <code>PULL_LABS_CALLBACK_TOKEN</code>，"
+              "也没有渲染出来的 <code>local-callback.toml</code>，所以每份报告都会吃 401 —— "
+              "这次 run 记进账本，API 那边却一直是没报过的样子"},
 
     "state.any": {"en": "any", "zh": "不限"},
 
