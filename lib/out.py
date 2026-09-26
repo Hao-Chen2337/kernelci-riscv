@@ -26,6 +26,7 @@ RECORD_FIELDS = (
     "build_created",
     "job",
     "test",
+    "node_id",
     "source",
     "timestamp",
     "verdict",
@@ -57,6 +58,17 @@ class Outcome:
     timestamp: str = ""
     artifacts_dir: str = ""
     log: str = ""
+    # The API job node this run answered, when a worker claimed one - and `""` for a
+    # run this host started itself (a table, the page's button, `--once` off no queue).
+    #
+    # **It is what makes "this node ran here" a finding**, which nothing on this disk
+    # could answer before: the ledger's unit is the (build, test) pair, several job
+    # nodes ask for the same pair, and the record named neither of them.  So a page
+    # holding a node in the worker's `seen` had one word for "the loop ran it" and
+    # "the loop looked at it", the operator asked 「这六个到底是跑了还是没跑」, and the
+    # honest answer was the vague one.  Records written before this field say `""`,
+    # which is the truth about them: nothing wrote it down.
+    node_id: str = ""
 
     def record(self):
         """This outcome as the ledger record: every field present, no extras."""

@@ -53,6 +53,12 @@ class Job:
     # verbatim" (what the worker gets from the API).  `run()` may not look at
     # which of the two it has - that is the invariant the whole design rests on.
     given: dict = field(default_factory=dict)
+    # The API job node this job answers, when one claimed it.  The claim loop sets it
+    # and nothing else does: a job this host made up has no node, and `""` says so
+    # rather than inventing one.  It is copied into the record (`Outcome.node_id`),
+    # which is the only place "this node ran here" can be written down - the ledger
+    # is keyed by the (build, test) pair, and several nodes ask for one pair.
+    node_id: str = ""
     # tuxrun overrides the caller asked for (extra parameters, a cpu string).
     params: dict = field(default_factory=dict)
     # Artifact name -> local path, filled by make(); argv() prefers these.
@@ -252,6 +258,10 @@ class Job:
         """Fill the identity fields, keep the console, then deliver - ledger first."""
         outcome.build_id = outcome.build_id or self.build_id
         outcome.test = outcome.test or self.test
+        # From the job, and `or`-ed so an outcome that already knows is not overwritten:
+        # the only other writer is `poller._repost_pending`, which reads the node id back
+        # out of the stored record instead of going through here.
+        outcome.node_id = outcome.node_id or self.node_id
         outcome.source = source
         outcome.job = self.build_id
         outcome.timestamp = started

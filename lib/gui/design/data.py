@@ -489,14 +489,22 @@ def _worker(gui: Any, activities: list[dict[str, Any]],
 def fate_of(one: dict[str, Any]) -> str:
     """What this machine did with a queue node, as one of `schema.LOCAL_FATES`.
 
-    Four answers and they are ordered by how much is *known*, not by how good the
-    news is - `held` is the one that is certain (only `_remember_pending` writes it,
-    and it runs after the job's ledger sink has already been written), `refused` is
-    the poller's own sentence, and `ran` is what is left when a node is in `seen`
-    with nothing recorded against it.  That last one is a **default and not a
-    finding**: nothing on this disk keys a run to a node id, so "dealt with, no
-    reason to think otherwise" is the strongest true statement.  A worker older than
-    `poller.refuse` writes no refusals at all, and its nodes land here.
+    Five answers, ordered by how much is *known* rather than by how good the news is.
+    `held` is the one that is certain (only `_remember_pending` writes it, and it runs
+    after the job's ledger sink has already been written), `ran` is the other finding -
+    a record on this disk carries this node's id, so this run happened here - and
+    `refused` is the poller's own sentence for a node it put down unrun.
+
+    **`seen` is what is left, and it used to be called `ran`.**  "The loop has dealt
+    with this id" was the strongest true statement while nothing on this disk keyed a
+    run to a node id (`worker._fate` quotes the operator this was written for: a green
+    tick said "ran" about six nodes, and 「这六个到底是跑了还是没跑」 had no answer).  The
+    answer exists now - `Outcome.node_id`, filled by the claim loop and written into the
+    record the run produces - so the two situations the one word covered are two words:
+    `ran` when the ledger names the node, `seen` when it does not.  Two reasons stay
+    under `seen`: the loop handled the node without this deployment's ledger recording
+    it (a refusal by a worker older than `poller.refuse`, which wrote nothing down), and
+    a record written before the field existed - which is every run of 2026-09-25 here.
 
     Read in one place because two readers need the same word - the table's cell and
     the `local` filter that selects it - and a filter that disagreed with the cell
@@ -504,9 +512,11 @@ def fate_of(one: dict[str, Any]) -> str:
     """
     if one.get("held"):
         return "held"
+    if one.get("ran"):
+        return "ran"
     if one.get("refused"):
         return "refused"
-    return "ran" if one.get("claimed") else "never"
+    return "seen" if one.get("claimed") else "never"
 
 
 def _queue(gui: Any, check: Filter) -> tuple[list[dict[str, Any]], str]:
@@ -551,7 +561,8 @@ def _queue(gui: Any, check: Filter) -> tuple[list[dict[str, Any]], str]:
         "result": one["result"] or None, "platform": one["platform"],
         "runtime": one["runtime"], "created": one["created"],
         "claimed": one["claimed"], "definition": one["definition"],
-        "held": one["held"], "refused": one["refused"], "build_id": one["build_id"],
+        "held": one["held"], "refused": one["refused"], "ran": one["ran"],
+        "build_id": one["build_id"],
         # The pipeline route, for the `route` column.  Named here for the reason the
         # `definition_url` note below gives - this projection *is* a whitelist, and a
         # key left out of it renders as the design's dash on every row rather than

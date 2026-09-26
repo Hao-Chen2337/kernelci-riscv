@@ -268,6 +268,13 @@ class Poller:
             return True                           # gone, or not ours: nothing to retry
         definition = claimed.definition(self.api)
         job = Job.from_definition(definition)
+        # The node id, into the record the run is about to write.  This is the only
+        # moment both facts are in one place - the queue said which node, and the run
+        # is about to say which (build, test) - and the record is the only durable
+        # place to put it: `seen` is pruned past SEEN_LIMIT and a delivered report
+        # leaves `pending`, so without this line "did this node run here" is unanswerable
+        # again the moment the next batch asks for the same pair.
+        job.node_id = claimed.node_id
         # The ledger always, and a callback whose URL comes from the *definition*
         # the pipeline sent - that is what dispatching a job means here.  A sink
         # set built from the command line would only work when the operator

@@ -212,6 +212,27 @@ class Ledger(Sink):
         return records
 
     @staticmethod
+    def node_ids() -> set[str]:
+        """Every job node id the ledger's runs name - current records *and* histories.
+
+        The question this answers is "did this node's run land on this disk", which the
+        record alone cannot: a pair's record is rewritten by whichever run came last, so
+        the earlier run of the same pair - usually a different node, since two dispatches
+        of one job are two nodes - is only in the history beside it.  Both are read for
+        that reason, and a build whose history cannot be parsed raises here the way it
+        raises everywhere else in this module.
+
+        Empty ids are dropped rather than collected: `""` is what a record written before
+        the field existed holds, and it is not a node.
+        """
+        found: set[str] = set()
+        for build_id in Ledger.builds():
+            for one in _build_records(build_id) + _build_history(build_id):
+                if one.node_id:
+                    found.add(one.node_id)
+        return found
+
+    @staticmethod
     def builds() -> list[str]:
         """The build ids the ledger knows, newest record first."""
         root = layout.results()
@@ -674,6 +695,25 @@ def _build_records(build_id: str) -> list[Outcome]:
         return []
     return [_record_at(os.path.join(directory, name))
             for name in sorted(os.listdir(directory)) if name.endswith(".json")]
+
+
+def _build_history(build_id: str) -> list[Outcome]:
+    """Every run of one build's pairs, from the histories beside the records.
+
+    The mirror of `_build_records`, listing by the same rule read the other way: that
+    one takes `.json` and nothing else, this one takes `HISTORY_SUFFIX` and nothing
+    else.  Both are needed to answer a question about the *runs* of a build rather than
+    its current answers, because the record of a pair is rewritten by whichever run came
+    last (`Ledger.write`) and every run before it survives only here.
+    """
+    directory = layout.results(build_id)
+    if not os.path.isdir(directory):
+        return []
+    found: list[Outcome] = []
+    for name in sorted(os.listdir(directory)):
+        if name.endswith(HISTORY_SUFFIX):
+            found += _history_at(os.path.join(directory, name))
+    return found
 
 
 def _record_at(path: str) -> Outcome:

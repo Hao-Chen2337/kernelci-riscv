@@ -537,10 +537,10 @@ def _local_in_force(view) -> str:
 def _fate_label(view, value: str) -> str:
     """One option of the `local` box, as bilingual markup.
 
-    `any` is not one of the four answers - it is the absence of a question - so it
+    `any` is not one of the answers - it is the absence of a question - so it
     takes the catalogue's own `state.any`, which is the word every other box on this
     console uses for "no condition" (`_bar`'s name select does the same).  Giving it
-    a `local.label.*` of its own would be a fifth answer to a four-answer question.
+    a `local.label.*` of its own would be a sixth answer to a five-answer question.
     """
     key = "state.any" if value == LOCAL_FATES[0] else f"local.label.{value}"
     return both(view.lang, key)
@@ -949,18 +949,29 @@ def _route_cell(view, one) -> str:
 def _fate(view, one) -> str:
     """One row's local fate: what this machine did with this node, in one word.
 
-    Four words for four facts, and the words are the reason this column replaced a
+    Five words for five facts, and the words are the reason this column replaced a
     tick: `claimed` was true of a node the loop ran *and* of a node it refused, so a
     green tick said "ran" about six nodes this deployment never ran - the operator's
     「这六个到底是跑了还是没跑」, which no file on the disk could answer because
     nothing wrote the refusal down.  `poller.refuse` writes it now, and this cell
     prints it in the `title=` of the cell that reports it.
 
+    **`ran` is a finding now, and `seen` is what is left over.**  The other half of
+    the operator's question - whether the runs the loop *did* make are on this disk -
+    had no answer either, because the record is keyed by the (build, test) pair and
+    nothing in it named the node: several nodes ask for one pair, so a record could not
+    say which of them it answered.  It can now (`Outcome.node_id`), so the cell says
+    「跑过」 where the ledger names the node and 「碰过」 where only the worker's memory
+    does - which is this deployment's six runs of 2026-09-25, written before the field
+    existed, and the reason the two words are still both on this page.
+
     The two cells that are not a pill are deliberate. `never` is muted text, because
     a node the loop has not reached is the normal case and a column of pills would
     make it look like one; and `refused` is `plain` rather than `bad`, because a job
     another lab claimed, or one already done, is the queue working, not a fault - the
     sentence in the tooltip is where the difference between the three reasons lives.
+    `seen` is `plain` on the same terms: it is the loop having a memory of the node,
+    which is not news about the node's health either way.
 
     `fate_of` is the single judge (`data.fate_of`, which the `local` filter also
     reads), so the box and the cells it selects cannot disagree.
@@ -968,7 +979,7 @@ def _fate(view, one) -> str:
     fate = fate_of(one)
     if fate == "never":
         return f'<span class="muted">{both(view.lang, "local.cell.never")}</span>'
-    tone = {"held": "warn", "ran": "ok", "refused": "plain"}[fate]
+    tone = {"held": "warn", "ran": "ok", "seen": "plain", "refused": "plain"}[fate]
     label = both(view.lang, f"local.cell.{fate}")
     if fate == "refused":
         reason = str(one.get("refused") or "")
@@ -980,31 +991,43 @@ def _fate(view, one) -> str:
 def _forget_button(view, one) -> str:
     """The one way back out of `seen`, drawn on the rows that have one.
 
-    On `refused` and on `ran` - the two fates where this loop has a memory of the node
-    - and on neither of the others.  `never` has nothing to undo.  `held` is a job that
-    really ran with its report still undelivered, and forgetting *that* would let the
-    next poll run it again: it is the one thing `seen` exists to prevent, and the new
-    run would overwrite the ledger record of the run that already happened.
+    On `refused`, `seen` and `ran` - the three fates where this loop has a memory of
+    the node - and on neither of the others.  `never` has nothing to undo.  `held` is
+    a job that really ran with its report still undelivered, and forgetting *that*
+    would let the next poll run it again: it is the one thing `seen` exists to prevent,
+    and the new run would overwrite the ledger record of the run that already happened.
 
-    `ran` is the row this button mostly exists for (`seen` is forever, `_drain` skips a
-    seen id before `handle` is reached, and before `refused` existed the six nodes the
-    operator was asking about were exactly these), and it is also the row it cannot be
-    sure about: `fate_of` says `ran` is "in `seen` with nothing recorded against it",
-    which is one fact covering two situations.  The tooltip says so, because the two
-    outcomes do not cost the same - picking up a node the loop never ran costs one run,
-    and picking up one it did run overwrites the record of that run.
+    Three rows, three sentences in the `title=`, because the three do not cost the
+    same.  `refused` had its reason written down, so pressing it undoes a decision and
+    the sentence says what goes with it.  `ran` is a run this disk has a record of, and
+    the sentence says which record the new run would replace.  `seen` is the row the
+    page still cannot read - the loop dealt with the id and no record names it, which
+    is either a node it put down saying nothing (a worker older than `poller.refuse`)
+    or a run from before records carried a node id - and its sentence says that the two
+    outcomes do not cost the same, because picking up a node the loop never ran costs
+    one run and picking up one it did run overwrites that run's record.
     """
     fate = fate_of(one)
-    if fate not in ("refused", "ran"):
+    if fate not in ("refused", "seen", "ran"):
         return ui.DASH
     node = str(one.get("node_id") or "")
     if not node:
         return ui.DASH
-    hint = view.t("worker.forget_warn" if fate == "ran" else "worker.forget_hint")
+    hint = view.t(_FORGET_HINTS[fate])
     action = "/api/worker/forget/" + urllib.parse.quote(node, safe="")
     return ('<form method="post" action="' + ui.esc(action) + '">'
             + f'<button class="btn sm" title="{ui.esc(hint)}">'
             + both(view.lang, "btn.forget") + "</button>" + ui.status() + "</form>")
+
+
+# One sentence per row this button is drawn on - see `_forget_button` for why the
+# three cannot share one.  The keys are the fates, so a fate added there without a
+# sentence here raises a `KeyError` at render rather than drawing a button with an
+# empty tooltip, which is a page telling the operator nothing about a button that
+# re-runs a job.
+_FORGET_HINTS = {"refused": "worker.forget_hint",
+                 "seen": "worker.forget_warn",
+                 "ran": "worker.forget_rerun"}
 
 
 def _other_api(view, picked) -> str:

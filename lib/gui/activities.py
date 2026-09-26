@@ -15,7 +15,7 @@ import json
 from collections.abc import Iterable
 from typing import Any
 
-from .. import errors, layout
+from .. import errors, layout, sink
 from .. import run as run_mod
 from ..kjob import Kjobs
 from ..tests import TESTS
@@ -178,6 +178,17 @@ class ActivitiesMixin:
         `claimed` alone cannot separate the last two, which is the whole reason the
         page used to draw one word for "ran it" and "looked at it".
 
+        **`ran` is the fourth, and it is the ledger's rather than the state file's.**
+        The three above are the worker's memory of a node, and a memory is all they are:
+        `seen` is pruned past `SEEN_LIMIT` and a delivered report is dropped from
+        `pending`, so none of them outlives the worker.  `ran` is read off the records
+        themselves (`sink.Ledger.node_ids()`, records and histories), because the run
+        wrote the node id into the record it produced - which is why this row can now
+        say "it ran here" as a *finding* instead of leaving the page to infer it from
+        "the loop has dealt with this id".  A record written before `Outcome.node_id`
+        existed carries no id, so the six runs of this deployment's first day are in
+        `seen` and in no ledger, and their cells still say so.
+
         `limit` is how wide *this caller* wants the read to be, and the read is as
         wide as the widest caller of one page needs: `Filter.limit` (50 by default)
         is a table's print cap, and reading the queue at that width and then reading
@@ -197,6 +208,11 @@ class ActivitiesMixin:
         seen = set(held.get("seen") or [])
         pending = held.get("pending") or {}
         refused = held.get("refused") or {}
+        # Read once for the whole queue and not per row: it is a walk of the ledger, and
+        # a node's answer is a membership test against what came back.  The ledger at
+        # its largest is smaller than the queue read this method has already made, and
+        # this is the price of the one question the state file cannot answer.
+        ran = sink.Ledger.node_ids()
         rows = []
         for job in found:
             if check.job and job.name != check.job:
@@ -210,6 +226,7 @@ class ActivitiesMixin:
                          "claimed": job.node_id in seen,
                          "held": job.node_id in pending,
                          "refused": str(refused.get(job.node_id) or ""),
+                         "ran": job.node_id in ran,
                          "build_id": _parent_of(job),
                          "path": _path_of(job),
                          "definition_url": job.definition_url})

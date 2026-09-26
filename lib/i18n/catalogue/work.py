@@ -248,34 +248,43 @@ PART: dict[str, dict[str, str]] = {
     # The column that used to be `claimed`, with the question mark the operator asked
     # to have removed (「领过? 的问号去掉」).  It is a different word and not the same
     # word fixed, because the column is a different column: `claimed` asked one
-    # yes/no question about the `seen` list, and the cells below answer four -
+    # yes/no question about the `seen` list, and the cells below answer five -
     # `local.cell.*` - because `seen` cannot tell a node this loop ran from one it
-    # looked at and put down.  The header names the axis (`local`, 本机) rather than
-    # any one of the four answers.
+    # looked at and put down, and the ledger cannot answer for a node whose run it
+    # does not name.  The header names the axis (`local`, 本机) rather than any one of
+    # the five answers.
     "col.local": {"en": "local", "zh": "本机"},
 
     # The filter box's own label: the same axis as the column, and the same word.
     "filter.local": {"en": "local", "zh": "本机"},
 
-    # The five values of that axis, as the box offers them.  `any` is the catalogue's
-    # own `state.any` where a box needs "no condition"; these are the four answers,
+    # The values of that axis, as the box offers them.  `any` is the catalogue's
+    # own `state.any` where a box needs "no condition"; these are the five answers,
     # and each is a sentence about *this machine* and not about the node's health -
     # `held` is a run whose report is still owed, and a reader who takes it for a
     # failure will go looking for a fault where there is a post office.
     "local.label.never": {"en": "never looked at", "zh": "没碰过"},
-    "local.label.ran": {"en": "dealt with, nothing against it", "zh": "碰过，没记下问题"},
+    "local.label.seen": {"en": "dealt with, no run of it named on this disk",
+                         "zh": "碰过，本机没有记下它跑过的记录"},
+    "local.label.ran": {"en": "ran here, and the ledger names this node",
+                        "zh": "跑过，账本里点得到这个节点"},
     "local.label.held": {"en": "ran here, report not posted", "zh": "跑了，报告没回传"},
     "local.label.refused": {"en": "put down unrun", "zh": "碰过，没跑"},
 
     # The cells.  Short, because they sit in a table beside seven other columns; the
     # long-form wording lives in the box above and in the tooltip.
     #
-    # `ran` is deliberately **not** the word "ran".  Nothing on this disk keys a run to
-    # a node id, so a node in `seen` with nothing recorded against it is "no evidence
-    # either way" and not "it ran" - and the six nodes this deployment never ran are
-    # exactly what a confident `ran` would have lied about.
+    # **The pair of words to read together is 碰过 / 跑过.**  They used to be one word,
+    # because one fact was all there was: nothing on this disk keyed a run to a node
+    # id, so a node in `seen` was "no evidence either way" and 「碰过」 was the strongest
+    # true statement about it.  The record names the node now (`Outcome.node_id`, filled
+    # by the claim loop), so 「跑过」 is a finding - the ledger holds this node's run -
+    # and 「碰过」 is what is left when the loop has a memory of the node and the ledger
+    # has nothing: a refusal from a worker too old to write one down, or a run from
+    # before the field existed, which is every run this deployment made on 2026-09-25.
     "local.cell.never": {"en": "never", "zh": "没碰过"},
-    "local.cell.ran": {"en": "dealt with", "zh": "碰过"},
+    "local.cell.seen": {"en": "dealt with", "zh": "碰过"},
+    "local.cell.ran": {"en": "ran here", "zh": "跑过"},
     "local.cell.held": {"en": "not posted", "zh": "没回传"},
     "local.cell.refused": {"en": "put down", "zh": "没跑"},
 
@@ -480,12 +489,19 @@ PART: dict[str, dict[str, str]] = {
     "col.forget": {"en": "again?", "zh": "重捡"},
     "worker.forget_hint": {"en": "takes this node id back out of seen, so the next poll reads it again; the refusal goes with it, a report that was written and not delivered does not",
                            "zh": "把这个节点 id 从 seen 里拿出来，下次轮询会重新看它；拒绝记录一起删，已经写好但没回传的报告不删"},
-    # The same button on a `ran` row, where the page is offering to undo a decision it
-    # cannot read.  Two outcomes, and the reader is the only one who can tell them
-    # apart: the loop may never have run this node, or it may have run it and the
-    # record of that run is what the new one would replace.
-    "worker.forget_warn": {"en": "this node is in seen with nothing recorded against it, so this page cannot tell whether the loop ran it; picking it up again re-reads it, and if it did run, that record is what the new run replaces",
-                           "zh": "这个节点在 seen 里、没有任何记录，所以这一页分不出它到底跑没跑；重新捡起来会再看它一次；如果它真跑过，新的一次会顶掉原来那条记录"},
+    # The same button on a `seen` row: the loop has a memory of the node and nothing on
+    # this disk records a run against it.  Two reasons, and this page can tell neither
+    # from the other: the loop put the node down without saying why (a worker older than
+    # `poller.refuse`), or the run happened before records carried a node id - which is
+    # every run this deployment made on 2026-09-25.  Picking the node up again is what
+    # settles it, and only the reader can decide whether that is worth a run.
+    "worker.forget_warn": {"en": "this node is in seen and no record on this disk names it, so whether the loop ran it is not written down anywhere; picking it up again re-reads it, and if it did run, that run's record is what the new one replaces",
+                           "zh": "这个节点在 seen 里、本机账本里没有一条记录点名它，所以它到底跑没跑没有写在任何地方；重新捡起来会再看它一次；如果它真跑过，新的一次会顶掉那次的记录"},
+    # And on a `ran` row, where the uncertainty is gone: the ledger holds this node's
+    # run, so the record the new run would replace is a named one rather than a
+    # possibility.  Still a warning, and now a precise one.
+    "worker.forget_rerun": {"en": "the ledger holds a run of this node (its record names this node id, and the run's line is in that pair's history); picking it up again runs the job once more and the new record replaces that one",
+                            "zh": "本机账本里有这个节点的一次 run（记录里点着这个节点 id，那次 run 也留在那一对的 history 里）；重新捡起来会再跑一次，新的记录会顶掉原来那条"},
     "worker.forget.done": {"en": "{node_id} is out of seen: the next poll will look at it again",
                            "zh": "{node_id} 已经从 seen 里拿出来了：下次轮询会重新看它"},
     "worker.forget.absent": {"en": "{node_id} was not in seen; nothing to undo",

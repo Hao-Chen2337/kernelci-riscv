@@ -198,12 +198,15 @@ JOB_STATES = ("", "available", "done", "running", "reserved", "closing")
 #
 #   any      no condition
 #   never    the loop has never dealt with this id (`seen`)
+#   seen     it dealt with the id and nothing on this disk records a run against it:
+#            either the loop put it down without saying why (a worker older than
+#            `poller.refuse`), or the run predates `Outcome.node_id` and so could not
+#            write its own node id down - 碰过，没记下跑过
+#   ran      a record on this disk names this node id: the run happened here, and the
+#            ledger is what says so (`Outcome.node_id`, which the claim loop fills)
 #   held     it ran here and the report is still undelivered (`pending`) - 跑了不回传
 #   refused  it was put down unrun, and the poller said why (`refused`)
-#   ran      dealt with, with nothing recorded against it: the ledger write is the
-#            only proof a run happened and it is not keyed by node id, so this value
-#            is "no reason to think otherwise" and the page's cell says exactly that
-LOCAL_FATES = ("any", "never", "ran", "held", "refused")
+LOCAL_FATES = ("any", "never", "seen", "ran", "held", "refused")
 VERDICTS = ("", errors.VERDICT_PASS, errors.VERDICT_FAIL,
             errors.VERDICT_INFRA, errors.VERDICT_ERROR)
 
