@@ -574,9 +574,19 @@ def handler_for(gui: Any) -> type[BaseHTTPRequestHandler]:
                 # one piece of client state this GUI keeps.
                 self.send_header("Set-Cookie", f"kci_lang={self._remember}; Path=/; "
                                                "Max-Age=31536000; SameSite=Lax; HttpOnly")
-            self.end_headers()
-            if not self._head:
-                self.wfile.write(blob)
+            try:
+                self.end_headers()
+                if not self._head:
+                    self.wfile.write(blob)
+            except (BrokenPipeError, ConnectionResetError):
+                # The client left before the bytes did: it refreshed, closed the
+                # tab, or the browser gave up on a page that was still rendering
+                # (`/jobs` asks the production API and can take seconds).  Writing
+                # to a closed pipe reaches no one, and the second write `_fail`
+                # makes to report that failure breaks the same way - so both end
+                # here, silently.  Only a real page error gets past this and earns
+                # its `!` line from `_fail`; a reader walking away is not one.
+                pass
 
         def log_message(self, *args: Any) -> None:
             pass                                            # one person is reading this
