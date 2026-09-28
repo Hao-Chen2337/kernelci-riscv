@@ -9,20 +9,38 @@ Operate this tree from the repository root. Every command is an entry point ther
 python3 -m pip install tuxrun -r requirements.txt
 # requests + PyYAML (fetch/worker), uvicorn + fastapi + PyJWT + toml (the callback runs on
 # the host), ruff (verify)
+# On Ubuntu 24.04 (python3.12) pip refuses that line - PEP 668, externally-managed-environment.
+# Add --break-system-packages there. It is not a portable line: 22.04 ships pip 22.0.2, which
+# does not know the flag and exits on it rather than ignoring it.
 
-sudo apt-get install -y docker.io docker-compose-v2 git curl patch openssh-client \
-                        e2fsprogs python3 python3-pip
+sudo apt-get install -y docker.io docker-compose-v2 docker-buildx git curl patch \
+                        openssh-client e2fsprogs nodejs python3 python3-pip
+
+sudo usermod -aG docker "$USER"    # then log out and back in, or `newgrp docker`
 ```
 
-No virtualenv: the entries run under the `python3` on `PATH`. `patch` is for the step below,
-`e2fsprogs` is for the worker (it bakes a 4GB ext4 image with `mkfs.ext4`), and
+No virtualenv: the entries run under the `python3` on `PATH`, which is why the install has to
+land in that interpreter - and why 24.04 needs the flag above. `patch` is for the step below,
+`e2fsprogs` is for the worker (it bakes a 4GB ext4 image with `mkfs.ext4`),
 `openssh-client` is for `setup` (it runs `ssh-keygen` for the key pair the scheduler uploads
-job definitions with).
+job definitions with), and `nodejs` is for `verify.py`'s `dom`/`notice` checks (it drives the
+page's script under `node`).
 
-**One-time patch, for riscv kselftest support in tuxlava.** Apply it where the package
-actually is, and check that the test appears:
+Two of those apt packages are load-bearing in a way the names do not show. **`docker-buildx`**
+is not optional: `ssh` is the one service with `build:` and no `image:`, and Compose's bake path
+prints `Docker Compose is configured to build using Bake, but buildx isn't installed` and then
+**stops** - no error, no exit, nothing after it. And `docker.io` creates the `docker` group but
+does not put you in it, so the first `setup` dies on
+`permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock`.
+
+**One-time patch, for riscv kselftest support in tuxlava — only needed below tuxlava 0.26.0.**
+The riscv selftest class went upstream (`kernelci/tuxlava#50`, merged 2026-09-16) and the first
+release carrying it is **0.26.0**. Check the version first; if it is 0.26.0 or newer, skip the
+patch. Otherwise apply it where the package actually is, and check that the test appears:
 
 ```bash
+python3 -c "import importlib.metadata as m; print(m.version('tuxlava'))"   # 0.26.0+ -> skip
+
 patch -p1 -d "$(python3 -c 'import tuxlava,os;print(os.path.dirname(os.path.dirname(tuxlava.__file__)))')" \
   < config/tuxlava-kselftest-riscv.patch
 
@@ -66,6 +84,9 @@ This is deliberate. `table.py run`'s exit status *is* the verdict of the test, a
 was never downloaded" is not a test result - so it is 3, never 1.
 
 ## The twelve commands
+
+Twelve programs, fifteen rows below - `table.py` has four subcommands, and they are separate
+rows because they are separate verbs.
 
 Each one documents itself: `python3 <entry>.py --help`.
 
@@ -136,9 +157,16 @@ not live in git, so nothing is filled in by hand: `kernelci-api/.env`, the SSH k
 
 Four things stop a first run:
 
-- **A stale or dead proxy** hangs the upstream `git clone` with no output. Fix the proxy, or
-  bypass it for one command with `env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY …`
-  (`KCI_BYPASS_PROXY=1` for the scripts' own downloads).
+- **A proxy that stops passing bytes does not fail, it hangs.** The connection stays open and
+  `git`/`curl`/`pip` wait on it forever, so the symptom is silence rather than a message - and a
+  bulk transfer is where it shows (a proxy that answers a `curl -I` in a second can still crawl
+  or wedge on a 600MB image). `deploy/net-preflight.sh` bounds the upstream clones
+  (`-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20`) and retries direct, so those fail in 20s
+  with a message; the tree's own downloads take `KCI_BYPASS_PROXY=1`. For anything else, bypass
+  it for one command with `env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY …`.
+  Note that **`dockerd` never reads those variables** - the daemon's own proxy and any registry
+  mirror are configured on the daemon (`/etc/systemd/system/docker.service.d/`), and an image
+  pull is the daemon's traffic, not the shell's.
 - **Several GB of images** on first use: ~4 GB at `stack`, then the tuxrun runtime images on the
   first job.
 - **The seed tree is checked before anything starts.** `stack --seed` asks the scheduler's own
@@ -257,6 +285,21 @@ worker reads that file at every delivery, including the re-post of a report that
 pending, so no restart is needed. A one-shot `table.py run` is not affected: it posts only when
 it is given `--callback-url`. Both the box and the panel's `callback.url` row are drawn from the
 same read, so the page cannot show one destination while the worker uses another.
+
+**A stack the scripts cannot see, answering on all its ports.** `kernelci-api/docker-compose.yaml`
+hardcodes `container_name`, so the containers are named `kernelci-api`, `kernelci-api-db`, … no
+matter which compose project started them - and a bare `docker compose up` run by hand from
+`kernelci-api/` takes the **directory** as its project name. The result is a running API that
+`docker compose -p kcirv ps` does not list and `exec` cannot reach (`service "api" is not
+running`), which is what `setup`'s token step then reports. Never run compose from `kernelci-api/`
+by hand; go through `deploy/setup.sh` and `deploy/stack.sh`, which pass `-p $KCI_COMPOSE_PROJECT`.
+To recover, remove the strays and start again - a name that is already taken makes the `-p kcirv`
+run fail outright:
+
+```bash
+docker rm -f kernelci-api kernelci-api-db kernelci-api-redis kernelci-api-storage kernelci-api-ssh
+deploy/setup.sh
+```
 
 ## Where the rest is
 
