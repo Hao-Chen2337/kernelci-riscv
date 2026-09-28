@@ -304,7 +304,6 @@ def _fold_fields(view) -> str:
     table the row dict read its two from.
     """
     lang, check, rows = view.lang, view.check, view.rows
-    label = partial(ui.word, lang=lang)
     empty = "state.any"
     return "".join((
         ui.field(words.both(lang, "filter.api"),
@@ -312,9 +311,8 @@ def _fold_fields(view) -> str:
                                label="filter.api", lang=lang),
                  width="w-md"),
         ui.field(words.both(lang, "word.branch"),
-                 ui.select("branch", _choices(rows.get("branches") or (), check.branch,
-                                              lang=lang),
-                           check.branch, labeler=label),
+                 ui.multi("branch", _names(check.branch), rows.get("branches") or (),
+                          placeholder=empty, label="word.branch", lang=lang),
                  width="w-md"),
         ui.field(words.both(lang, "word.arch"),
                  ui.multi("arch", _names(check.arch), rows.get("arches") or (),

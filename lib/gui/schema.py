@@ -619,19 +619,20 @@ LIST_OFFSETS = ("pulls", "bytes", "record", "ledger", "activities", "done")
 # so the set is answered exactly as the one-value case is, and a page that offers one
 # must send `__in` or it asks a question with no answer in it.
 #
-# `branch` is still not one of them: it is bound to the tree it belongs to
-# (`_branches_from_config`), so "any of these branches" is not a question this page
-# can offer candidates for.  Neither are the axes that never reach the API (`test`,
-# `ran`, `verdict`, `evidence`, `origin`, `missing`): `_api_query` emits `API_FILTERS`
-# keys alone, and a set of those is answered by `Filter.accepts` on the rows this page
-# has - which is why 更多筛选 can offer `verdict`, `evidence` and `missing` as sets
-# without a line of this table changing (`models.Filter.from_query` reads them all).
+# `branch` is now one of them too: it is bound to the tree it belongs to, but
+# `_branch_stops` already answers the union of several trees' branches, so a set of
+# branches is a question the page can offer candidates for the same way it offers a
+# tree.  The axes that never reach the API (`test`, `ran`, `verdict`, `evidence`,
+# `origin`, `missing`) still are not here: `_api_query` emits `API_FILTERS` keys alone,
+# and a set of those is answered by `Filter.accepts` on the rows this page has - which
+# is why 更多筛选 can offer `verdict`, `evidence` and `missing` as sets without a line of
+# this table changing (`models.Filter.from_query` reads them all).
 #
 # **This is the one table that decides what may go on the wire as `__in`**, and it is
 # read by `forms._axis_pairs` alone.  `Filter.accepts` needs no such list: its test is
 # a membership test for every value axis, and `tree=riscv` is the one-value case of it
 # (`_names("riscv")` is `("riscv",)`), so a single value filters exactly as it did.
-MULTI_FIELDS = ("tree", "arch", "defconfig", "compiler", "state", "result")
+MULTI_FIELDS = ("tree", "branch", "arch", "defconfig", "compiler", "state", "result")
 
 # The orders `/analysis` can put its two lists in, as the values a URL carries.
 #

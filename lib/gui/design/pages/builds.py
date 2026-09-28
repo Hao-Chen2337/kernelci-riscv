@@ -282,7 +282,6 @@ def _main_fields(view) -> str:
     read when it is empty - is the honest one.
     """
     lang, check, rows = view.lang, view.check, view.rows
-    label = partial(ui.word, lang=lang)
     return "".join((
         ui.field(words.both(lang, "filter.api"),
                  ui.text_input("api", check.api,
@@ -294,9 +293,8 @@ def _main_fields(view) -> str:
                           placeholder="state.any", label="word.tree", lang=lang),
                  width="w-md"),
         ui.field(words.both(lang, "word.branch"),
-                 ui.select("branch",
-                           _choices(rows.get("branches") or (), check.branch, lang=lang),
-                           check.branch, labeler=label),
+                 ui.multi("branch", _names(check.branch), rows.get("branches") or (),
+                          placeholder="state.any", label="word.branch", lang=lang),
                  width="w-md"),
         ui.field(words.both(lang, "word.arch"),
                  ui.multi("arch", _names(check.arch), rows.get("arches") or (),

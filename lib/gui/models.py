@@ -33,7 +33,6 @@ from .forms import (
     _chosen_many,
     _clamp,
     _first,
-    _named,
     _named_many,
     _names,
     _numbers,
@@ -335,11 +334,12 @@ class Filter:
         days = _clamp(raw_days if raw_days is not None else NO_WINDOW, NO_WINDOW, MAX_DAYS)
         limit = _clamp(raw_limit if raw_limit is not None else 50, 1, MAX_LIMIT)
         return cls(tree=_named_many(query, "tree", lang),
-                   # `branch` is **not** one of the multi-valued axes and keeps
-                   # `_named`'s single value: a branch belongs to the tree it was read
-                   # from (`_branches_from_config`), so "any of these branches" is not
-                   # a question this page can offer candidates for (`schema.MULTI_FIELDS`).
-                   branch=_named(query, "branch", lang),
+                   # `branch` joined the multi-valued axes: a branch belongs to the
+                   # tree it was read from, and with several trees on it is several
+                   # trees' branches - `_branch_stops` already answers that union, so
+                   # "any of these branches" is now a question the page can offer
+                   # candidates for the same way it offers a tree (`schema.MULTI_FIELDS`).
+                   branch=_named_many(query, "branch", lang),
                    arch=_named_many(query, "arch"),
                    defconfig=_named_many(query, "defconfig"),
                    compiler=_named_many(query, "compiler"),

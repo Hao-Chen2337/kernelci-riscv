@@ -26,7 +26,7 @@ So this page keeps the two panels and gives them the two things a page owns:
 readers: `_timeline_panel`/`_chart_panel` are imported from it (they are `(view, …)`
 pure functions over `rows["timelines"]`/`rows["series"]`, and `data.rows` builds both
 for every route), the order control is `analysis._order_control`, and the filter bar is
-`analysis._bar`/`_bar_buttons`/`_api_field`/`_choices`.  A second copy of any of them
+`analysis._bar`/`_bar_buttons`/`_api_field`.  A second copy of any of them
 would be a second answer to a question this tree answers once.
 
 The one thing this page tells those readers that `/analysis` does not is `test_key`: a
@@ -61,8 +61,6 @@ operator moved it to the top bar, where one control serves every station
 hidden field instead of drawing a second box.
 """
 
-from functools import partial
-
 from ...forms import _names
 from ...schema import CHART_MODES, LIMITS, MAX_LIMIT, MODE_CUMULATIVE, MODE_EACH
 from .. import ui, words
@@ -72,7 +70,6 @@ from .analysis import (
     _bar,
     _bars_panel,
     _chart_panel,
-    _choices,
     _compares_panel,
     _fold_fields,
     _mode_of,
@@ -155,7 +152,6 @@ def _trend_fields(view) -> str:
     rest of the conditions that are rarely the answer (`_TREND` says why).
     """
     lang, check, rows = view.lang, view.check, view.rows
-    label = partial(ui.word, lang=lang)
     return "".join((
         _api_field(view),
         ui.field(words.both(lang, "word.tree"),
@@ -163,8 +159,8 @@ def _trend_fields(view) -> str:
                           placeholder="state.any", label="word.tree", lang=lang),
                  width="w-lg"),
         ui.field(words.both(lang, "word.branch"),
-                 ui.select("branch", _choices(rows.get("branches") or (), check.branch,
-                                              lang=lang), check.branch, labeler=label)),
+                 ui.multi("branch", _names(check.branch), rows.get("branches") or (),
+                          placeholder="state.any", label="word.branch", lang=lang)),
         ui.field(words.both(lang, "word.arch"),
                  ui.multi("arch", _names(check.arch), rows.get("arches") or (),
                           placeholder="state.any", label="word.arch", lang=lang)),
