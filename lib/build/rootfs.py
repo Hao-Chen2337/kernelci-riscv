@@ -71,6 +71,20 @@ def _bake_key(rootfs_url, modules_url=""):
     return hashlib.sha256(f"{rootfs_url}|{modules_url}".encode()).hexdigest()[:16]
 
 
+def _rootfs_tarball(url):
+    """The cached copy of `url`'s tarball: fetched once, reused across bakes.
+
+    The tarball is the same bytes for every bake of the same URL - only the modules
+    unpacked on top differ, and those are per-build - so it is downloaded into
+    `var/cache/` keyed by the URL rather than into each bake's own temp dir.  A
+    four-build kvm run fetched the same 144MB tarball four times, and a link that
+    stalls mid-transfer made each of those four re-fetches give up after its three
+    attempts; the cached copy downloads once, and `fetch.download` keeps its `.part`
+    beside it so a stalled download resumes the next bake instead of restarting.
+    """
+    return layout.cache(hashlib.sha256(url.encode("utf-8")).hexdigest()[:32] + ".tar.xz")
+
+
 def _unpack(archive, dest):
     """Extract a tarball under `dest`, skipping what the guard refuses; unwrap one top dir."""
     os.makedirs(dest, exist_ok=True)
@@ -173,8 +187,14 @@ def bake_rootfs(url, with_modules=False, modules_url=""):
     work = tempfile.mkdtemp(prefix="kci-bake-")
     part = ""
     try:
-        root = _unpack(download(url, os.path.join(work, "rootfs.tar.xz")),
-                       os.path.join(work, "tree"))
+        # The cache is the whole point: when it is there, it is complete (`download`
+        # only ever `os.replace`s a verified `.part` into place), so unpack it directly
+        # instead of asking `download` to re-verify it with a HEAD that the same flaky
+        # host can stall on and, on a timeout, treats as a reason to re-fetch the 144MB.
+        tarball = _rootfs_tarball(url)
+        if not os.path.isfile(tarball):
+            download(url, tarball)
+        root = _unpack(tarball, os.path.join(work, "tree"))
         if with_modules:
             if not modules_url:
                 raise errors.ArtifactError("this job wants modules on the disk but the "

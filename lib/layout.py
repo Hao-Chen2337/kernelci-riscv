@@ -98,6 +98,19 @@ def configs(name=None):
     return _under("configs", name)
 
 
+def cache(name=None):
+    """`var/cache/` - raw artifacts fetched once and reused, keyed by the URL's digest.
+
+    Unlike `downloads/<id>/` (one build's runnable copy) and `baked/` (the derived
+    ext4 image), this holds the *source* bytes a bake needs more than once - the
+    rootfs tarball, whose 144MB is the same for every bake of the same URL.  It is
+    a cache of a fetch, so `fetch.download`'s `.part` resume lives here too: a slow
+    link that stalls mid-transfer resumes the next bake rather than starting over.
+    Regenerable: deleting this directory costs one download per cached URL.
+    """
+    return _under("cache", name)
+
+
 def runs(run_id=None):
     """`var/runs/<run-id>/` - one job's scratch directory, deleted when it is done."""
     return _under("runs", run_id)

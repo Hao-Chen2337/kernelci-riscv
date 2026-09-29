@@ -418,8 +418,14 @@ class Build:
         """The guest disk tuxrun boots: `layout.baked(<key>.ext4)`, baked once and reused."""
         # Imported here, not at the top: see this module's docstring for the cycle.
         from .rootfs import bake_rootfs
-        return bake_rootfs(url or ROOTFS_URL, with_modules,
-                           modules_url=self._url("modules"))
+        # The modules were already pulled with `make(WANT)`, so bake from that copy
+        # instead of re-downloading the URL: the host stalls mid-transfer, and a
+        # 144MB rootfs that is now cached still left each kvm bake one 4MB download
+        # away from giving up.  A local path is what `fetch.download` copies.
+        modules = self._local("modules") if with_modules else ""
+        if not (modules and os.path.isfile(modules) and os.path.getsize(modules)):
+            modules = self._url("modules")
+        return bake_rootfs(url or ROOTFS_URL, with_modules, modules_url=modules)
 
     def merge(self, other):
         """Take the artifact URLs this build lacks from `other` (a Build or a Kbuild).
