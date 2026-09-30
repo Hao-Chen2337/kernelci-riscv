@@ -14,9 +14,11 @@ process cannot disagree; `cancel`, `log` and `status`/`state_poll` are what the 
 poll reads while something runs.
 
 `_one_tree` is the other side of the same knowledge: a button whose command takes one
-tree (`run_latest.py`, `runday.py` and `table.py index` each declare a single `--tree`,
-which `command()` reads with `_named`) cannot be offered honestly against a filter that
-names two, so it says why in its `title=` instead of being clickable and refusing.  It
+tree *and binds a branch to it* (`run_latest.py` and `runday.py` each declare a single
+`--tree`, which `command()` reads with `_named`) cannot be offered honestly against a
+filter that names two, so it says why in its `title=` instead of being clickable and
+refusing.  `table.py index`/`index-pull` are the exception - their `--tree` is
+repeatable and the engine registers each tree in turn, so they need no such guard.  It
 moved here from the retired filter-bar module because the fact it states is about this
 argv."""
 
@@ -37,6 +39,7 @@ from .forms import (
     _flag,
     _iso_stamp,
     _named,
+    _named_many,
     _names,
     _numbers,
     _offered,
@@ -184,13 +187,12 @@ class ActionsMixin:
         # platform's range was an OSError inside the child.
         days = str(_clamp(_numbers(form, "days", NO_WINDOW), NO_WINDOW, MAX_DAYS))
         limit = str(_clamp(_numbers(form, "limit", self.rows), 1, MAX_LIMIT))
-        tree = _named(form, "tree", lang)
-        # `branch` is a name like `tree` (the API filters by it and cannot list it,
-        # `_branches_from_config` is where the page's candidates come from), and both
-        # one-shot lines take it: `runday.py --branch` and `run_latest.py --branch`
-        # are read as the *third* argument of `Kbuilds.getdays`/`getnew`, so a page
-        # that never emitted the flag could not ask either of them for one branch.
-        branch = _named(form, "branch", lang)
+        # `tree` and `branch` are read inside the actions that emit them, not here:
+        # `index`/`index_pull` read `tree` as a set (the engine loops over repeated
+        # `--tree`), `runday`/`fetch` read both as one each (a branch is bound to its
+        # tree), `provision` reads its own two, and `pull`/`run` read neither (they
+        # name rows by build and pair id).  Reading the pair here made a multi-tree
+        # filter refuse `pull` and `run`, buttons that never asked for a tree.
         test = _chosen(form, "test", TESTS, "", lang)
         builds = _ticks(form)
 
@@ -201,8 +203,9 @@ class ActionsMixin:
             # and registered the wrong builds, so the cards never arrived.  It is
             # also the only button that writes cards, so this is the one place the
             # note's promise matters most.
+            trees = _names(_named_many(form, "tree", lang))
             return entry("table.py") + ["index", *api, "--days", days, "--limit", limit,
-                                        *_flag("--tree", tree)]
+                                        *_pairs("--tree", trees)]
         if name == "index_pull":
             # The bar's third button: register the window *this page is showing*, then
             # pull the ticked rows.  `--days`/`--limit`/`--tree` are `index`'s own three
@@ -215,8 +218,9 @@ class ActionsMixin:
             # the first must say so rather than do half of what it said.
             if not builds:
                 raise errors.ConfigError(t(lang, "error.pull_needs_build"))
+            trees = _names(_named_many(form, "tree", lang))
             return entry("table.py") + ["index-pull", *api, "--days", days,
-                                        "--limit", limit, *_flag("--tree", tree),
+                                        "--limit", limit, *_pairs("--tree", trees),
                                         *_pairs("--build", builds)]
         if name == "pull":
             if not builds:
@@ -250,10 +254,14 @@ class ActionsMixin:
             # candidates are `TREES_KNOWN` - the config's names), and with none picked
             # the argv says nothing and `runday.py` decides, which is why the printed
             # line still cannot disagree with the process behind it.
+            tree = _named(form, "tree", lang)
+            branch = _named(form, "branch", lang)
             return entry("runday.py") + ["--days", days, "--limit", limit,
                                          *_flag("--tree", tree), *_flag("--branch", branch),
                                          *_flag("--test", test), *api]
         if name == "fetch":
+            tree = _named(form, "tree", lang)
+            branch = _named(form, "branch", lang)
             return entry("run_latest.py") + [*_flag("--tree", tree),
                                              *_flag("--branch", branch),
                                              *_flag("--test", test), *api]
@@ -341,13 +349,16 @@ class ActionsMixin:
     def _one_tree(self, check: Filter, lang: str = DEFAULT_LANG) -> str:
         """Why a one-shot bar cannot be offered here - `""` when this filter names one tree.
 
-        `--tree` is single-valued in every entry point these bars start
-        (`run_latest.py`, `runday.py` and `table.py index` each declare one `--tree`,
-        none with `action="append"`), and `command()` reads it with `_named`, which
-        refuses a comma-joined value as the non-name it is.  So a filter that names two
-        trees cannot be handed to a one-shot button honestly, and the button must say
-        so rather than be clickable and refuse: that is `_action_bar(blocked=…)`'s
-        rule, and the reader's own gesture (unticking a box) is the way out.
+        `--tree` is single-valued in the two entry points these bars start
+        (`run_latest.py`, `runday.py` each declare one `--tree`, neither with
+        `action="append"`), and `command()` reads it with `_named`, which refuses a
+        comma-joined value as the non-name it is.  (`table.py index`/`index-pull` are
+        the other side: `--tree` there is `action="append"` and the engine loops, so
+        those bars are *not* passed a `blocked=` and take a multi-tree filter happily.)
+        So a filter that names two trees cannot be handed to a one-shot button
+        honestly, and the button must say so rather than be clickable and refuse: that
+        is `_action_bar(blocked=…)`'s rule, and the reader's own gesture (unticking a
+        box) is the way out.
 
         This is the one string in the bar and it is a `title=`, not a paragraph: the
         fact is about this button, and `05-i18n-prose.md` §B.1 puts a fact like that

@@ -148,6 +148,32 @@ def _jobs(table, builds, tests, pairs):
     return [job for build in wanted for job in job_mod.Jobs.for_build(build, tests=tests)]
 
 
+def _index(table, client, trees, days, limit) -> list[str]:
+    """Register each named tree's window, isolating one tree's failure from the rest.
+
+    The loop both `index` and `index-pull` run, and the reason it is one function and
+    not two: "one unfetchable tree does not cancel the others" is the same rule `_pull`
+    applies to builds, and a second copy of it is a second answer to what happens when
+    one tree of several cannot be fetched.  A `--tree` whose fetch raises is printed as
+    a failure and the loop goes on, so `table.save()` (which the caller runs after)
+    still writes the trees that *did* register - a multi-tree press against a flaky API
+    no longer throws away tree one because tree two was down.
+
+    `trees` is empty for "no tree named", which is one fetch of the whole window
+    (`tree=None` is "any").  `dict.fromkeys` keeps order and drops repeats, so a tree
+    named twice costs one fetch, not two - the GUI's multi-select cannot send a
+    duplicate, but a command line can, and the data comes out the same either way.
+    """
+    failed: list[str] = []
+    for tree in dict.fromkeys(trees or [""]):
+        try:
+            table.fetch(client, tree=tree or None, days=days, limit=limit)
+        except (errors.KciError, OSError) as exc:
+            failed.append(tree or "(any)")
+            print(f"! tree '{tree or 'any'}': {exc}", flush=True)
+    return failed
+
+
 def main(argv=None):
     try:
         return _main(argv)
@@ -169,7 +195,8 @@ def _main(argv=None):
                         help="one <build_id>:<test> pair, repeatable; names the pairs "
                              "themselves and wins over --build/--test")
     parser.add_argument("--days", type=int, default=7)
-    parser.add_argument("--tree", default="")
+    parser.add_argument("--tree", action="append", default=[],
+                        help="one tree name; repeat to register several (default: any)")
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--no-api", action="store_true")
     parser.add_argument("--redo", action="store_true",
@@ -183,10 +210,21 @@ def _main(argv=None):
     command = args.command
 
     if command == "index":
-        table.fetch(config.client(args) if not args.no_api else None,
-                    tree=args.tree or None, days=args.days, limit=args.limit)
+        # `--tree` is repeatable: register each named tree's window in turn, and a
+        # press with no tree registers the whole window (`tree=None` is "any").  One
+        # process looping the fetches keeps the console's one-command rule, and the
+        # builds of several trees land in the one table a single `save()` writes.
+        # One tree that cannot be fetched does not discard the others: `_index` guards
+        # each, `save()` still runs for the trees that registered, and a failed tree is
+        # this command's failure (exit 3, the same as a failed `pull`).
+        client = config.client(args) if not args.no_api else None
+        failed = _index(table, client, args.tree, args.days, args.limit)
         table.save()
         table.print()
+        if failed:
+            print(f"{len(failed)} tree(s) could not be indexed: {', '.join(failed)}",
+                  flush=True)
+            return errors.EXIT_INFRA
         return errors.EXIT_PASS
 
     if command == "summary":
@@ -223,13 +261,18 @@ def _main(argv=None):
         # table this call is about to write, so a pull first would refuse every id the
         # window had not been indexed for yet - which, on a view of another API, is all
         # of them.
-        table.fetch(config.client(args) if not args.no_api else None,
-                    tree=args.tree or None, days=args.days, limit=args.limit)
+        client = config.client(args) if not args.no_api else None
+        failed = _index(table, client, args.tree, args.days, args.limit)
         table.save()
         table.print()
         # Nothing ticked: registering the window *is* the whole of what was asked, and
         # that is `index` - so this returns the same answer `index` would have.
-        return _pull(table, args.build) if args.build else errors.EXIT_PASS
+        code = _pull(table, args.build) if args.build else errors.EXIT_PASS
+        if failed:
+            print(f"{len(failed)} tree(s) could not be indexed: {', '.join(failed)}",
+                  flush=True)
+            return errors.EXIT_INFRA
+        return code
 
     if command == "pull":
         # Materialize the bytes for the builds the caller names (`--build`, repeated):

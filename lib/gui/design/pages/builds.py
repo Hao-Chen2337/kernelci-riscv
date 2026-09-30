@@ -731,10 +731,9 @@ def _pull_bar(view) -> str:
     lang, check = view.lang, view.check
     fields = [("api", check.api), ("tree", check.tree),
               ("days", str(check.days)), ("limit", str(check.limit))]
-    # `table.py index` and `table.py index-pull` each declare one `--tree`, so a filter
-    # naming several trees cannot be handed to either - the same refusal, and the same
-    # sentence, the panel's own index button carried.
-    blocked = view.gui._one_tree(check, lang)
+    # `table.py index`/`index-pull` take a repeatable `--tree` and register each named
+    # tree in turn, so a multi-tree filter is fine here - the bar needs no `blocked`,
+    # unlike `/jobs`' one-shot buttons whose branch is bound to a single tree.
     return ui.action_form(
         "pull", words.both(lang, "btn.pull_selected"), fields=fields, form_id=_PULL_FORM,
         hint="pull.pull_hint", lang=lang,
@@ -742,26 +741,25 @@ def _pull_bar(view) -> str:
                view.gui._argv_of("index", {"tree": check.tree, "days": str(check.days),
                                            "limit": str(check.limit)},
                                  lang, api=check.api),
-               blocked),
+               ""),
               ("index_pull", words.both(lang, "btn.index_pull"),
                view.gui._argv_of_ticked("index_pull", {"tree": check.tree,
                                                        "days": str(check.days),
                                                        "limit": str(check.limit)},
                                         lang, api=check.api),
-               blocked),
+               ""),
               # 智能运行: the same ticks, the same fields, and a decision the other three
               # leave to the reader - which of the three commands these rows need first
               # (`actions.ActionsMixin._smart` reads the rows and answers per row).  Its
               # `title=` is the hint and not an argv: the command does not exist until a
               # box is ticked, for the reason the other two tick-driven buttons print
               # none either - and because *which* command it is depends on what those
-              # ticks hold.  It carries no `blocked` of its own, and the two above carry
-              # the bar's: `_one_tree` is about the register half, which is `index` and
-              # `index-pull` only.  What a multi-tree filter does to *this* button is
-              # `command()`'s own `_named(form, "tree")`, which every one of its three
-              # commands reads before it dispatches - so a press on a two-tree filter is
-              # refused in the same words the `pull` button beside it is refused in, and
-              # no phase of this press is an exception to that.
+              # ticks hold.  It carries no `blocked` and needs none: the three commands
+              # `_smart` may dispatch to are `index-pull`, `pull` and `run`; `pull` and
+              # `run` name rows by build/pair id and take no tree flag at all, and
+              # `index-pull` now repeats `--tree` for each tree the filter names, so a
+              # multi-tree press lands on whichever phase the rows need and refuses
+              # nowhere.
               ("smart", words.both(lang, "btn.smart_run"), "smart.hint", ""),
               # **重跑, and it is the smart press with the ledger ignored.**  The
               # operator's 「难道就不能默认增加重跑？」: `--redo` was reachable only from
