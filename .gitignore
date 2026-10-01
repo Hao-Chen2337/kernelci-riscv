@@ -8,11 +8,14 @@ var/
 *.log
 __pycache__/
 
-# docs: only the runbook is public; everything else (tool deep dives, SOW
-# snapshot, upstream evidence, issue/PR drafts, internal dev notes) stays
-# local - internal working material, not ready/meant to be published
+# docs: only the runbook set is public - the runbook itself, the command-line
+# walkthrough, and the flag reference.  Everything else (tool deep dives, SOW
+# snapshot, upstream evidence, issue/PR drafts, internal dev notes, and the
+# zh-CN internal copies) stays local - internal working material, not
+# ready/meant to be published.
 docs/*
 !docs/RUNBOOK.md
+!docs/COMMAND-REFERENCE.md
 
 # local-only, off the run path: `proto/` is the frontend prototype the real
 # console in `lib/gui/design/` replaced, and `include/` is the C++ interface spec

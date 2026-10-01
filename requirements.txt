@@ -16,13 +16,14 @@
 #
 # The callback service additionally imports the cloned `kernelci-core`, which
 # declares its own dependencies: after `./run.sh setup` has cloned it, install
-# `python3 -m pip install -r kernelci-core/requirements.txt` too (docs/RUNBOOK.md,
-# Environment).
+# `python3 -m pip install -r kernelci-core/requirements.txt` too (RUNBOOK.md §2,
+# first-time setup).
 #
 # tuxrun and tuxlava are NOT listed: tuxrun is installed separately
 # (`pip install tuxrun`) and carries its own dependencies (requests, PyYAML,
-# jinja2, ...), and tuxlava needs the one-time riscv kselftest patch described
-# in docs/RUNBOOK.md.
+# jinja2, ...), and tuxlava needs the one-time riscv kselftest patch
+# (config/tuxlava-kselftest-riscv.patch, applied by hand - `deploy/setup.sh`
+# prints the command when it finds it missing).
 #
 # The bounds are the oldest versions this checkout is verified with (the
 # versions installed on the reference machine).  Upstream pins the callback's

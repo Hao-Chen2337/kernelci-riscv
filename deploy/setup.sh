@@ -114,7 +114,7 @@ EOF
     echo "================================ WARNING ================================"
     echo "tuxlava is NOT patched, so the kselftest-riscv job cannot run: tuxrun"
     echo "derives its --tests choices from tuxlava and exits 2 without the class."
-    echo "Apply the one-time patch from docs/RUNBOOK.md now:"
+    echo "Apply the one-time patch now:"
     echo
     echo "  patch -p1 -d $TUXLAVA_PATCH_MISSING \\"
     echo "    < $ROOT/config/tuxlava-kselftest-riscv.patch"

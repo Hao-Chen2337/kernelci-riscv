@@ -65,7 +65,7 @@ BOOT_EVIDENCE_RE = re.compile(r"\[\s*0\.000000\]|Booting Linux")
 LAVA_CASE_RE = re.compile(r"'case': '([^']+)'.*?'result': '(pass|fail|skip)'")
 
 _TUXLAVA_HINT = ("tuxlava has no '{name}' class: apply the one-time "
-                 "config/tuxlava-kselftest-riscv.patch (docs/RUNBOOK.md)")
+                 "config/tuxlava-kselftest-riscv.patch")
 
 
 @dataclass
