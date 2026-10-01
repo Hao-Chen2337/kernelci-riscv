@@ -70,7 +70,9 @@ python3 verify.py --quick        # leaves out the slow page renders
 python3 verify.py --base URL     # also sweep a running page over HTTP
 ```
 
-The checks' own scripts are in `tools/gate/`, published with the tree. `verify.py` runs every
+Most checks' scripts are in `tools/gate/`, published with the tree; the exceptions are `ruff` (an
+external tool), `i18n` (`python3 -m lib.i18n`), and `pipeline yaml` (upstream's
+`kernelci-pipeline/tests/validate_yaml.py`). `verify.py` runs every
 check and reports all of them — read its own last line for the count.
 
 ---
@@ -139,6 +141,7 @@ downloaded" is not a test result — so it is 3, never 1.
 | `var/results/<build_id>/<test>.json` | **the ledger** — what ran, never pruned, the only record |
 | `var/baked/<key>.ext4` | 4 GB guest images baked from the rootfs |
 | `var/configs/` | archived `.config`, for drift comparison |
+| `var/cache/` | raw fetched bytes reused across bakes (the rootfs tarball, and `.part` resumes) |
 | `var/serve/Image` | the kernel this deployment serves out |
 | `var/state/` | `builds.json`, `served.json`, `worker-state.json`, `seed.env` |
 | `var/runs/<run-id>/` | one activity's log and `run.json` |
@@ -155,7 +158,8 @@ worker's cursor file).
 
 ## Ports
 
-Every port is overridable and every port is probed before a service starts on it.
+Every port is overridable, and the stack probes each one before starting a service on it — with
+one exception: `gui.py --port` is overridable but nothing checks it, so a busy 8079 fails at bind.
 
 | service | variable | default |
 |---|---|---|

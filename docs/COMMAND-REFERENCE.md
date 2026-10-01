@@ -61,7 +61,7 @@ python3 table.py {index|index-pull|jobs|todo|summary|pull|run}
 | `index-pull` | `index` that window, then `pull` the builds named with `--build` |
 | `jobs` | one build's three tests, with the reason for each that cannot run |
 | `todo` | the table minus the ledger: what has not run yet, and why |
-| `summary` | counts by tree and verdict, plus what is on disk |
+| `summary` | the same table, plus the ledger read back at the end |
 | `pull` | fetch the named builds' artifacts (`--build`, repeatable; none = every build) |
 | `run` | run the pairs, here, with no queue and no callback — the same `Job.run()` as the worker |
 
@@ -82,8 +82,9 @@ Three things worth knowing before you type them:
 
 - **`pull` with no `--build` acts on every build in the table**, and at least one of them has no
   `modules` URL — so that call always ends in exit 3. Name the builds you want.
-- **`run --build <id>` needs a build whose artifacts are already on disk** for the test you ask
-  for; `Job.make()` fetches them, but the build must declare them. One unfetchable build does not
+- **`run --build <id>` needs the build to *declare* the artifacts** for the test you ask for;
+  `Job.make()` fetches whatever is missing, and bytes already on disk are the fallback rather than
+  a precondition. One unfetchable build does not
   cancel the other forty-nine: each is its own attempt, the failure is recorded with its error,
   and the ledger skips it next time.
 - **`--pair` names the pairs, `--build`/`--test` multiply them.** `--build A --build B --test boot`
@@ -99,8 +100,9 @@ label reads `tree-branch-arch-defconfig`:
 <id>  mainline-master-riscv-defconfig   ...
 ```
 
-`summary` adds a `pulled-artifacts` column — `kernel modules kselftest` when all three are on
-disk, `-` when nothing is — then the ledger at the end:
+The `pulled-artifacts` column — `kernel modules kselftest` when all three are on disk, `-` when
+nothing is — is on **every** subcommand that prints the table, `index` and `index-pull` included;
+`summary` is not what puts it there. What `summary` adds is the ledger at the end:
 
 ```text
 --- <id> (3 record(s), 3 pass)
@@ -261,8 +263,9 @@ python3 runday.py [--day ISO] [--days N] [--test T] [--redo] [--limit N] [--tree
 | `--limit N` | how many builds (must be ≥ 1) | `20` |
 | *(run flags)* | the shared set | see above |
 
-**Effect.** A **rotation, not a queue**: by default yesterday's builds, skipping every pair the
-ledger already has a record for. `--redo` is the only way back to re-running. Exit 0/1/3.
+**Effect.** A **rotation, not a queue**: by default the **last 24 hours** — a rolling window that
+includes today, not the calendar day before — skipping every pair the ledger already has a record
+for. `--redo` is the only way back to re-running. Exit 0/1/3.
 
 ---
 
@@ -453,6 +456,7 @@ python3 drift.py --older <id> --newer <id> --api-url https://api.kernelci.org
 python3 trend.py --api-url https://api.kernelci.org
 ```
 
-Exit codes throughout: `0` pass (or "nothing owed"), `1` a test actually failed, `3`
-infrastructure — a bad flag, a dead API, an artifact that never arrived. A `3` is never a test
+Exit codes throughout: `0` pass (or "nothing owed"), `1` a test actually failed, `2` argparse
+refused the command line (an unknown flag), `3` infrastructure — a flag whose *value* the code
+rejects, a dead API, an artifact that never arrived. A `3` is never a test
 result; it is the machine telling you the machine broke, not the kernel.

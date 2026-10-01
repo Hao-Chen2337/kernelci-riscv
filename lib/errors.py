@@ -5,8 +5,10 @@ A run ends in exactly one of three ways, and the exit status says which:
 
     0  pass          the console showed the test ran and nothing failed
     1  test failure  the console showed at least one selftest failure
-    3  infra         we never got a verdict: bad flags, unreachable artifacts,
-                     timeout, tuxrun refusing the job, API down
+    3  infra         we never got a verdict: a flag value we cannot use,
+                     unreachable artifacts, timeout, tuxrun refusing the job, API down
+
+An unknown flag never reaches here - argparse refuses the line itself, exit 2.
 
 3 is LAVA's "incomplete", and the pipeline reads it as infrastructure rather
 than as a test result.  The infrastructure side arrives as exceptions; a test
@@ -33,7 +35,7 @@ class KciError(Exception):
 
 
 class ConfigError(KciError):
-    """The operator asked for something impossible (unknown test, no API, bad flag)."""
+    """The operator asked for something impossible (unknown test, no API, a flag value)."""
 
     exit_code = EXIT_INFRA
 
